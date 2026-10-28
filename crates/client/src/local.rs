@@ -1,0 +1,401 @@
+use std::{fs::OpenOptions, future::IntoFuture, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use anyhow::{bail, Context, Result};
+use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Response}, routing::{get, post}, Json, Router};
+use fs2::FileExt;
+use protocol::Character;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::{Mutex, Notify};
+use uuid::Uuid;
+use crate::{engine::Engine, processes::Processes, storage};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Connection { pub url: String, pub secret: String }
+#[derive(Clone)]
+struct Local { controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
+struct LocalError(anyhow::Error);
+type LocalResult = std::result::Result<Json<Value>,LocalError>;
+
+impl<E: Into<anyhow::Error>> From<E> for LocalError {
+    /// Surface local errors to the user without logging session-bearing request bodies.
+    fn from(value: E) -> Self { Self(value.into()) }
+}
+impl IntoResponse for LocalError {
+    /// Both frontends consume the same error envelope.
+    fn into_response(self) -> Response { (StatusCode::BAD_REQUEST,Json(json!({"error":self.0.to_string()}))).into_response() }
+}
+
+impl Connection {
+    /// Attach the local capability token only to the exact loopback origin.
+    pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
+        self.request(reqwest::Method::POST,path,Some(body)).await
+    }
+    /// Read shared daemon state from terminal clients.
+    pub async fn get(&self, path: &str) -> Result<Value> { self.request(reqwest::Method::GET,path,None).await }
+    /// Refuse tampered discovery URLs before sending the local capability token.
+    async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+        let url = reqwest::Url::parse(&self.url)?;
+        anyhow::ensure!(url.scheme()=="http" && url.host_str()==Some("127.0.0.1") && url.username().is_empty() && url.password().is_none(),"Invalid local daemon address");
+        let mut request = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?
+            .request(method,format!("{}{path}",self.url)).bearer_auth(&self.secret);
+        // Approved commands can run indefinitely while the terminal waits for their result.
+        if !matches!(path,"/api/command"|"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(1800)); }
+        if let Some(body) = body { request = request.json(&body); }
+        let response = request.send().await?;
+        let status = response.status();
+        let body: Value = response.json().await?;
+        anyhow::ensure!(status.is_success(),"{}",body["error"].as_str().unwrap_or("Local request failed"));
+        Ok(body)
+    }
+}
+
+/// Reuse a live daemon, or detach this executable and wait for its private discovery file.
+pub async fn connect(directory: &Path) -> Result<Connection> {
+    let path = directory.join("daemon.json");
+    if let Ok(connection) = storage::read::<Connection>(&path) {
+        if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) { return Ok(connection); }
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let log=OpenOptions::new().create(true).append(true).mode(0o600).open(directory.join("daemon.log"))?;
+        let mut command=std::process::Command::new(std::env::current_exe()?);
+        command.arg("--daemon").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        unsafe { command.pre_exec(|| { if libc::setsid()==-1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
+        command.spawn()?;
+    }
+    #[cfg(windows)]
+    crate::windows_launcher::spawn()?;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(connection) = storage::read::<Connection>(&path) {
+            if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) { return Ok(connection); }
+        }
+    }
+    bail!("Local daemon did not start; inspect {}",directory.join("daemon.log").display())
+}
+
+/// Bind loopback only and hold an exclusive lock for this entire daemon lifetime.
+pub async fn serve(directory: PathBuf) -> Result<()> {
+    let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
+    if lock.try_lock_exclusive().is_err() { return Ok(()); }
+    let engine = Engine::open(&directory)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let connection = Connection { url:format!("http://{}",listener.local_addr()?),secret:format!("{}{}",Uuid::new_v4().simple(),Uuid::new_v4().simple()) };
+    storage::write(&directory.join("daemon.json"),&connection)?;
+    let processes=engine.processes.clone();
+    let state = Local { controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let stop = state.stop.clone();
+    tokio::select! {
+        result=axum::serve(listener,router(state)).into_future() => result?,
+        _=async { tokio::select! { _=stop.notified()=>{}, _=tokio::signal::ctrl_c()=>{} } } => {
+            processes.stop_all();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    std::fs::remove_file(directory.join("daemon.json"))?;
+    Ok(())
+}
+
+/// Embedded assets make the browser mode independent of installed files or Node.js.
+fn router(state: Local) -> Router {
+    Router::new()
+        .route("/",get(||async { Html(include_str!("../web/index.html")) }))
+        .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
+        .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
+        .route("/api/health",get(||async { Json(json!({"ok":true})) }))
+        .route("/api/events",get(events)).route("/api/access",post(access))
+        .route("/api/state",get(state_view)).route("/api/account",post(account))
+        .route("/api/settings",post(settings)).route("/api/backend",post(backend))
+        .route("/api/login",post(login)).route("/api/login/poll",post(poll_login)).route("/api/logout",post(logout))
+        .route("/api/chat",post(chat)).route("/api/steer",post(steer)).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
+        .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/stop",post(stop))
+        .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
+        .route("/api/processes/{id}/stop",post(process_stop))
+        .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
+}
+
+/// Block DNS rebinding, cross-origin requests, and unauthenticated local API callers.
+async fn security(State(state): State<Local>, request: Request<Body>, next: Next) -> Response {
+    let host = state.connection.url.strip_prefix("http://").unwrap();
+    if request.headers().get(header::HOST).and_then(|v|v.to_str().ok()) != Some(host) { return StatusCode::FORBIDDEN.into_response(); }
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        if origin.to_str().ok()!=Some(state.connection.url.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+    }
+    if request.uri().path().starts_with("/api/") {
+        let expected = format!("Bearer {}",state.connection.secret);
+        if request.headers().get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()) != Some(expected.as_str()) {
+            return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Open Linux Assistant from its executable to authorize this tab"}))).into_response();
+        }
+    }
+    let mut response = next.run(request).await;
+    for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
+        ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
+        response.headers_mut().insert(axum::http::HeaderName::from_static(key),value.parse().unwrap());
+    }
+    response
+}
+
+#[derive(Deserialize)]
+struct SettingsInput { character: Character, commands_enabled: bool }
+#[derive(Deserialize)]
+struct BackendInput { backend: String }
+#[derive(Deserialize)]
+struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid> }
+#[derive(Deserialize)]
+struct Decision { id: Uuid, approve: bool }
+
+/// Read the same assistant state in either interface.
+async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live.0.borrow()["state"].clone()) }
+/// Reconnect without waiting for the engine or restarting its current operation.
+async fn events(State(state): State<Local>) -> Response { state.live.response() }
+/// Revoking automatic execution is immediate, even during a long command or provider request.
+async fn access(State(state): State<Local>, Json(input): Json<Value>) -> LocalResult {
+    let enabled=input["enabled"].as_bool().context("Expected an execution permission")?;
+    let mut pending=None;
+    if enabled {
+        let engine=state.engine.try_lock().context("Wait for the current operation before enabling full access")?;
+        if engine.saved.token.is_none() || !engine.saved.settings.commands_enabled { return Err(anyhow::anyhow!("Enable local commands first").into()); }
+        pending=engine.saved.pending.as_ref().map(|pending|pending.id);
+    }
+    state.full_access.store(enabled,std::sync::atomic::Ordering::SeqCst);
+    state.live.0.send_modify(|view|view["state"]["full_access"]=json!(enabled));
+    if let Some(id)=pending { return run(state,Operation::Decide(id,true)).await; }
+    Ok(Json(state.live.0.borrow()["state"].clone()))
+}
+/// Persist the shared personality and execution permission.
+async fn settings(State(state): State<Local>, Json(input): Json<SettingsInput>) -> LocalResult {
+    let mut engine = state.engine.try_lock().context("Assistant is busy")?;
+    engine.settings(input.character,input.commands_enabled)?;
+    Ok(Json(engine.state()))
+}
+/// Set the account backend before setup or when moving to a different deployment.
+async fn backend(State(state): State<Local>, Json(input): Json<BackendInput>) -> LocalResult {
+    let mut engine = state.engine.try_lock().context("Assistant is busy")?;
+    engine.set_backend(input.backend)?;
+    Ok(Json(engine.state()))
+}
+/// Fetch the latest backend account and balance.
+async fn account(State(state): State<Local>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.refresh_account().await?)) }
+/// Begin the shared hosted login flow.
+async fn login(State(state): State<Local>) -> LocalResult { Ok(Json(json!({"url":state.engine.try_lock().context("Assistant is busy")?.login().await?}))) }
+/// Check approval without exposing the device polling secret to browser JavaScript.
+async fn poll_login(State(state): State<Local>) -> LocalResult { Ok(Json(json!({"complete":state.engine.try_lock().context("Assistant is busy")?.poll_login().await?}))) }
+/// Revoke this session and clear its local conversation.
+async fn logout(State(state): State<Local>) -> LocalResult {
+    let mut engine = state.engine.try_lock().context("Assistant is busy")?;
+    engine.logout().await?;
+    Ok(Json(engine.state()))
+}
+/// Accept only text and a working directory, never client-supplied tool definitions.
+async fn chat(State(state): State<Local>, Json(input): Json<ChatInput>) -> LocalResult {
+    let cwd = match input.cwd { Some(path) => path,None => dirs::home_dir().context("Home directory not found")?.to_string_lossy().into_owned() };
+    state.controls.enqueue(crate::controls::Queued { id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd })?;
+    if state.live.0.borrow()["busy"]==true || !state.live.0.borrow()["state"]["pending"].is_null() { return Ok(Json(state.live.0.borrow()["state"].clone())); }
+    run(state,Operation::Next).await
+}
+/// Retry the stored idempotent request after a transport or provider failure.
+async fn retry(State(state): State<Local>) -> LocalResult { run(state,Operation::Retry).await }
+/// Reset conversation and invalidate all stale approvals.
+async fn new_chat(State(state): State<Local>) -> LocalResult {
+    let mut engine = state.engine.try_lock().context("Assistant is busy")?;
+    engine.new_chat()?;
+    Ok(Json(engine.state()))
+}
+/// Execute only the exact proposal identified by the one-use approval ID.
+async fn decide(State(state): State<Local>, Json(input): Json<Decision>) -> LocalResult {
+    run(state,Operation::Decide(input.id,input.approve)).await
+}
+/// Steering bypasses the engine lock and uses the backend's active-turn protocol.
+async fn steer(State(state):State<Local>,Json(input):Json<protocol::Steering>)->LocalResult {
+    let result=state.controls.send("steer",serde_json::to_value(&input)?).await?;
+    state.live.0.send_modify(|view| {
+        if view["busy"]==true {
+            let inputs=view["steering"].as_array_mut().unwrap();
+            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) { inputs.push(json!(input)); }
+        }
+    });
+    Ok(Json(result))
+}
+/// Stop the current task and its owned command; queued messages remain paused.
+async fn interrupt(State(state):State<Local>)->LocalResult {
+    state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
+    state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
+    state.processes.stop_all();
+    state.controls.interrupt().await?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Removing queued input never sends it to the model.
+async fn remove_queued(State(state):State<Local>,axum::extract::Path(id):axum::extract::Path<Uuid>)->LocalResult {
+    state.controls.remove(id)?;
+    Ok(Json(json!({"ok":true})))
+}
+enum Operation { Next, Retry, Decide(Uuid,bool) }
+
+/// Own the task independently of browser connections; consume every approved proposal exactly once.
+async fn run(state: Local, operation: Operation) -> LocalResult {
+    let mut engine=match state.engine.clone().try_lock_owned() {
+        Ok(engine)=>engine,
+        Err(_) if matches!(operation,Operation::Next)=>return Ok(Json(state.live.0.borrow()["state"].clone())),
+        Err(error)=>return Err(anyhow::anyhow!(error).into()),
+    };
+    state.controls.stopped.store(false,std::sync::atomic::Ordering::SeqCst);
+    state.live.0.send_modify(|view| { view["busy"]=json!(true); view["error"]=Value::Null; view["activity"]=Value::Null; view["steering"]=json!([]); });
+    Ok(Json(tokio::spawn(async move {
+        let result=async {
+            match operation {
+                Operation::Next=> { engine.next().await?; }
+                Operation::Retry=> { engine.retry().await?; }
+                Operation::Decide(id,approve)=> { engine.decide(id,approve).await?; }
+            }
+            loop {
+                if state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                if let Some(pending)=engine.saved.pending.clone() {
+                    if !state.full_access.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                    engine.decide(pending.id,true).await?;
+                    continue;
+                }
+                if !engine.next().await? { break; }
+            }
+            Ok::<_,anyhow::Error>(engine.state())
+        }.await;
+        state.live.state(engine.state());
+        state.live.0.send_modify(|view| {
+            view["busy"]=json!(false);
+            view["steering"]=json!([]);
+            view["error"]=json!(result.as_ref().err().map(ToString::to_string));
+            if result.is_ok() { view["activity"]=Value::Null; }
+        });
+        result
+    }).await??))
+}
+
+/// Process polling and stopping never wait for the assistant or an AI request.
+async fn process_list(State(state): State<Local>) -> Json<Value> { Json(state.processes.list()) }
+/// Return captured streams only when the user expands a process record.
+async fn process_detail(State(state): State<Local>, axum::extract::Path(id): axum::extract::Path<Uuid>) -> LocalResult {
+    Ok(Json(serde_json::to_value(state.processes.get(id)?)?))
+}
+/// Stop only a daemon-owned process tree identified by its opaque execution ID.
+async fn process_stop(State(state): State<Local>, axum::extract::Path(id): axum::extract::Path<Uuid>) -> LocalResult {
+    state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
+    state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
+    state.processes.stop(id)?;
+    Ok(Json(json!({"ok":true})))
+}
+/// Return a backend-created payment URL without handling card information locally.
+async fn checkout(State(state): State<Local>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.checkout().await?)) }
+/// Stop explicitly; closing a browser tab leaves the assistant available to the CLI.
+async fn stop(State(state): State<Local>) -> Json<Value> { state.stop.notify_one(); Json(json!({"ok":true})) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    /// A disconnected caller cannot repeat a command; revoking full access works while the shell runs.
+    #[tokio::test]
+    async fn streaming_task_survives_disconnect_and_revokes_automatic_execution() -> Result<()> {
+        let directory=tempfile::tempdir()?;
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let provider=Router::new().route("/v1/chat",post(|Json(request):Json<protocol::ChatRequest>|async move {
+            let proposal=protocol::CommandProposal { cwd:request.cwd,reason:"Write one marker".into(),
+                command:if cfg!(windows) { "Add-Content -Encoding UTF8 -LiteralPath 'runs.txt' -Value 'once'; Start-Sleep -Milliseconds 700" }
+                    else { "printf 'once\\n' >> runs.txt; sleep 0.7" }.into() };
+            let response=protocol::ChatResponse { reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
+            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
+        }));
+        let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });
+        let mut engine=Engine::open(directory.path())?;
+        engine.set_backend(backend)?;
+        engine.saved.token=Some("fixture".into());
+        engine.settings(Character::Guide,true)?;
+        engine.full_access.store(true,std::sync::atomic::Ordering::SeqCst);
+        let live=engine.live.clone();
+        let processes=engine.processes.clone();
+        let app=router(Local { controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
+            connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) });
+        let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json")
+            .body(Body::from(json!({"text":"Write a marker","cwd":directory.path()}).to_string()))?;
+        let caller=tokio::spawn(app.clone().oneshot(request));
+        tokio::time::timeout(Duration::from_secs(10),async {
+            while processes.list().as_array().unwrap().is_empty() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await?;
+        caller.abort();
+        for (method,path,body) in [("POST","/api/access","{\"enabled\":false}"),("GET","/api/state",""),("GET","/api/events","")] {
+            let request=Request::builder().method(method).uri(path).header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json").body(Body::from(body))?;
+            assert_eq!(tokio::time::timeout(Duration::from_secs(1),app.clone().oneshot(request)).await??.status(),StatusCode::OK);
+        }
+        tokio::time::timeout(Duration::from_secs(10),async {
+            while live.0.borrow()["busy"]==true { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await?;
+        assert!(live.0.borrow()["error"].is_null(),"{}",*live.0.borrow());
+        assert_eq!(std::fs::read_to_string(directory.path().join("runs.txt"))?.lines().count(),1);
+        assert_eq!(processes.list().as_array().unwrap().len(),1);
+        assert!(!live.0.borrow()["state"]["pending"].is_null());
+        assert_eq!(live.0.borrow()["state"]["full_access"],false);
+        provider.abort();
+        Ok(())
+    }
+
+    /// Process polling and tree cancellation must work while a command holds the conversation lock.
+    #[tokio::test]
+    async fn controls_processes_while_conversation_is_busy() -> Result<()> {
+        let directory=tempfile::tempdir()?;
+        let engine=Engine::open(directory.path())?;
+        let processes=engine.processes.clone();
+        let live=engine.live.clone();
+        let full_access=engine.full_access.clone();
+        let controls=engine.controls.clone();
+        let engine=Arc::new(Mutex::new(engine));
+        let local=Local { controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let app=router(local);
+        let id=Uuid::new_v4();
+        let proposal=protocol::CommandProposal { reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
+            command:if cfg!(windows) { "[Console]::Out.WriteLine('live 世界'); [Console]::Error.WriteLine('problem'); Start-Sleep 20" } else { "printf 'live 世界\\n'; printf 'problem\\n' >&2; sleep 20" }.into() };
+        let runner=processes.clone();
+        let task=tokio::spawn(async move { runner.run(id,&proposal).await });
+        let _busy=engine.lock().await;
+        tokio::time::timeout(Duration::from_secs(10),async {
+            loop {
+                if processes.get(id).is_ok_and(|r|r.stdout.contains("live 世界") && r.stderr.contains("problem")) { break; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await?;
+        for (method,path) in [("GET","/api/processes".into()),("GET",format!("/api/processes/{id}")),("POST",format!("/api/processes/{id}/stop"))] {
+            let request=Request::builder().method(method).uri(path).header(header::HOST,"127.0.0.1:1234").header(header::AUTHORIZATION,"Bearer test-token").body(Body::empty())?;
+            let response=tokio::time::timeout(Duration::from_secs(1),app.clone().oneshot(request)).await??;
+            assert_eq!(response.status(),StatusCode::OK);
+        }
+        let record=tokio::time::timeout(Duration::from_secs(5),task).await???;
+        assert!(record.pid.is_some() && !record.arguments.is_empty());
+        assert!(record.finished_at.is_some() && record.error.as_deref().unwrap().contains("Stopped by user"));
+        assert!(processes.stop(id).is_err());
+        let recovered=Processes::open(directory.path())?.get(id)?;
+        assert_eq!(recovered.stdout,record.stdout);
+        assert_eq!(recovered.stderr,record.stderr);
+        Ok(())
+    }
+    /// Possession of a token cannot bypass the Host and Origin checks.
+    #[tokio::test]
+    async fn protects_local_api() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let engine=Engine::open(directory.path())?;
+        let local = Local { controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let app = router(local);
+        for (host,origin,token,status) in [
+            ("127.0.0.1:1234",None,None,StatusCode::UNAUTHORIZED),
+            ("evil.example",None,Some("Bearer test-token"),StatusCode::FORBIDDEN),
+            ("127.0.0.1:1234",Some("https://evil.example"),Some("Bearer test-token"),StatusCode::FORBIDDEN),
+            ("127.0.0.1:1234",None,Some("Bearer test-token"),StatusCode::OK),
+        ] {
+            let mut request = Request::builder().uri("/api/state").header(header::HOST,host);
+            if let Some(origin) = origin { request = request.header(header::ORIGIN,origin); }
+            if let Some(token) = token { request = request.header(header::AUTHORIZATION,token); }
+            assert_eq!(app.clone().oneshot(request.body(Body::empty())?).await?.status(),status);
+        }
+        Ok(())
+    }
+}

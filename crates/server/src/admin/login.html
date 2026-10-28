@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Operator sign in · Linux Assistant</title>
+    <link rel="stylesheet" href="/admin/dashboard.css">
+</head>
+<body class="login">
+    <main class="login-card">
+        <span class="eyebrow">LINUX ASSISTANT / OPERATIONS</span>
+        <h1>Operator sign in</h1>
+        <p>Manage accounts, usage, users and credits.</p>
+        <form action="/admin/login" method="post">
+            <label for="password">Dashboard password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+            <button type="submit">Sign in</button>
+        </form>
+        <small>Configured with ASSISTANT_ADMIN_PASSWORD on the server.</small>
+    </main>
+</body>
+</html>

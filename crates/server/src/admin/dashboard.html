@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Operations · Linux Assistant</title>
+    <link rel="stylesheet" href="/admin/dashboard.css">
+    <script src="/admin/dashboard.js" defer></script>
+</head>
+<body>
+    <header class="topbar">
+        <a class="brand" href="/admin">LA<span>Linux Assistant <small>Operations</small></span></a>
+        <nav aria-label="Dashboard sections"><a href="#accounts">Accounts</a><a href="#usage">Usage</a><a href="#users">Users</a><a href="#payments">Payments</a></nav>
+        <button id="logout" class="quiet">Sign out</button>
+    </header>
+    <main>
+        <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1>Operations overview</h1></div><span id="connection" role="status">Connecting…</span></div>
+        <div id="notice" role="status" hidden></div>
+        <section id="accounts">
+            <div class="section-heading"><div><h2>ChatGPT accounts</h2><p>ChatGPT quotas refresh every 5 minutes. This page reads cached status every 10 seconds.</p></div><button id="refresh" class="quiet">Refresh display</button></div>
+            <div id="account-cards" class="account-grid"></div>
+            <p class="hint">Quotas include activity on the ChatGPT account outside this service. Test prompts consume the selected account’s allowance and are recorded as admin tests; no user credits are deducted.</p>
+        </section>
+        <section id="usage">
+            <div class="section-heading"><div><h2>Usage &amp; credits</h2><p id="coverage">Loading measurement coverage…</p></div></div>
+            <form id="filters" class="filters">
+                <label>From (local time)<input id="from" type="datetime-local" required></label>
+                <label>Until (local time)<input id="to" type="datetime-local" required></label>
+                <label>User ID<input id="user-filter" type="number" min="1" placeholder="All users"></label>
+                <label>Account<select id="account-filter"><option value="">All accounts</option></select></label>
+                <label>Purpose<select id="purpose"><option value="">All purposes</option><option value="conversation">Conversation</option><option value="admin_test">Admin test</option></select></label>
+                <button type="submit">Apply</button>
+            </form>
+            <div id="metrics" class="metrics"></div>
+            <div class="chart-grid">
+                <article class="panel"><h3>Measured tokens over time</h3><canvas id="token-chart" role="img" aria-label="Token consumption over time"></canvas><p class="hint">Input + output. Cached input is part of input; reasoning is part of output.</p></article>
+                <article class="panel"><h3>Application credits over time</h3><canvas id="credit-chart" role="img" aria-label="Application credit debits and refunds over time"></canvas><p class="hint">Debits minus refunds. Credit reports follow date and user filters; account and purpose filters apply only to token reports.</p></article>
+            </div>
+            <p class="hint">Breakdowns attribute user credits to successful recorded attempts. Admin tests and failed attempts cost no application credits. Earlier credit activity remains in the ledger below.</p>
+            <div class="chart-grid"><article class="panel"><h3>By account</h3><div id="account-breakdown" class="table-wrap"></div></article><article class="panel"><h3>By purpose &amp; model</h3><div id="purpose-breakdown" class="table-wrap"></div><div id="model-breakdown" class="table-wrap"></div></article></div>
+            <details class="panel"><summary>Quota history · hourly snapshots</summary><div id="quota-history" class="table-wrap"></div><p class="hint">Latest 2,000 hourly readings in the selected range. These percentages cannot be converted into a reliable token allowance.</p></details>
+            <article class="panel"><h3>Provider attempts</h3><p class="hint">Failures and failover attempts are included. Unknown or interrupted measurements may be incomplete. Times below are UTC.</p><div id="activity" class="table-wrap"></div></article>
+            <article class="panel"><h3>Credit ledger</h3><div id="ledger" class="table-wrap"></div></article>
+            <div class="pager"><button id="previous" class="quiet">Previous</button><span id="page-number"></span><button id="next" class="quiet">Next</button></div>
+        </section>
+        <section id="users">
+            <div class="section-heading"><div><h2>Users <span id="user-count" class="badge"></span></h2><p>All-time balances and recorded token usage.</p></div><form id="user-search"><input id="search" type="search" placeholder="Search email" aria-label="Search email"><button>Search</button></form></div>
+            <div id="user-table" class="table-wrap panel"></div>
+            <div class="pager"><button id="user-previous" class="quiet">Previous</button><span id="user-page"></span><button id="user-next" class="quiet">Next</button></div>
+        </section>
+        <section id="payments" class="panel">
+            <h2>Payments</h2><p id="payment-status"></p>
+            <p>Open a user’s controls and choose <strong>Create payment link</strong>. Share the resulting Stripe Checkout URL yourself. A verified paid webhook adds the configured credit pack exactly once.</p>
+            <p>Configure <code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_ID</code> and <code>ASSISTANT_PACK_CREDITS</code> in <code>/etc/linux-assistant/server.env</code>, then restart the service.</p>
+            <p>Stripe webhook: <code>/webhooks/stripe</code> · Snapshot events: <code>checkout.session.completed</code>, <code>checkout.session.async_payment_succeeded</code>.</p>
+            <p>PayPal is not integrated. For a payment received elsewhere, verify it in your payment provider, then add credits manually with its transaction reference as the reason. Refunds and disputes require a manual credit adjustment.</p>
+        </section>
+    </main>
+    <dialog id="user-dialog">
+        <button id="close-user" class="quiet close" aria-label="Close user controls">Close</button>
+        <h2 id="selected-email"></h2><p id="selected-user"></p>
+        <form id="credit-form"><label>Credit adjustment (positive or negative)<input id="credit-delta" type="number" min="-1000000000" max="1000000000" step="1" required></label><label>Reason / payment reference<input id="credit-note" maxlength="500" required></label><button>Apply adjustment</button></form>
+        <div class="actions"><button id="create-checkout">Create payment link</button><button id="block-user" class="quiet"></button><button id="revoke-user" class="quiet">Revoke sessions</button><button id="filter-user" class="quiet">View usage</button></div>
+        <p id="user-result" role="status"></p>
+        <a id="checkout-url" target="_blank" rel="noopener noreferrer" hidden></a>
+    </dialog>
+</body>
+</html>

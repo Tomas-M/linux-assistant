@@ -1,0 +1,40 @@
+[package]
+name = "assistant-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+fs2.workspace = true
+protocol.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+uuid.workspace = true
+codex-app-server.workspace = true
+codex-arg0.workspace = true
+codex-config.workspace = true
+codex-utils-cli.workspace = true
+rusqlite = { version = "0.39", features = ["bundled"] }
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "webpki-roots"] }
+
+[build-dependencies]
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[[example]]
+name = "provider-fixture"
+path = "fixtures/provider.rs"

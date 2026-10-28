@@ -1,0 +1,22 @@
+[Unit]
+Description=Linux Assistant backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=linux-assistant
+Group=linux-assistant
+WorkingDirectory=/var/lib/linux-assistant
+EnvironmentFile=/etc/linux-assistant/server.env
+ExecStart=/usr/local/bin/assistant-server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/linux-assistant
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+/target/
+/dist/
+/.tools/
+/.dev/
+/.env
+*.db
+*.db-shm
+*.db-wal
+*.lockfile
+__pycache__/
+*.py[cod]
+/a.txt
+/design/client-preview.html
