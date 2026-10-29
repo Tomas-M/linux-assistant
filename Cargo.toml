@@ -41,6 +41,6 @@ tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev 
 debug = "line-tables-only"
 
 [profile.release]
-lto = "thin"
-codegen-units = 4
+lto = "off"
+codegen-units = 16
 strip = true

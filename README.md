@@ -140,6 +140,8 @@ An account changes only when a preflight usage snapshot reports exhaustion or a 
 
 Upstream source lives untouched in the `vendor/codex` Git submodule. Its exact commit, the root `Cargo.lock`, dependency patches, and `rust-toolchain.toml` make builds reproducible. The small Rust API adapter is in `crates/server/src/embedded.rs`; our JSONL integration and tests live under `crates/server/src/provider/`. The backend's first source build is substantially larger and slower than the client build.
 
+Release builds use `lto = "off"` and 16 code-generation units to favor build time over the smallest possible executable. Normal release optimization and symbol stripping remain enabled. Changing these settings causes a full rebuild once; the Codex source and update workflow remain unmodified.
+
 With Python 3.11+, Git, Rust/rustup and C/C++ build tools available:
 
 ```sh
