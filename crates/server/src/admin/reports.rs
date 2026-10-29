@@ -37,8 +37,8 @@ pub(super) async fn report(State(app): State<App>, Query(filter): Query<Filter>)
     let conn=app.db.0.lock().unwrap();
     let params=rusqlite::params![from,to,filter.user,filter.account,filter.purpose];
     let selection="FROM usage x LEFT JOIN users u ON u.id=x.user_id WHERE x.started_at>=?1 AND x.started_at<?2 AND (?3 IS NULL OR x.user_id=?3) AND (?4 IS NULL OR x.account_home=?4) AND (?5 IS NULL OR x.purpose=?5)";
-    // Attribute an application debit only to the successful attempt whose reply was committed.
-    let charge="CASE WHEN x.error IS NULL AND x.finished_at IS NOT NULL THEN COALESCE((SELECT -l.delta FROM requests r JOIN ledger l ON l.reference='request:'||r.user_id||':'||r.id WHERE r.user_id=x.user_id AND r.id=x.request_id AND r.response IS NOT NULL),0) ELSE 0 END";
+    // Actual debits include recorded failures and allocate task rounding in attempt order.
+    let charge="COALESCE((SELECT -delta FROM ledger WHERE reference='usage:'||x.id AND user_id=x.user_id),0)";
     let totals=format!("COUNT(*) AS attempts,SUM(finished_at IS NULL) AS running,SUM(error IS NOT NULL) AS failed,COUNT(total_tokens) AS measured,
         SUM(input_tokens) AS input_tokens,SUM(cached_tokens) AS cached_tokens,SUM(output_tokens) AS output_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(total_tokens) AS total_tokens,SUM({charge}) AS credits_charged");
     let summary=rows(&conn,&format!("SELECT {totals} {selection}"),params)?;
@@ -50,7 +50,7 @@ pub(super) async fn report(State(app): State<App>, Query(filter): Query<Filter>)
     let activity=rows(&conn,&format!("SELECT x.*,u.email,{charge} AS credits_charged {selection} ORDER BY x.id DESC LIMIT 100 OFFSET {}",page*100),params)?;
     let ledger_filter="FROM ledger l LEFT JOIN users u ON u.id=l.user_id LEFT JOIN credit_adjustments a ON a.ledger_id=l.id WHERE l.created_at>=?1 AND l.created_at<?2 AND (?3 IS NULL OR l.user_id=?3)";
     let ledger_params=rusqlite::params![from,to,filter.user];
-    let credit_totals="COALESCE(SUM(CASE WHEN reference LIKE 'request:%' THEN -delta ELSE 0 END),0) AS debited,
+    let credit_totals="COALESCE(SUM(CASE WHEN reference LIKE 'request:%' OR reference LIKE 'usage:%' OR reference LIKE 'task:%' THEN -delta ELSE 0 END),0) AS debited,
         COALESCE(SUM(CASE WHEN reference LIKE 'refund:%' THEN delta ELSE 0 END),0) AS refunded,
         COALESCE(SUM(CASE WHEN delta>0 AND reference NOT LIKE 'refund:%' THEN delta ELSE 0 END),0) AS added";
     let credits=rows(&conn,&format!("SELECT COUNT(*) AS entries,{credit_totals} {ledger_filter}"),ledger_params)?;

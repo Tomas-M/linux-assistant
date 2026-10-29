@@ -24,6 +24,7 @@ pub struct Message { pub role: Role, pub text: String }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatRequest {
+    pub task_id: Uuid,
     pub base: usize,
     pub request_id: Uuid,
     pub conversation_id: Uuid,
@@ -64,7 +65,7 @@ pub struct ProgressText { pub id: String, pub text: String }
 pub enum ChatEvent {
     Progress { progress: Progress },
     Complete { response: ChatResponse },
-    Error { message: String, refunded: bool, steering: Vec<Steering> },
+    Error { message: String, settled: bool, credits: Option<i64>, steering: Vec<Steering> },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

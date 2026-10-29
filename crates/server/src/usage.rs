@@ -35,7 +35,7 @@ impl<'a> Attempt<'a> {
         Ok(())
     }
 
-    /// Preserve failures even when the application refunds its own credit.
+    /// Preserve measured usage on failures as well as successful attempts.
     pub fn finish(&mut self, error: Option<&str>) -> Result<()> {
         self.db.0.lock().unwrap().execute("UPDATE usage SET finished_at=?1,error=?2 WHERE id=?3",params![now(),error,self.id])?;
         self.finished=true;

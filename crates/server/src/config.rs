@@ -13,8 +13,10 @@ pub struct Config {
     pub database: PathBuf,
     #[arg(long, help = "Local-only fake AI and email sign-in; never enables real payments")]
     pub dev: bool,
-    #[arg(long, env = "ASSISTANT_FREE_CREDITS", default_value_t = 25)]
+    #[arg(long, env = "ASSISTANT_FREE_CREDITS", default_value_t = 100)]
     pub free_credits: i64,
+    #[command(flatten)]
+    pub pricing: crate::billing::Pricing,
     #[arg(long, env = "ASSISTANT_ADMIN_PASSWORD", hide_env_values = true)]
     pub admin_password: Option<String>,
     #[arg(long, hide = true)]

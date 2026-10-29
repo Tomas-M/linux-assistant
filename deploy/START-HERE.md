@@ -1,22 +1,32 @@
 # Server source bundle
 
-## Update for in-client email sign-in and queued editing
+## Update for token billing
 
-Deploy the backend and client together. The client now uses JSON email verification, six-digit codes, and no character field. This update does not require a backend database wipe. Existing users, credits, sessions and usage records remain.
+Deploy the backend and client together. Token billing adds task IDs and replaces the request schema. Reset conversation state once using the script below; it makes a private SQLite backup and preserves users, sessions, existing ledger balances, purchases, usage and ChatGPT sign-ins. Wait for active tasks to finish before stopping the service. Any unfinished, unbilled work removed by an explicit reset is waived; the script does not invent refunds.
 
 ```sh
 # Build the new binary before stopping the running service.
 cd /var/www/html/linux-assistant
 sh scripts/build_server.sh
 
-# Install the new backend without clearing its database.
+# Edit these settings in the existing private file; preserve SMTP, account, admin and payment settings.
+nano /etc/linux-assistant/server.env
+# ASSISTANT_FREE_CREDITS=100
+# ASSISTANT_INPUT_CREDITS_PER_MILLION=200
+# ASSISTANT_CACHED_INPUT_CREDITS_PER_MILLION=10
+# ASSISTANT_OUTPUT_CREDITS_PER_MILLION=1000
+
+# One-time reset for the new task/request schema. This stops the service and creates a database backup.
+sh scripts/reset_conversations.sh
+
+# Install the newly built backend and start the service.
 sh scripts/install_server_update.sh
 
 # Verify startup. Then test a streamed conversation, steering, and Stop through Apache.
 curl --fail https://ai.slax.org/health
 ```
 
-The existing SMTP configuration is reused. Email and code entry stay inside the client. Public backend APIs allow requests from any origin; local command APIs and the administrator dashboard retain their access controls. Test email delivery and a conversation after deployment. Full access is enabled by default when local commands are allowed.
+Rates are credits per million tokens, loaded at startup. For later price changes, edit the three rate settings and run `systemctl restart linux-assistant.service`; no further reset is needed. New tasks use the changed rates. Tasks already admitted keep their original rates, including across a restart. The welcome grant applies only to new users and does not top up existing balances. Stripe pack credits and prices are unchanged.
 
 Stop the local assistant through Settings → Stop local assistant (closing its browser is insufficient). Run the **new** executable once with `--reset-chat` to clear old pending requests and queued input. The reset preserves sign-in and settings and backs up local state. Every launch requires `--backend`; a hostname without a scheme uses HTTPS. Backend configuration and character selection are no longer in the UI. Reset refuses to run while a daemon is running.
 
@@ -98,7 +108,10 @@ Set these values to your public domain and SMTP account. The host, port, usernam
 ASSISTANT_LISTEN=127.0.0.1:8787
 ASSISTANT_PUBLIC_URL=https://assistant.example.com
 ASSISTANT_DATABASE=/var/lib/linux-assistant/assistant.db
-ASSISTANT_FREE_CREDITS=25
+ASSISTANT_FREE_CREDITS=100
+ASSISTANT_INPUT_CREDITS_PER_MILLION=200
+ASSISTANT_CACHED_INPUT_CREDITS_PER_MILLION=10
+ASSISTANT_OUTPUT_CREDITS_PER_MILLION=1000
 ASSISTANT_CODEX_HOMES=/var/lib/linux-assistant/account-1
 ASSISTANT_SMTP_HOST=smtp.gmail.com
 ASSISTANT_SMTP_PORT=465
@@ -169,7 +182,7 @@ Per-account tests use short-lived provider threads, with no tools or local execu
 
 ## Streaming client update
 
-Deploy the new backend before using the rebuilt client. No new environment variables or database reset are needed. The client requests SSE from the existing `/v1/chat` route; authentication, quota selection, credit reservations and usage reporting keep their existing behavior. Output analysis continues to use the JSON representation.
+Deploy the backend and rebuilt client using the token-billing update procedure above. The client requests SSE from `/v1/chat`; both streaming and JSON responses use the same task accounting and measured token prices.
 
 ```sh
 # Run from the extracted update directory to build the pinned backend sources.

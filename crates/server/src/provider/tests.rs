@@ -6,19 +6,21 @@ use uuid::Uuid;
 
 /// Fixtures and HTTP tests use the same conversation schema as the real client.
 fn request() -> ChatRequest {
-    ChatRequest { base:0,request_id:Uuid::new_v4(),conversation_id:Uuid::new_v4(),platform:Platform::Linux,
+    let id=Uuid::new_v4();
+    ChatRequest { task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:Platform::Linux,
         messages:vec![Message { role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
 }
 
 /// Persist a provider success exactly as the production HTTP handler does.
 async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut ChatRequest) -> Result<Answer> {
-    db.reserve(user,&request.request_id.to_string(),&crate::db::hash(&serde_json::to_string(request)?),&request.conversation_id.to_string())?;
+    db.reserve(user,request,&crate::db::hash(&serde_json::to_string(request)?),&config.pricing)?;
     let answer = pool.answer(config,db,user,request).await?;
     let completed=db.complete(user,request,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())?;
     request.base=completed.revision;
     request.messages.clear();
     request.messages.push(Message { role:Role::User,text:"Continue".into() });
     request.request_id = Uuid::new_v4();
+    request.task_id=request.request_id;
     Ok(answer)
 }
 
@@ -273,7 +275,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let mut attempt=crate::usage::Attempt::start(&db,None,&chat,"embedded-fixture","admin_test")?;
     let user=db.user("native-steer@example.test",None,5)?;
-    db.reserve(user,&chat.request_id.to_string(),"native",&chat.conversation_id.to_string())?;
+    db.reserve(user,&chat,"native",&settings.pricing)?;
     let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
     let (ack,result)=tokio::sync::oneshot::channel();
     sender.send(crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"NATIVE_STEER 世界".into() },ack)).await?;
@@ -401,7 +403,7 @@ async fn integration_provider_controls() -> Result<()> {
         let db=Db::open(std::path::Path::new(":memory:"))?;
         let user=db.user("controls@example.test",None,5)?;
         let chat=request();
-        db.reserve(user,&chat.request_id.to_string(),"control",&chat.conversation_id.to_string())?;
+        db.reserve(user,&chat,"control",&config.pricing)?;
         let mut pool=Pool::new(&config)?;
         pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
         let (sender,mut receiver)=tokio::sync::mpsc::channel(4);

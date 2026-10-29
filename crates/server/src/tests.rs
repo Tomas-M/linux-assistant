@@ -15,7 +15,8 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
     let url=format!("http://{}/v1/chat",listener.local_addr()?);
     let app=router(state.clone());
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-    let input=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
+    let id=uuid::Uuid::new_v4();
+    let input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
         "messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     let http=reqwest::Client::new();
     let mut response=http.post(&url).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
@@ -23,7 +24,7 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
     assert_eq!(response.headers()["content-type"],"text/event-stream");
     let first=tokio::time::timeout(Duration::from_secs(1),response.chunk()).await??.unwrap();
     assert!(std::str::from_utf8(&first)?.contains("progress"));
-    assert_eq!(state.db.balance(user)?,2);
+    assert_eq!(state.db.balance(user)?,3);
     drop(response);
     let pending=http.post(&url).bearer_auth(&token).json(&input).send().await?;
     assert_eq!(pending.status(),StatusCode::CONFLICT);
@@ -73,7 +74,8 @@ async fn login_and_chat_are_bound_to_user_and_request() -> anyhow::Result<()> {
     let (_,session)=request(&app,"/v1/auth/poll",None,poll.clone()).await?;
     let token=session["token"].as_str().unwrap();
     assert_eq!(request(&app,"/v1/auth/poll",None,poll).await?.0,StatusCode::BAD_REQUEST);
-    let chat=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
+    let id=uuid::Uuid::new_v4();
+    let chat=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     assert_eq!(request(&app,"/v1/chat",None,chat.clone()).await?.0,StatusCode::UNAUTHORIZED);
     let (status,reply)=request(&app,"/v1/chat",Some(token),chat.clone()).await?;
     assert_eq!(status,StatusCode::OK);
@@ -83,15 +85,18 @@ async fn login_and_chat_are_bound_to_user_and_request() -> anyhow::Result<()> {
     assert_eq!(state.db.balance(user)?,1);
     let mut stale=chat.clone();
     stale["request_id"]=json!(uuid::Uuid::new_v4());
+    stale["task_id"]=stale["request_id"].clone();
     assert_eq!(request(&app,"/v1/chat",Some(token),stale).await?.0,StatusCode::BAD_REQUEST);
     assert_eq!(state.db.balance(user)?,1);
     let mut second=chat.clone();
     second["request_id"]=json!(uuid::Uuid::new_v4());
+    second["task_id"]=second["request_id"].clone();
     second["base"]=reply["revision"].clone();
     second["messages"]=json!([{"role":"user","text":"Continue"}]);
     assert_eq!(request(&app,"/v1/chat",Some(token),second).await?.1["credits"],0);
     let mut third=chat;
     third["request_id"]=json!(uuid::Uuid::new_v4());
+    third["task_id"]=third["request_id"].clone();
     third["conversation_id"]=json!(uuid::Uuid::new_v4());
     assert_eq!(request(&app,"/v1/chat",Some(token),third).await?.0,StatusCode::PAYMENT_REQUIRED);
     request(&app,"/v1/logout",Some(token),json!({})).await?;

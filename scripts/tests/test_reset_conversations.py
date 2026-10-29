@@ -12,7 +12,7 @@ spec.loader.exec_module(reset)
 
 
 class ConversationReset(unittest.TestCase):
-    # Reset removes only conversation state, refunds incomplete requests, and creates a readable backup.
+    # Reset preserves settled credits, never invents refunds, and creates a readable backup.
     def test_preserves_business_data_and_backs_up(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'assistant.db'
@@ -23,17 +23,17 @@ class ConversationReset(unittest.TestCase):
                 db.execute("INSERT INTO sessions VALUES('session',1,9999999999)")
                 db.execute("INSERT INTO purchases VALUES('purchase',1,100,'stripe-fixture',1)")
                 db.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(1,10,'grant',1),(1,-1,'request:1:pending',1),(1,-1,'request:1:done',1)")
-                db.execute("INSERT INTO requests(user_id,id,conversation_id,fingerprint) VALUES(1,'pending','chat','pending')")
-                db.execute("INSERT INTO requests(user_id,id,conversation_id,fingerprint,response) VALUES(1,'done','chat','done','{}')")
+                db.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint) VALUES(1,'pending','pending','chat','pending')")
+                db.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint,response) VALUES(1,'done','done','chat','done','{}')")
                 db.execute("INSERT INTO conversations(user_id,id,messages) VALUES(1,'chat','[]')")
                 db.execute("INSERT INTO usage(user_id,request_id,conversation_id,account_home,purpose,started_at) VALUES(1,'pending','chat','account','conversation',1)")
             reset.reset(path)
             with closing(sqlite3.connect(path)) as db, db:
-                self.assertEqual(db.execute('SELECT SUM(delta) FROM ledger').fetchone()[0],9)
+                self.assertEqual(db.execute('SELECT SUM(delta) FROM ledger').fetchone()[0],8)
                 for table in ['users','sessions','purchases','usage']:
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],1)
                 self.assertIsNotNone(db.execute('SELECT finished_at FROM usage').fetchone()[0])
-                self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name IN ('conversations','requests')").fetchall())
+                self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name IN ('conversations','requests','billing_tasks')").fetchall())
                 db.executescript(schema)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM conversations').fetchone()[0],0)
             with closing(sqlite3.connect(next(Path(directory).glob('*.before-conversation-reset-*')))) as backup:

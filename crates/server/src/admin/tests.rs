@@ -69,7 +69,8 @@ async fn adjustments_and_user_access() -> anyhow::Result<()> {
     for _ in 0..2 { assert_eq!(request(&app,&path,&cookie,Some(input.clone())).await?.1["credits"],30); }
     let mut changed=input.clone();changed["delta"]=json!(21);
     assert_eq!(request(&app,&path,&cookie,Some(changed)).await?.0,StatusCode::BAD_REQUEST);
-    assert_eq!(request(&app,&path,&cookie,Some(json!({"id":uuid::Uuid::new_v4(),"delta":-31,"note":"Too much"}))).await?.0,StatusCode::BAD_REQUEST);
+    assert_eq!(request(&app,&path,&cookie,Some(json!({"id":uuid::Uuid::new_v4(),"delta":-31,"note":"Correction"}))).await?.1["credits"],-1);
+    assert_eq!(request(&app,&path,&cookie,Some(json!({"id":uuid::Uuid::new_v4(),"delta":31,"note":"Restore"}))).await?.1["credits"],30);
     assert_eq!(request(&app,&path,&cookie,Some(json!({"id":uuid::Uuid::new_v4(),"delta":-5,"note":"Correction"}))).await?.1["credits"],25);
     state.db.0.lock().unwrap().execute("INSERT INTO sessions VALUES(?1,?2,?3)",params![hash("user-session"),user,now()+60])?;
     assert_eq!(state.db.authenticate("user-session")?,user);
@@ -97,8 +98,8 @@ async fn reporting_and_recovery() -> anyhow::Result<()> {
         conn.execute("INSERT INTO usage(request_id,conversation_id,account_home,purpose,started_at,finished_at,total_tokens)
             VALUES('c','d','account-1','admin_test',?1,?1,12)",[now()])?;
         conn.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,-1,'request:test',?2),(?1,1,'refund:test',?2)",params![user,now()])?;
-        conn.execute("INSERT INTO requests(user_id,id,conversation_id,fingerprint,response) VALUES(?1,'a','c','test','{}')",[user])?;
-        conn.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,-1,?2,?3)",params![user,format!("request:{user}:a"),now()])?;
+        conn.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint,response) VALUES(?1,'a','a','c','test','{}')",[user])?;
+        conn.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,-1,'usage:1',?2)",params![user,now()])?;
     }
     let app=crate::router(state.clone());
     let cookie=sign_in(&app).await?;

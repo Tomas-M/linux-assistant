@@ -109,7 +109,7 @@ async fn credits(State(app): State<App>, Path(user): Path<i64>, Json(input): Jso
         let exists=tx.query_row("SELECT 1 FROM users WHERE id=?1",[user],|_|Ok(())).optional()?.is_some();
         if !exists { return Err(ApiError::bad("Unknown user")); }
         let balance:i64=tx.query_row("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE user_id=?1",[user],|r|r.get(0))?;
-        if balance.checked_add(input.delta).is_none_or(|value|value<0) { return Err(ApiError::bad("Adjustment would make the balance negative")); }
+        if balance.checked_add(input.delta).is_none() { return Err(ApiError::bad("Credit balance would overflow")); }
         tx.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,?2,?3,?4)",params![user,input.delta,reference,now()])?;
         tx.execute("INSERT INTO credit_adjustments VALUES(?1,?2,?3)",params![input.id.to_string(),tx.last_insert_rowid(),input.note])?;
     }

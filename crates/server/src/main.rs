@@ -10,6 +10,7 @@ mod mail;
 mod payments;
 mod provider;
 mod usage;
+mod billing;
 mod turns;
 #[cfg(test)]
 mod tests;
@@ -150,24 +151,20 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
         return Err(ApiError::bad("Message is too long"));
     }
     let id = input.request_id.to_string();
-    let reservation = app.db.reserve(user,&id,&hash(std::str::from_utf8(&bytes).unwrap()),&input.conversation_id.to_string())?;
+    let reservation = app.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&app.config.pricing)?;
     let streaming=headers.get(header::ACCEPT).is_some_and(|value|value=="text/event-stream");
     let (events,receiver)=tokio::sync::watch::channel(ChatEvent::Progress { progress:Default::default() });
     let reply: db::Completed = match reservation {
         Reservation::Cached(value) => serde_json::from_str(&value)?,
         Reservation::Failed(error) => {
             if !streaming { return Err(ApiError::busy(&error)); }
-            events.send_replace(ChatEvent::Error { message:error,refunded:true,steering:app.db.steering(user,input.request_id)? });
+            events.send_replace(ChatEvent::Error { message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
         Reservation::Pending => return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into())),
         Reservation::Insufficient => return Err(ApiError(StatusCode::PAYMENT_REQUIRED,"No application credits remaining".into())),
+        Reservation::Stale => return Err(ApiError::bad("Conversation revision changed; start a new chat after a server reset")),
         Reservation::New => {
-            let history = app.db.conversation(user,input.conversation_id)?.messages;
-            if input.base!=history.len() {
-                app.db.settle(user,&id,Err("Conversation revision changed".into()))?;
-                return Err(ApiError::bad("Conversation revision changed; start a new chat after a server reset"));
-            }
             let (controls,mut control_receiver)=tokio::sync::mpsc::channel(16);
             let (cancel,mut cancellation)=tokio::sync::watch::channel(false);
             app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls,cancel });
@@ -185,9 +182,9 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                     Ok(reply) => Ok(reply),
                     Err(error) => {
                         eprintln!("AI request failed: {error}");
-                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. This request was refunded." } else { "AI is unavailable or at its usage limit. This request was refunded; retry shortly." };
+                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged." } else { "AI is unavailable or at its usage limit. Recorded token usage was charged; retry shortly." };
                         if let Err(error)=task_app.db.settle(user,&id,Err(message.into())) {
-                            task_events.send_replace(ChatEvent::Error { message:"Could not confirm settlement. Retry the same request.".into(),refunded:false,steering:vec![] });
+                            task_events.send_replace(ChatEvent::Error { message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                             return Err(ApiError::from(error));
                         }
                         Err(ApiError::busy(message))
@@ -198,16 +195,16 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                         match task_app.db.balance(user) {
                             Ok(credits)=> { task_events.send_replace(ChatEvent::Complete { response:ChatResponse { reply:reply.reply.clone(),credits,revision:reply.revision,steering:reply.steering.clone() } }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { message:"Could not read the balance. Retry the same request.".into(),refunded:false,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { message:"Could not read the balance. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }
                     }
                     Err(error)=> {
-                        match task_app.db.steering(user,input.request_id) {
-                            Ok(steering)=> { task_events.send_replace(ChatEvent::Error { message:error.1.clone(),refunded:true,steering }); }
+                        match task_app.db.steering(user,input.request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?))) {
+                            Ok((steering,credits))=> { task_events.send_replace(ChatEvent::Error { message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { message:"Could not recover accepted steering. Retry the same request.".into(),refunded:false,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }

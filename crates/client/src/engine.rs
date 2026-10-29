@@ -14,6 +14,7 @@ pub struct PendingCommand { pub id: Uuid, pub proposal: CommandProposal }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Saved {
     pub conversation_id: Uuid,
+    pub task_id: Option<Uuid>,
     pub settings: Settings,
     pub token: Option<String>,
     pub messages: Vec<Message>,
@@ -34,7 +35,7 @@ impl Engine {
         let path = directory.join("state.json");
         let saved = if path.exists() { storage::read(&path)? } else {
             Saved { conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },
-                token:None,committed:0,messages:vec![],pending:None,request:None,pending_output:None }
+                task_id:None,token:None,committed:0,messages:vec![],pending:None,request:None,pending_output:None }
         };
         validate_backend(&saved.settings.backend)?;
         let live=crate::stream::Live::new();
@@ -148,6 +149,7 @@ impl Engine {
     pub async fn new_chat(&mut self) -> Result<()> {
         self.live.0.send_modify(|view| { view["steps"]=json!([]); view["activity"]=Value::Null; view["error"]=Value::Null; });
         self.saved.conversation_id = Uuid::new_v4();
+        self.saved.task_id = None;
         self.saved.messages.clear();
         self.saved.committed=0;
         self.controls.clear().await?;
@@ -163,7 +165,8 @@ impl Engine {
         ensure!(self.saved.pending.is_none(),"Approve or decline the pending command first");
         ensure!(!text.trim().is_empty() && text.len()<=MAX_MESSAGE_BYTES,"Enter a message up to 16,000 bytes");
         self.saved.messages.push(Message { role:Role::User,text });
-        if let Err(error)=self.prepare(cwd,id) { self.saved.messages.pop(); return Err(error); }
+        self.saved.task_id=Some(id);
+        if let Err(error)=self.prepare(cwd,id) { self.saved.messages.pop(); self.saved.task_id=None; return Err(error); }
         Ok(())
     }
     /// Tests and direct engine callers use the same durable input path as queued browser messages.
@@ -182,13 +185,13 @@ impl Engine {
     /// Send only new input after the last committed conversation revision.
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
         ensure!(self.saved.token.is_some(),"Sign in first");
-        let request = ChatRequest { base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
+        let request = ChatRequest { task_id:*self.saved.task_id.get_or_insert(id),base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
         ensure!(serde_json::to_vec(&request)?.len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
         self.saved.request = Some(request);
         self.save()
     }
 
-    /// Retain the same request after ambiguous failures; use a fresh ID after a known refund.
+    /// Retain ambiguous requests for idempotent recovery; start a new task after a settled failure.
     pub async fn retry(&mut self) -> Result<Value> {
         if self.saved.pending_output.is_some() { self.finish_output()?; }
         let request = self.saved.request.as_ref().context("No unfinished request")?;
@@ -198,7 +201,10 @@ impl Engine {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::PAYMENT_REQUIRED {
-                self.saved.request.as_mut().unwrap().request_id = Uuid::new_v4();
+                let id=Uuid::new_v4();
+                self.saved.task_id=Some(id);
+                self.saved.request.as_mut().unwrap().request_id=id;
+                self.saved.request.as_mut().unwrap().task_id=id;
                 self.save()?;
             }
             return Self::response::<Value>(response).await;
@@ -217,6 +223,7 @@ impl Engine {
         if self.controls.stopped.load(Ordering::SeqCst) && self.saved.pending.take().is_some() {
             self.saved.messages.push(Message { role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
         }
+        if self.saved.pending.is_none() { self.saved.task_id=None; }
         if let Some(account) = &mut self.account { account.credits = result.credits; }
         self.save()?;
         Ok(self.state())
@@ -236,12 +243,14 @@ impl Engine {
                         self.live.activity(label,Some(progress));
                     }
                     protocol::ChatEvent::Complete { response } => return Ok(response),
-                    protocol::ChatEvent::Error { message,refunded,steering } => {
-                        if refunded {
+                    protocol::ChatEvent::Error { message,settled,credits,steering } => {
+                        if let (Some(account),Some(credits))=(&mut self.account,credits) { account.credits=credits; }
+                        if settled {
                             for input in &steering { self.controls.remove(input.id).await?; }
                             self.saved.messages.extend(steering.into_iter().map(|input|Message { role:Role::User,text:input.text }));
                             let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
                             self.saved.request=None;
+                            self.saved.task_id=None;
                             if !self.controls.stopped.load(Ordering::SeqCst) { self.prepare(cwd,Uuid::new_v4())?; }
                             self.save()?;
                         }
@@ -307,6 +316,38 @@ fn validate_backend(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A settled failure updates an overdraft immediately and retries as a newly admitted task.
+    #[tokio::test]
+    async fn failed_task_keeps_balance_and_starts_a_new_identity()->Result<()> {
+        use axum::{routing::post,Json,Router};
+        let ids=Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen=ids.clone();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>| {
+            seen.lock().unwrap().push((request.task_id,request.request_id));
+            async move {
+                let event=protocol::ChatEvent::Error { message:"Stopped".into(),settled:true,credits:Some(-2),steering:vec![] };
+                ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap()))
+            }
+        }));
+        let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
+        let directory=tempfile::tempdir()?;
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        engine.saved.token=Some("fixture".into());
+        engine.account=Some(Account { email:"fixture@example.test".into(),credits:1,development:true });
+        assert!(engine.chat("Hello".into(),"/tmp".into()).await.is_err());
+        assert_eq!(engine.state()["account"]["credits"],-2);
+        let next=engine.saved.request.as_ref().unwrap();
+        assert_eq!(next.task_id,next.request_id);
+        assert_ne!(next.task_id,ids.lock().unwrap()[0].0);
+        drop(engine);
+        let recovered=Engine::open(directory.path(),&backend).await?;
+        assert_eq!(recovered.saved.task_id,Some(recovered.saved.request.as_ref().unwrap().task_id));
+        server.abort();
+        Ok(())
+    }
 
     /// A partial preview never becomes a message or executable command, and retry retains its request ID.
     #[tokio::test]

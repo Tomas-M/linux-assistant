@@ -41,7 +41,7 @@ pub fn reset_chat(directory:&Path)->Result<()> {
         let previous:serde_json::Value=read(&path)?;
         fs::copy(&path,directory.join(format!("state-before-reset-{}.json",uuid::Uuid::new_v4())))?;
         let saved=crate::engine::Saved { conversation_id:uuid::Uuid::new_v4(),settings:serde_json::from_value(previous["settings"].clone())?,
-            token:serde_json::from_value(previous["token"].clone())?,messages:vec![],committed:0,pending:None,request:None,pending_output:None };
+            task_id:None,token:serde_json::from_value(previous["token"].clone())?,messages:vec![],committed:0,pending:None,request:None,pending_output:None };
         write(&path,&saved)?;
     }
     write(&directory.join("queue.json"),&Vec::<crate::controls::Queued>::new())

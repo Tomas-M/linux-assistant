@@ -71,7 +71,7 @@ impl Pool {
     pub async fn test_account(&self, config: &Config, db: &Db, index: usize, prompt: String) -> Result<Value> {
         let account=self.accounts.get(index).context("Unknown account")?;
         let mut slot=account.worker.try_lock().context("Account is busy; retry after its current request")?;
-        let request=protocol::ChatRequest { base:0,request_id:uuid::Uuid::new_v4(),conversation_id:uuid::Uuid::new_v4(),
+        let request=protocol::ChatRequest { task_id:uuid::Uuid::new_v4(),base:0,request_id:uuid::Uuid::new_v4(),conversation_id:uuid::Uuid::new_v4(),
             platform:Platform::Linux,messages:vec![protocol::Message { role:Role::User,text:prompt }],commands_enabled:false,cwd:"/".into() };
         let mut attempt=crate::usage::Attempt::start(db,None,&request,&account.home,"admin_test")?;
         let result=tokio::time::timeout(Duration::from_secs(180),async {

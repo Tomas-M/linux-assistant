@@ -20,10 +20,10 @@ def reset(path):
             os.chmod(backup,0o600)
             db.backup(copy)
             with db:
-                db.execute("INSERT OR IGNORE INTO ledger(user_id,delta,reference,created_at) SELECT user_id,1,'refund:'||user_id||':'||id,? FROM requests WHERE response IS NULL AND error IS NULL",(int(time.time()),))
                 db.execute("UPDATE usage SET finished_at=?,error='Conversation reset; token counts may be partial' WHERE finished_at IS NULL",(int(time.time()),))
                 db.execute('DROP TABLE requests')
                 db.execute('DROP TABLE conversations')
+                db.execute('DROP TABLE IF EXISTS billing_tasks')
         print('Conversation state reset. Private database backup:',backup)
         print('Users, sessions, credits, purchases, settings and usage records were retained.')
 

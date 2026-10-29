@@ -94,6 +94,9 @@ mod tests {
         let requests=requests.lock().unwrap();
         assert_eq!(requests.len(),3);
         assert_eq!(requests[2].request_id,request_id);
+        assert_eq!(requests[0].task_id,requests[0].request_id);
+        assert!(requests.iter().all(|r|r.task_id==requests[0].task_id));
+        assert!(engine.saved.task_id.is_none());
         assert!(requests.iter().all(|r|r.conversation_id==engine.saved.conversation_id));
         let output=&requests[2].messages.last().unwrap().text;
         assert!(output.len()<=INLINE_LIMIT && output.contains("HEAD_MARKER") && output.contains("TAIL_ERROR"));

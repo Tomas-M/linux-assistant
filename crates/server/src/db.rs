@@ -1,5 +1,5 @@
 use std::{path::Path, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -26,7 +26,7 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(include_str!("schema.sql"))?;
+        conn.execute_batch(include_str!("schema.sql")).context("Could not open the current schema. For an older development database, stop the backend and run scripts/reset_conversations.sh before updating")?;
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -60,8 +60,10 @@ impl Db {
         Ok(self.0.lock().unwrap().query_row("SELECT user_id FROM sessions WHERE token_hash=?1 AND expires_at>?2 AND user_id NOT IN (SELECT user_id FROM user_blocks)", params![hash(token),now()], |r| r.get(0))?)
     }
 
-    /// Reserve one application credit atomically before calling the provider.
-    pub fn reserve(&self, user: i64, id: &str, fingerprint: &str, conversation: &str) -> Result<Reservation> {
+    /// Admit a task and reserve its request ID without charging before token usage is known.
+    pub fn reserve(&self, user: i64, request: &ChatRequest, fingerprint: &str, pricing: &crate::billing::Pricing) -> Result<Reservation> {
+        let id=request.request_id.to_string();
+        let conversation=request.conversation_id.to_string();
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
         let existing: Option<(String, Option<String>, Option<String>)> = tx.query_row(
@@ -77,10 +79,11 @@ impl Db {
         }
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE user_id=?1 AND conversation_id=?2 AND response IS NULL AND error IS NULL)",params![user,conversation],|r|r.get(0))?;
         if pending { return Ok(Reservation::Pending); }
-        let balance: i64 = tx.query_row("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE user_id=?1", [user], |r| r.get(0))?;
-        if balance < 1 { return Ok(Reservation::Insufficient); }
-        tx.execute("INSERT INTO requests(user_id,id,conversation_id,fingerprint) VALUES(?1,?2,?3,?4)", params![user,id,conversation,fingerprint])?;
-        tx.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,-1,?2,?3)", params![user,format!("request:{user}:{id}"),now()])?;
+        let history:Option<String>=tx.query_row("SELECT messages FROM conversations WHERE user_id=?1 AND id=?2",params![user,conversation],|r|r.get(0)).optional()?;
+        let revision=history.map(|value|serde_json::from_str::<Vec<Message>>(&value)).transpose()?.map_or(0,|messages|messages.len());
+        if request.base!=revision { return Ok(Reservation::Stale); }
+        if !crate::billing::admit(&tx,user,request,pricing)? { return Ok(Reservation::Insufficient); }
+        tx.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint) VALUES(?1,?2,?3,?4,?5)", params![user,id,request.task_id.to_string(),conversation,fingerprint])?;
         tx.commit()?;
         Ok(Reservation::New)
     }
@@ -123,6 +126,7 @@ impl Db {
         let changed = tx.execute("UPDATE requests SET response=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL",
             params![serde_json::to_string(&result)?,user,request.request_id.to_string()])?;
         ensure!(changed==1,"Request was already settled");
+        crate::billing::settle(&tx,user,&request.request_id.to_string(),true,reply.command.is_none())?;
         tx.execute("INSERT INTO conversations(user_id,id,account_home,thread_id,messages,checkpoint,checkpoint_at) VALUES(?1,?2,?3,?4,?5,?6,?7)
             ON CONFLICT(user_id,id) DO UPDATE SET account_home=excluded.account_home,thread_id=excluded.thread_id,messages=excluded.messages,checkpoint=excluded.checkpoint,checkpoint_at=excluded.checkpoint_at",
             params![user,request.conversation_id.to_string(),home,thread,serde_json::to_string(&messages)?,checkpoint.unwrap_or(&session.checkpoint),(if checkpoint.is_some() { messages.len() } else { session.checkpoint_at }) as i64])?;
@@ -148,19 +152,16 @@ impl Db {
         Ok(())
     }
 
-    /// Cache successful responses, or refund a failed reservation exactly once.
+    /// Settle failures once, charging only measured usage; requests that never ran cost nothing.
     pub fn settle(&self, user: i64, id: &str, result: Result<String, String>) -> Result<()> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
-        match result {
-            Ok(response) => { tx.execute("UPDATE requests SET response=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL", params![response,user,id])?; }
-            Err(error) => {
-                let changed = tx.execute("UPDATE requests SET error=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL", params![error,user,id])?;
-                if changed == 1 {
-                    tx.execute("INSERT OR IGNORE INTO ledger(user_id,delta,reference,created_at) VALUES(?1,1,?2,?3)", params![user,format!("refund:{user}:{id}"),now()])?;
-                }
-            }
-        }
+        let success=result.is_ok();
+        let changed=match result {
+            Ok(response)=>tx.execute("UPDATE requests SET response=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL",params![response,user,id])?,
+            Err(error)=>tx.execute("UPDATE requests SET error=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL",params![error,user,id])?,
+        };
+        if changed==1 { crate::billing::settle(&tx,user,id,success,true)?; }
         tx.commit()?;
         Ok(())
     }
@@ -169,19 +170,28 @@ impl Db {
     pub fn recover(&self) -> Result<()> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
-        tx.execute("INSERT OR IGNORE INTO ledger(user_id,delta,reference,created_at) SELECT user_id,1,'refund:'||user_id||':'||id,?1 FROM requests WHERE response IS NULL AND error IS NULL", [now()])?;
         tx.execute("UPDATE usage SET finished_at=?1,error='Backend restarted before completion; token counts may be partial' WHERE finished_at IS NULL",[now()])?;
-        tx.execute("UPDATE requests SET error='Server restarted; request refunded. Retry.' WHERE response IS NULL AND error IS NULL", [])?;
+        let pending=tx.prepare("SELECT user_id,id FROM requests WHERE response IS NULL AND error IS NULL")?.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for (user,id) in pending { crate::billing::settle(&tx,user,&id,false,true)?; }
+        tx.execute("UPDATE requests SET error='Server restarted; recorded usage was settled. Retry.' WHERE response IS NULL AND error IS NULL", [])?;
         tx.commit()?;
         Ok(())
     }
 }
 
-pub enum Reservation { New, Cached(String), Failed(String), Pending, Insufficient }
+pub enum Reservation { New, Cached(String), Failed(String), Pending, Insufficient, Stale }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    /// Start an independent task using the production request contract.
+    fn request()->ChatRequest {
+        let id=Uuid::new_v4();
+        ChatRequest { task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
+            messages:vec![Message { role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() }
+    }
 
     /// An interrupted turn keeps account affinity and committed history but cannot resume an advanced thread.
     #[test]
@@ -190,14 +200,16 @@ mod tests {
         let path=directory.path().join("assistant.db");
         let db=Db::open(&path)?;
         let user=db.user("restart@example.test",None,3)?;
-        let mut request=ChatRequest { base:0,request_id:Uuid::new_v4(),conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
-            messages:vec![Message { role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() };
-        db.reserve(user,&request.request_id.to_string(),"first",&request.conversation_id.to_string())?;
+        let mut request=request();
+        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        db.reserve(user,&request,"first",&pricing)?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         db.complete(user,&request,&AssistantReply { text:"Hi".into(),command:None },Some("account-a"),Some("thread-a"),None)?;
         let committed=db.conversation(user,request.conversation_id)?.messages;
         request.request_id=Uuid::new_v4();
-        db.reserve(user,&request.request_id.to_string(),"next",&request.conversation_id.to_string())?;
+        request.task_id=request.request_id;
+        request.base=committed.len();
+        db.reserve(user,&request,"next",&pricing)?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         drop(db);
         let db=Db::open(&path)?;
@@ -210,30 +222,33 @@ mod tests {
         Ok(())
     }
 
-    /// Welcome grants, repeated requests, and refunds must never mint extra credits.
+    /// Grants and settlement are idempotent; admission never reserves or invents a credit.
     #[test]
     fn ledger_is_idempotent() -> Result<()> {
-        let db = Db::open(Path::new(":memory:"))?;
-        let user = db.user("person@example.com", None, 2)?;
-        assert_eq!(db.user("person@example.com", None, 2)?, user);
-        assert_eq!(db.balance(user)?, 2);
-        assert!(matches!(db.reserve(user,"a","one","chat-a")?, Reservation::New));
-        assert!(matches!(db.reserve(user,"a","one","chat-a")?, Reservation::Pending));
-        assert!(db.reserve(user,"a","changed","chat-a").is_err());
-        assert!(matches!(db.reserve(user,"parallel","other","chat-a")?, Reservation::Pending));
-        db.settle(user,"a",Err("failed".into()))?;
-        db.settle(user,"a",Err("failed".into()))?;
-        assert_eq!(db.balance(user)?, 2);
-        assert!(matches!(db.reserve(user,"b","two","chat-b")?, Reservation::New));
-        db.settle(user,"b",Ok("reply".into()))?;
-        assert!(matches!(db.reserve(user,"b","two","chat-b")?, Reservation::Cached(_)));
+        let db=Db::open(Path::new(":memory:"))?;
+        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        let user=db.user("person@example.com",None,2)?;
+        assert_eq!(db.user("person@example.com",None,100)?,user);
+        let a=request();
+        assert!(matches!(db.reserve(user,&a,"one",&pricing)?,Reservation::New));
+        assert!(matches!(db.reserve(user,&a,"one",&pricing)?,Reservation::Pending));
+        assert!(db.reserve(user,&a,"changed",&pricing).is_err());
+        let mut parallel=request();
+        parallel.conversation_id=a.conversation_id;
+        assert!(matches!(db.reserve(user,&parallel,"other",&pricing)?,Reservation::Pending));
+        assert_eq!(db.balance(user)?,2);
+        for _ in 0..2 { db.settle(user,&a.request_id.to_string(),Err("failed".into()))?; }
+        assert_eq!(db.balance(user)?,2);
+        let b=request();
+        assert!(matches!(db.reserve(user,&b,"two",&pricing)?,Reservation::New));
+        for _ in 0..2 { db.settle(user,&b.request_id.to_string(),Ok("reply".into()))?; }
+        assert!(matches!(db.reserve(user,&b,"two",&pricing)?,Reservation::Cached(_)));
+        assert_eq!(db.balance(user)?,1);
+        let c=request();
+        assert!(matches!(db.reserve(user,&c,"three",&pricing)?,Reservation::New));
         db.recover()?;
-        assert_eq!(db.balance(user)?, 1);
-        assert!(matches!(db.reserve(user,"c","three","chat-c")?, Reservation::New));
-        assert!(matches!(db.reserve(user,"d","four","chat-d")?, Reservation::Insufficient));
         db.recover()?;
-        db.recover()?;
-        assert_eq!(db.balance(user)?, 1);
+        assert_eq!(db.balance(user)?,1);
         Ok(())
     }
 }
