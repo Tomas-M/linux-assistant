@@ -17,7 +17,7 @@
         <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1>Operations overview</h1></div><span id="connection" role="status">Connecting…</span></div>
         <div id="notice" role="status" hidden></div>
         <section id="accounts">
-            <div class="section-heading"><div><h2>ChatGPT accounts</h2><p>ChatGPT quotas refresh every 5 minutes. This page reads cached status every 10 seconds.</p></div><button id="refresh" class="quiet">Refresh display</button></div>
+            <div class="section-heading"><div><h2>ChatGPT accounts</h2><p>Quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a7 7 0 0 1 12-3l3 3M4 16l3 3a7 7 0 0 0 12-3"/></svg>Refresh display</button></div>
             <div id="account-cards" class="account-grid"></div>
             <p class="hint">Quotas include activity on the ChatGPT account outside this service. Test prompts consume the selected account’s allowance and are recorded as admin tests; no user credits are deducted.</p>
         </section>
@@ -30,18 +30,22 @@
                 <label>Account<select id="account-filter"><option value="">All accounts</option></select></label>
                 <label>Purpose<select id="purpose"><option value="">All purposes</option><option value="conversation">Conversation</option><option value="admin_test">Admin test</option></select></label>
                 <button type="submit">Apply</button>
+                <button id="reset-filters" type="button" class="quiet">Reset filters</button>
             </form>
+            <p id="applied-filters" class="hint" role="status"></p>
             <div id="metrics" class="metrics"></div>
             <div class="chart-grid">
                 <article class="panel"><h3>Measured tokens over time</h3><canvas id="token-chart" role="img" aria-label="Token consumption over time"></canvas><p class="hint">Input + output. Cached input is part of input; reasoning is part of output.</p></article>
-                <article class="panel"><h3>Application credits over time</h3><canvas id="credit-chart" role="img" aria-label="Application credit debits and refunds over time"></canvas><p class="hint">Debits minus refunds. Credit reports follow date and user filters; account and purpose filters apply only to token reports.</p></article>
+                <article class="panel"><h3>Application credits over time</h3><canvas id="credit-chart" role="img" aria-label="Application credit debits and refunds over time"></canvas><p class="hint">Credit totals use dates and user only. Account and purpose filters apply to the token chart and attempt breakdowns.</p></article>
             </div>
             <p class="hint">Credits follow measured input, cached input and output, including reported usage from failed or stopped attempts. Rounding is shared across each task and its command follow-ups. Admin tests do not charge user credits. Unmeasured successful tasks cost one credit; their debits remain in the ledger.</p>
-            <div class="chart-grid"><article class="panel"><h3>By account</h3><div id="account-breakdown" class="table-wrap"></div></article><article class="panel"><h3>By purpose &amp; model</h3><div id="purpose-breakdown" class="table-wrap"></div><div id="model-breakdown" class="table-wrap"></div></article></div>
+            <details class="panel"><summary>Usage breakdowns</summary><div class="chart-grid"><article><h3>By account</h3><div id="account-breakdown" class="table-wrap"></div></article><article><h3>By purpose &amp; model</h3><div id="purpose-breakdown" class="table-wrap"></div><div id="model-breakdown" class="table-wrap"></div></article></div></details>
             <details class="panel"><summary>Quota history · hourly snapshots</summary><div id="quota-history" class="table-wrap"></div><p class="hint">Latest 2,000 hourly readings in the selected range. These percentages cannot be converted into a reliable token allowance.</p></details>
-            <article class="panel"><h3>Provider attempts</h3><p class="hint">Failures and failover attempts are included. Unknown or interrupted measurements may be incomplete. Times below are UTC.</p><div id="activity" class="table-wrap"></div></article>
-            <article class="panel"><h3>Credit ledger</h3><div id="ledger" class="table-wrap"></div></article>
-            <div class="pager"><button id="previous" class="quiet">Previous</button><span id="page-number"></span><button id="next" class="quiet">Next</button></div>
+            <details class="panel"><summary>Activity &amp; credit ledger</summary>
+                <h3>Provider attempts</h3><p class="hint">Includes failed and interrupted attempts. Missing measurements are shown as unknown. Times are UTC.</p><div id="activity" class="table-wrap"></div>
+                <h3 class="ledger-heading">Credit ledger</h3><div id="ledger" class="table-wrap"></div>
+                <div class="pager"><button id="previous" class="quiet">Previous</button><span id="page-number"></span><button id="next" class="quiet">Next</button></div>
+            </details>
         </section>
         <section id="users">
             <div class="section-heading"><div><h2>Users <span id="user-count" class="badge"></span></h2><p>All-time balances and recorded token usage.</p></div><form id="user-search"><input id="search" type="search" placeholder="Search email" aria-label="Search email"><button>Search</button></form></div>
@@ -56,8 +60,8 @@
             <p>PayPal is not integrated. For a payment received elsewhere, verify it in your payment provider, then add credits manually with its transaction reference as the reason. Refunds and disputes require a manual credit adjustment.</p>
         </section>
     </main>
-    <dialog id="user-dialog">
-        <button id="close-user" class="quiet close" aria-label="Close user controls">Close</button>
+    <dialog id="user-dialog" aria-labelledby="selected-email">
+        <button id="close-user" class="quiet close" aria-label="Close user controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
         <h2 id="selected-email"></h2><p id="selected-user"></p>
         <form id="credit-form"><label>Credit adjustment (positive or negative)<input id="credit-delta" type="number" min="-1000000000" max="1000000000" step="1" required></label><label>Reason / payment reference<input id="credit-note" maxlength="500" required></label><button>Apply adjustment</button></form>
         <div class="actions"><button id="create-checkout">Create payment link</button><button id="block-user" class="quiet"></button><button id="revoke-user" class="quiet">Revoke sessions</button><button id="filter-user" class="quiet">View usage</button></div>

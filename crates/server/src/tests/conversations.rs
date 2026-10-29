@@ -59,14 +59,28 @@ async fn live_steering_and_stop_are_durable()->anyhow::Result<()> {
     assert!(!http.post(&endpoint).bearer_auth(&other_token).json(&steering).send().await?.status().is_success());
     for _ in 0..2 { assert!(http.post(&endpoint).bearer_auth(&token).json(&steering).send().await?.status().is_success()); }
     assert_eq!(state.db.steering(user,id)?.len(),1);
+    let more=json!({"id":uuid::Uuid::new_v4(),"text":"Check one more thing"});
+    for balance in [0,-2] {
+        state.db.0.lock().unwrap().execute("UPDATE ledger SET delta=?1 WHERE user_id=?2",rusqlite::params![balance,user])?;
+        let rejected=http.post(&endpoint).bearer_auth(&token).json(&more).send().await?;
+        assert_eq!(rejected.status(),StatusCode::PAYMENT_REQUIRED);
+        assert!(rejected.text().await?.contains("Add credits to steer"));
+        assert_eq!(state.db.steering(user,id)?.len(),1);
+        // A lost acknowledgement may still be recovered without adding input or spending again.
+        assert!(http.post(&endpoint).bearer_auth(&token).json(&steering).send().await?.status().is_success());
+    }
+    state.db.0.lock().unwrap().execute("UPDATE ledger SET delta=1 WHERE user_id=?1",[user])?;
+    assert!(http.post(&endpoint).bearer_auth(&token).json(&more).send().await?.status().is_success());
+    assert_eq!(state.db.steering(user,id)?.len(),2);
+    state.db.0.lock().unwrap().execute("UPDATE ledger SET delta=0 WHERE user_id=?1",[user])?;
     assert!(http.post(format!("{url}/v1/chat/{id}/stop")).bearer_auth(&token).send().await?.status().is_success());
     let result=tokio::time::timeout(Duration::from_secs(5),response.text()).await??;
     assert!(result.contains("Stopped by user") && result.contains("Remember 世界"));
-    assert_eq!(state.db.balance(user)?,5);
+    assert_eq!(state.db.balance(user)?,0);
     assert!(state.db.conversation(user,conversation)?.messages.is_empty());
     let replay=http.post(format!("{url}/v1/chat")).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?.text().await?;
     assert!(replay.contains("Remember 世界") && replay.contains("\"settled\":true"));
-    assert_eq!(state.db.balance(user)?,5);
+    assert_eq!(state.db.balance(user)?,0);
     server.abort();
     Ok(())
 }

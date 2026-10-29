@@ -175,6 +175,8 @@ impl Rpc {
                                         ensure!(previous==&input,"Steering ID reused with different text");
                                         return Ok(());
                                     }
+                                    // Credits can change while this control waits for the provider turn to start.
+                                    ensure!(attempt.db.balance(user)?>0,"Add credits to steer the conversation");
                                     ensure!(accepted.len()<16 && accepted.iter().map(|input|input.text.len()).sum::<usize>()+input.text.len()<=64_000,"Steering limit reached for this turn; queue the message instead");
                                     self.call("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":[{"type":"text","text":input.text}]})).await?;
                                     attempt.db.accept_steering(user,request.request_id,&input)

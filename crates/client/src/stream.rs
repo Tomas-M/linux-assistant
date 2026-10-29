@@ -19,9 +19,13 @@ impl Live {
             if let Some(progress)=&progress {
                 let after=view["state"]["messages"].as_array().map_or(0,Vec::len);
                 let steps=view["steps"].as_array_mut().unwrap();
-                if steps.last().is_some_and(|step|step["after"]==after) { steps.pop(); }
-                steps.push(json!({"after":after,"summaries":progress.summaries,"attempt":progress.attempt}));
-                while steps.len()>1 && steps.iter().map(|step|step.to_string().len()).sum::<usize>()>128_000 { steps.remove(0); }
+                let step=json!({"after":after,"summaries":progress.summaries,"attempt":progress.attempt});
+                // Text-only deltas do not change saved progress or require serializing its entire history.
+                if steps.last()!=Some(&step) {
+                    if steps.last().is_some_and(|step|step["after"]==after) { steps.pop(); }
+                    steps.push(step);
+                    while steps.len()>1 && steps.iter().map(|step|step.to_string().len()).sum::<usize>()>128_000 { steps.remove(0); }
+                }
             }
             view["activity"]=json!({"label":label,"progress":progress});
         });

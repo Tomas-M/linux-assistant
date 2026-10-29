@@ -6,11 +6,19 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[]}, busy=false, acting=false, stopped=false, messageKey='', startedAt;
-const eventController=new AbortController(), pendingIds=new Set();
-let queueKey='';
+let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame;
+const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], renderedAnswers=new WeakMap();
+let queueKey='', summaryKey='', steeringKey='';
+
+// All icons reference the embedded SVG sprite; no fonts or external assets are needed.
+function setIcon(button,name)
+{
+    if (button.dataset.icon===name) return;
+    button.dataset.icon=name;
+    button.innerHTML='<svg aria-hidden="true"><use href="#icon-'+name+'"/></svg>';
+}
 document.documentElement.dataset.theme=localStorage.getItem('assistant-theme') || 'light';
-elements.theme.textContent=document.documentElement.dataset.theme==='dark'?'☼':'☾';
+setIcon(elements.theme,document.documentElement.dataset.theme==='dark'?'sun':'moon');
 elements.theme.setAttribute('aria-label',document.documentElement.dataset.theme==='dark'?'Switch to light mode':'Switch to dark mode');
 
 // Keep every operation on the authenticated loopback origin.
@@ -25,6 +33,8 @@ async function api(path,body)
 // Render a small Markdown subset with DOM nodes; HTML and links never become executable markup.
 function renderAnswer(element,text)
 {
+    if (renderedAnswers.get(element)===text) return;
+    renderedAnswers.set(element,text);
     element.replaceChildren();
     text.split('```').forEach((section,index)=>
     {
@@ -75,7 +85,11 @@ function render()
     elements.platform.textContent=(state.platform==='windows'?'Windows · PowerShell':'Linux · sh')+' · Local workspace';
     elements.account.textContent=state.account?state.account.email+' · '+state.account.credits+' credits':'Sign in to your assistant account';
     elements['credit-balance'].textContent=state.account?state.account.credits.toLocaleString()+' credits':'Credits…';
-    elements['settings-open'].textContent=state.account?Array.from(state.account.email)[0].toUpperCase():'○';
+    const depleted=state.account && state.account.credits<=0;
+    elements['credit-balance'].classList.toggle('depleted',!!depleted);
+    elements['balance-note'].hidden=!depleted;
+    if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
+    else setIcon(elements['settings-open'],'user');
     for (const id of ['new','commands','credits','buy','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     renderComposer();
@@ -90,63 +104,77 @@ function render()
         elements.reason.textContent=proposal.reason;
     }
     const steps=(view.steps || []).filter(step=>step.after<state.messages.length);
-    const key=JSON.stringify([state.messages,steps]);
-    if (key!==messageKey)
+    const progressByMessage=new Map();
+    for (const step of steps)
     {
-        messageKey=key;
-        elements.messages.replaceChildren();
-        state.messages.forEach((message,index)=>
-        {
-            for (const step of steps.filter(step=>step.after===index && step.summaries.length))
-            {
-                const details=document.createElement('details'), summary=document.createElement('summary');
-                details.className='past-progress';
-                summary.textContent='Assistant progress'+(step.attempt>1?' · attempt '+step.attempt:'');
-                details.append(summary);
-                for (const part of step.summaries)
-                {
-                    const p=document.createElement('p');
-                    p.textContent=part.text;
-                    details.append(p);
-                }
-                elements.messages.append(details);
-            }
-            if (message.role==='tool')
-            {
-                const details=document.createElement('details'), summary=document.createElement('summary'), output=document.createElement('pre');
-                details.className='tool-result';
-                summary.textContent=message.text.startsWith('User approved')?'Local command started':'Local command result';
-                output.textContent=message.text;
-                details.append(summary,output);
-                elements.messages.append(details);
-                return;
-            }
-            const article=document.createElement('article');
-            article.className=message.role;
-            const text=document.createElement('div');
-            text.className='answer';
-            if (message.role==='assistant') renderAnswer(text,message.text);
-            else text.textContent=message.text;
-            article.append(text);
-            elements.messages.append(article);
-        });
+        if (!progressByMessage.has(step.after)) progressByMessage.set(step.after,[]);
+        progressByMessage.get(step.after).push(step);
     }
+    // Reuse unchanged messages so expanded output, text selection and keyboard focus survive new replies.
+    while (messageRows.length>state.messages.length) messageRows.pop().element.remove();
+    state.messages.forEach((message,index)=>
+    {
+        const progress=progressByMessage.get(index) || [], key=JSON.stringify(progress), previous=messageRows[index];
+        if (previous?.text===message.text && previous.role===message.role && previous.progress===key) return;
+        const group=document.createElement('div');
+        if (previous) previous.element.replaceWith(group);
+        else elements.messages.append(group);
+        messageRows[index]={element:group,text:message.text,role:message.role,progress:key};
+        for (const step of progress.filter(step=>step.summaries.length))
+        {
+            const details=document.createElement('details'), summary=document.createElement('summary');
+            details.className='past-progress';
+            summary.textContent='Assistant progress'+(step.attempt>1?' · attempt '+step.attempt:'');
+            details.append(summary);
+            for (const part of step.summaries)
+            {
+                const p=document.createElement('p');
+                p.textContent=part.text;
+                details.append(p);
+            }
+            group.append(details);
+        }
+        if (message.role==='tool')
+        {
+            const details=document.createElement('details'), summary=document.createElement('summary'), output=document.createElement('pre');
+            details.className='tool-result';
+            summary.textContent=message.text.startsWith('User approved')?'Local command started':'Local command result';
+            output.textContent=message.text;
+            details.append(summary,output);
+            group.append(details);
+            return;
+        }
+        const article=document.createElement('article');
+        article.className=message.role;
+        const text=document.createElement('div');
+        text.className='answer';
+        if (message.role==='assistant') renderAnswer(text,message.text);
+        else text.textContent=message.text;
+        article.append(text);
+        group.append(article);
+    });
     const activity=view.activity;
     elements.activity.hidden=!activity || (!view.busy && !view.error);
     if (activity)
     {
         elements['activity-label'].textContent=view.error?'Interrupted · partial response':activity.label;
-        elements.summaries.replaceChildren();
-        for (const part of activity.progress?.summaries || [])
+        const summaries=activity.progress?.summaries || [], key=JSON.stringify(summaries);
+        if (key!==summaryKey)
         {
-            const p=document.createElement('p');
-            p.textContent=part.text;
-            elements.summaries.append(p);
+            summaryKey=key;
+            elements.summaries.replaceChildren();
+            for (const part of summaries)
+            {
+                const p=document.createElement('p');
+                p.textContent=part.text;
+                elements.summaries.append(p);
+            }
         }
         renderAnswer(elements['stream-text'],activity.progress?.text || '');
         elements['stream-text'].classList.toggle('streaming',view.busy);
     }
-    if (view.error) elements.status.textContent=view.error;
+    if (view.error) { elements.status.textContent=view.error; elements.status.dataset.taskError='true'; }
+    else if (elements.status.dataset.taskError) { elements.status.textContent=''; delete elements.status.dataset.taskError; }
 }
 
 // Shared snapshots restore an active conversation after refresh without posting another request.
@@ -181,8 +209,12 @@ async function watch()
                     state=view.state;
                     for (const id of pendingIds)
                         if (!(view.queue || []).some(input=>input.id===id && input.editing)) pendingIds.delete(id);
-                    render();
-                    if (follow && state.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
+                    if (!renderFrame) renderFrame=requestAnimationFrame(()=>
+                    {
+                        renderFrame=null;
+                        render();
+                        if (follow && state.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
+                    });
                 }
 
             }
@@ -219,7 +251,7 @@ elements.theme.addEventListener('click',()=>
     const dark=document.documentElement.dataset.theme!=='dark';
     document.documentElement.dataset.theme=dark?'dark':'light';
     localStorage.setItem('assistant-theme',dark?'dark':'light');
-    elements.theme.textContent=dark?'☼':'☾';
+    setIcon(elements.theme,dark?'sun':'moon');
     elements.theme.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
 });
 elements['settings-open'].addEventListener('click',()=>elements['settings-dialog'].showModal());
@@ -341,22 +373,29 @@ function renderComposer()
     elements['editing-message'].hidden=!editingId;
     elements['cancel-edit'].disabled=queueAction;
     const text=elements.prompt.value.trim(), stop=view.busy && !text, queueing=view.busy || !!state.pending || !!editingId;
-    elements.send.textContent=stop?'■':'↑';
+    setIcon(elements.send,stop?'stop':'send');
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
     elements.send.disabled=!state.authenticated || queueAction || (!view.busy && state.retry_available) || (!stop && !text);
-    elements['steering-messages'].replaceChildren();
-    for (const input of view.steering || [])
+    const steering=JSON.stringify(view.steering || []);
+    if (steering!==steeringKey)
     {
-        const message=document.createElement('p');
-        message.textContent='You · '+input.text;
-        elements['steering-messages'].append(message);
+        steeringKey=steering;
+        elements['steering-messages'].replaceChildren();
+        for (const input of view.steering || [])
+        {
+            const message=document.createElement('p');
+            message.textContent='You · '+input.text;
+            elements['steering-messages'].append(message);
+        }
     }
     elements['queued-messages'].hidden=!queue.some(input=>!input.editing);
-    const key=JSON.stringify([queue,view.can_steer,queueAction]);
+    elements['queue-heading'].hidden=elements['queued-messages'].hidden;
+    elements['queue-heading'].textContent='Queued · '+queue.filter(input=>!input.editing).length;
+    const depleted=state.account && state.account.credits<=0, canSteer=view.can_steer && !depleted;
+    const key=JSON.stringify([queue,canSteer,depleted,queueAction]);
     if (key===queueKey) return;
     queueKey=key;
     elements['queued-messages'].replaceChildren();
-    const paths={edit:'M16 3l5 5M3 21l5-1L21 7a2 2 0 0 0-4-4L4 16z',remove:'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'};
     for (const input of queue.filter(input=>!input.editing))
     {
         const row=document.createElement('div'), text=document.createElement('span');
@@ -370,10 +409,10 @@ function renderComposer()
             button.dataset.action=action;
             button.dataset.id=input.id;
             button.setAttribute('aria-label',label);
-            button.title=label;
-            button.disabled=queueAction || (action==='steer' && !view.can_steer);
+            button.title=action==='steer' && depleted?'Add credits to steer the conversation':label;
+            button.disabled=queueAction || (action==='steer' && !canSteer);
             if (action==='steer') button.textContent=label;
-            else button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="'+paths[action]+'"/></svg>';
+            else setIcon(button,action);
             row.append(button);
         }
         elements['queued-messages'].append(row);
@@ -390,6 +429,7 @@ async function submitPrompt(steer=false)
         return;
     }
     if (elements.send.disabled) return;
+    if (steer && view.busy && state.account?.credits<=0) { elements.status.textContent='Add credits to steer the conversation.'; return; }
     if (steer && view.busy && !view.can_steer) { elements.status.textContent='No AI turn is accepting steering. Press Enter to queue this message.'; return; }
     const steering=steer && view.busy, draftId=editingId;
     const id=draftId || (steering?(steerId || crypto.randomUUID()):crypto.randomUUID());
@@ -476,7 +516,7 @@ elements.stop.addEventListener('click',async()=>
     }
     catch (error) { elements.status.textContent=error.message; }
 });
-let selectedProcess, processPolling=false, processRecord;
+let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
 const processRows=new Map();
 
 // Keep the floating panel usable while conversation requests are waiting on commands or AI.
@@ -484,13 +524,13 @@ function toggleProcesses(open)
 {
     elements['process-panel'].hidden=!open;
     elements['process-toggle'].setAttribute('aria-expanded',String(open));
-    if (open) pollProcesses();
+    if (open) { elements['process-close'].focus(); pollProcesses(); }
 }
 
 // Preserve output scroll position while fresh bytes arrive, following only when already at the end.
 function updateOutput(element,text)
 {
-    if (element.textContent===text) return;
+    if (element.textContent===(text || '(empty)')) return;
     const follow=element.scrollHeight-element.scrollTop-element.clientHeight<24;
     element.textContent=text || '(empty)';
     if (follow) element.scrollTop=element.scrollHeight;
@@ -527,19 +567,25 @@ async function pollProcesses()
 {
     if (processPolling) return;
     processPolling=true;
+    lastProcessPoll=Date.now();
     try
     {
         const records=await api('processes');
         if (selectedProcess && !records.some(record=>record.id===selectedProcess))
         {
             processRecord=null;
+            selectedProcess=null;
             elements['process-detail'].hidden=true;
         }
         const running=records.filter(record=>!record.finished_at);
         elements['process-count'].textContent=running.length+' running';
+        elements['process-toggle'].title='Task manager · '+running.length+' running';
+        if (elements['process-panel'].hidden) return;
         elements['process-status'].textContent=running.length?'':'No commands are running.';
+        elements['process-list'].closest('.task-table-wrap').hidden=!running.length;
+        const runningIds=new Set(running.map(record=>record.id));
         for (const [id,row] of processRows)
-            if (!running.some(record=>record.id===id)) { row.remove(); processRows.delete(id); }
+            if (!runningIds.has(id)) { row.remove(); processRows.delete(id); }
         for (const record of running)
         {
             let row=processRows.get(record.id);
@@ -563,15 +609,25 @@ async function pollProcesses()
             row.cells[1].textContent=record.pid || 'Starting';
             row.cells[2].textContent=Math.floor((Date.now()-record.started_at)/1000)+'s';
         }
-        elements['process-history'].replaceChildren();
-        for (const record of records.filter(record=>record.finished_at))
+        const history=records.filter(record=>record.finished_at), key=JSON.stringify(history);
+        elements['history-heading'].textContent='Completed commands · '+history.length;
+        if (key!==historyKey)
         {
-            const button=document.createElement('button');
-            button.dataset.select=record.id;
-            button.textContent=(record.error?'Stopped / failed':('Exit '+record.exit_code))+' · '+record.command;
-            elements['process-history'].append(button);
+            historyKey=key;
+            elements['process-history'].replaceChildren();
+            for (const record of history)
+            {
+                const button=document.createElement('button');
+                button.dataset.select=record.id;
+                button.textContent=(record.error?'Stopped / failed':('Exit '+record.exit_code))+' · '+record.command;
+                button.title=record.command;
+                elements['process-history'].append(button);
+            }
         }
-        if (!elements['process-panel'].hidden && records.some(record=>record.id===selectedProcess))
+        for (const button of elements['process-history'].children) button.setAttribute('aria-pressed',String(button.dataset.select===selectedProcess));
+        const selected=records.find(record=>record.id===selectedProcess);
+        const changed=selected && (!processRecord || ['id','pid','finished_at','exit_code','error','stdout_bytes','stderr_bytes'].some(key=>selected[key]!==processRecord[key]));
+        if (changed)
         {
             const id=selectedProcess, record=await api('processes/'+id);
             if (id===selectedProcess) renderProcess(record);
@@ -613,8 +669,20 @@ for (const stream of ['stdout','stderr']) elements['download-'+stream].addEventL
 });
 
 
-const processTimer=setInterval(()=>{if (state?.authenticated) pollProcesses();},1000);
+// Idle or hidden tabs avoid constant polling; selected output is fetched only when its metadata changes.
+const processTimer=setInterval(()=>
+{
+    const interval=elements['process-panel'].hidden && !view.busy?5000:1000;
+    if (state?.authenticated && !document.hidden && Date.now()-lastProcessPoll>=interval) pollProcesses();
+},1000);
 const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin();},1000);
+// Reserve the actual composer height, including queued messages and a multiline draft, below the transcript.
+new ResizeObserver(()=>
+{
+    const follow=window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-100;
+    document.documentElement.style.setProperty('--composer-height',elements['composer-wrap'].offsetHeight+'px');
+    if (follow && state?.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
+}).observe(elements['composer-wrap']);
 watch();
 api('state').then(async current=>
 {

@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, poll_hash TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS oauth(state_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id), verifier TEXT NOT NULL, expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), delta INTEGER NOT NULL, reference TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id);
+CREATE INDEX IF NOT EXISTS ledger_time ON ledger(created_at);
 CREATE TABLE IF NOT EXISTS billing_tasks(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, conversation_id TEXT NOT NULL,
     input_rate INTEGER NOT NULL, cached_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL, finished_at INTEGER, PRIMARY KEY(user_id,id));
 CREATE TABLE IF NOT EXISTS requests(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, task_id TEXT NOT NULL, conversation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT, error TEXT, steering TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(user_id,id));

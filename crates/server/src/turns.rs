@@ -1,5 +1,5 @@
 use std::{collections::HashMap,sync::Mutex};
-use axum::{extract::{Path,State},http::HeaderMap,Json};
+use axum::{extract::{Path,State},http::{HeaderMap,StatusCode},Json};
 use tokio::sync::{mpsc,oneshot};
 use uuid::Uuid;
 use protocol::Steering;
@@ -30,6 +30,8 @@ pub async fn steer(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>,J
         if found!=&input { return Err(ApiError::bad("Steering ID reused with different text")); }
         return Ok(Json(serde_json::json!({"ok":true})));
     }
+    // Replayed acknowledgements remain valid, but adding instructions requires a positive balance.
+    if app.db.balance(user)?<=0 { return Err(ApiError(StatusCode::PAYMENT_REQUIRED,"Add credits to steer the conversation".into())); }
     let sender=app.turns.lock().unwrap().get(&(user,id)).cloned().ok_or_else(||ApiError::bad("This AI turn is no longer running"))?;
     let (reply,result)=oneshot::channel();
     sender.sender.send(Control::Steer(input,reply)).await.map_err(|_|ApiError::bad("This AI turn has finished"))?;

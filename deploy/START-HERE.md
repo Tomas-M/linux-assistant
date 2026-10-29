@@ -1,5 +1,17 @@
 # Server source bundle
 
+## Update for UI improvements and steering credit checks
+
+If token billing is already deployed, this update needs no data reset or new configuration. Rebuild and install the backend to update admin and enforce the steering balance check:
+
+```sh
+cd /var/www/html/linux-assistant
+sh scripts/build_server.sh
+sh scripts/install_server_update.sh
+```
+
+Rebuild the client, stop its existing local daemon through Settings, then launch the new executable with the same `--backend` argument. Reload the browser to use the updated embedded UI. If upgrading from before token billing, complete the one-time reset below first.
+
 ## Update for token billing
 
 Deploy the backend and client together. Token billing adds task IDs and replaces the request schema. Reset conversation state once using the script below; it makes a private SQLite backup and preserves users, sessions, existing ledger balances, purchases, usage and ChatGPT sign-ins. Wait for active tasks to finish before stopping the service. Any unfinished, unbilled work removed by an explicit reset is waived; the script does not invent refunds.

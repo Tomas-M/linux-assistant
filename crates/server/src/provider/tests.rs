@@ -411,6 +411,17 @@ async fn integration_provider_controls() -> Result<()> {
             // Interrupt a read halfway through a multibyte JSONL event, as a real stream can arrive.
             while !config.codex_homes[0].join("fragment-ready").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
             tokio::time::sleep(Duration::from_millis(50)).await;
+            // Reject controls whose balance changed after admission, before forwarding anything to Codex.
+            if !stop {
+                for balance in [0,-1] {
+                    db.0.lock().unwrap().execute("UPDATE ledger SET delta=?1 WHERE user_id=?2",rusqlite::params![balance,user]).unwrap();
+                    let (reply,ack)=tokio::sync::oneshot::channel();
+                    sender.send(crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"Must not reach Codex".into() },reply)).await.unwrap();
+                    assert!(ack.await.unwrap().unwrap_err().contains("Add credits to steer"));
+                    assert!(db.steering(user,chat.request_id).unwrap().is_empty());
+                }
+                db.0.lock().unwrap().execute("UPDATE ledger SET delta=5 WHERE user_id=?1",[user]).unwrap();
+            }
             let (reply,ack)=tokio::sync::oneshot::channel();
             let control=if stop { crate::turns::Control::Stop(reply) } else { crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"Switch to 世界".into() },reply) };
             sender.send(control).await.unwrap();

@@ -55,7 +55,7 @@ impl Processes {
         std::fs::create_dir_all(&directory)?;
         let mut files=std::fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
         files.retain(|file|file.path().extension().is_some_and(|ext|ext=="json"));
-        files.sort_by_key(|file|std::cmp::Reverse(file.metadata().and_then(|m|m.modified()).ok()));
+        files.sort_by_cached_key(|file|std::cmp::Reverse(file.metadata().and_then(|m|m.modified()).ok()));
         let mut entries=HashMap::new();
         for file in files.into_iter().take(50) {
             let mut record: Record=storage::read(&file.path())?;

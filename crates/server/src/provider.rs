@@ -53,7 +53,10 @@ impl Pool {
                                 match control {
                                     Some(crate::turns::Control::Stop(reply))=> { let _=reply.send(Ok(())); return Err(crate::turns::Interrupted.into()); }
                                     Some(crate::turns::Control::Steer(input,reply))=> {
-                                        let result=db.accept_steering(user,request.request_id,&input).map_err(|error|error.to_string());
+                                        let result=(|| {
+                                            ensure!(db.balance(user)?>0,"Add credits to steer the conversation");
+                                            db.accept_steering(user,request.request_id,&input)
+                                        })().map_err(|error:anyhow::Error|error.to_string());
                                         let _=reply.send(result);
                                     }
                                     None=>controls=None,

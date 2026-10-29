@@ -8,13 +8,25 @@
     <script src="/app.js" defer></script>
 </head>
 <body>
+    <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+        <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></symbol>
+        <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+        <symbol id="icon-send" viewBox="0 0 24 24"><path d="M12 20V4m-6 6 6-6 6 6"/></symbol>
+        <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
+        <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+        <symbol id="icon-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6L10 14M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+        <symbol id="icon-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
+        <symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></symbol>
+        <symbol id="icon-edit" viewBox="0 0 24 24"><path d="m16 3 5 5M3 21l5-1L21 7a2 2 0 0 0-4-4L4 16Z"/></symbol>
+        <symbol id="icon-remove" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    </defs></svg>
     <header class="topbar">
-        <a class="brand" href="/" aria-label="Linux Assistant home"><span class="brand-mark" aria-hidden="true">a<span>•</span></span><span class="brand-name">Linux Assistant</span></a>
+        <a class="brand" href="/" aria-label="Linux Assistant home"><span class="brand-mark" aria-hidden="true"><svg><use href="#icon-terminal"/></svg></span><span class="brand-name">Linux Assistant</span></a>
         <nav aria-label="Workspace">
             <button id="new" class="quiet" aria-label="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span></button>
-            <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme">☾</button>
+            <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme"><svg aria-hidden="true"><use href="#icon-moon"/></svg></button>
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
-            <button id="settings-open" class="avatar" aria-label="Open settings and account">T</button>
+            <button id="settings-open" class="avatar" aria-label="Open settings and account"><svg aria-hidden="true"><use href="#icon-user"/></svg></button>
         </nav>
     </header>
     <main>
@@ -60,11 +72,13 @@
                 <h2>Run this on your computer?</h2>
                 <p id="reason"></p><pre id="command"></pre>
                 <p class="muted">In <code id="cwd"></code></p>
-                <div class="button-row"><button id="approve" class="primary">Run command ↗</button><button id="deny">Decline</button></div>
+                <div class="button-row"><button id="approve" class="primary">Run command <svg aria-hidden="true"><use href="#icon-terminal"/></svg></button><button id="deny">Decline</button></div>
             </section>
             <button id="retry" hidden>Retry unfinished request</button>
             <div id="scroll-anchor"></div>
             <div id="composer-wrap" class="composer-wrap" hidden>
+                <p id="balance-note" class="balance-note" hidden>Add credits to start a new task or steer. Your running task can finish.</p>
+                <p id="queue-heading" class="queue-heading" hidden></p>
                 <div id="queued-messages" class="queued-messages" hidden></div>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
                 <form id="chat-form" class="composer">
@@ -73,7 +87,7 @@
                     <div class="composer-bottom">
                         <label class="access-toggle"><input id="full-access" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span><span>Full access</span></label>
                         <span id="permission-note" class="muted">Commands run automatically</span>
-                        <button id="send" class="send" aria-label="Send message">↑</button>
+                        <button id="send" class="send" aria-label="Send message"><svg aria-hidden="true"><use href="#icon-send"/></svg></button>
                     </div>
                 </form>
                 <div class="composer-caption"><span id="platform"></span></div>
@@ -81,20 +95,20 @@
         </section>
     </main>
     <dialog id="settings-dialog" aria-labelledby="settings-title">
-        <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></header>
+        <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
         <p id="account" class="muted"></p>
         <label class="setting"><span>Allow local commands<small>Review each command, or enable full access.</small></span><input id="commands" type="checkbox" role="switch"></label>
         <p class="muted">Full access runs commands automatically as your user. Turn it off to approve each command. It starts enabled when local commands are allowed.</p>
-        <div class="button-row"><button id="buy">Buy credits ↗</button><button id="credits">Refresh balance</button></div>
+        <div class="button-row"><button id="buy">Buy credits <svg aria-hidden="true"><use href="#icon-external"/></svg></button><button id="credits">Refresh balance</button></div>
         <a id="checkout-link" target="_blank" rel="noopener noreferrer" hidden>Open secure checkout</a>
         <div class="settings-footer"><button id="logout" class="quiet">Sign out</button><button id="stop" class="quiet">Stop local assistant</button></div>
     </dialog>
     <aside id="process-panel" aria-label="Task manager" hidden>
-        <header class="process-heading"><div><span class="eyebrow">ON YOUR COMPUTER</span><h2>Task manager</h2></div><button id="process-close" class="icon-button" aria-label="Close task manager">×</button></header>
+        <header class="process-heading"><div><span class="eyebrow">ON YOUR COMPUTER</span><h2>Task manager</h2></div><button id="process-close" class="icon-button" aria-label="Close task manager"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
         <p class="muted">Running commands on your computer. Stop kills the selected command and its child processes.</p>
         <p id="process-status" role="status"></p>
         <div class="task-table-wrap"><table class="task-table"><thead><tr><th>Command</th><th>PID</th><th>Elapsed</th><th></th></tr></thead><tbody id="process-list"></tbody></table></div>
-        <details class="recent-commands"><summary>Completed commands</summary><div id="process-history"></div></details>
+        <details class="recent-commands"><summary id="history-heading">Completed commands</summary><div id="process-history"></div></details>
         <section id="process-detail" hidden aria-label="Selected process details">
             <dl id="process-metadata"></dl>
             <details open><summary>Command</summary><pre id="process-command"></pre></details>
@@ -103,6 +117,6 @@
             <details><summary id="stderr-label">Standard error</summary><pre id="process-stderr"></pre><button id="download-stderr">Save stderr</button></details>
         </section>
     </aside>
-    <button id="process-toggle" aria-controls="process-panel" aria-expanded="false"><span aria-hidden="true">▥</span> Tasks <span id="process-count">0 running</span></button>
+    <button id="process-toggle" aria-controls="process-panel" aria-expanded="false"><svg aria-hidden="true"><use href="#icon-terminal"/></svg> Tasks <span id="process-count">0 running</span></button>
 </body>
 </html>
