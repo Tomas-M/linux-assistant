@@ -1,0 +1,3 @@
+# Runnable scripts need LF line endings for Unix shebangs.
+scripts/*.sh text eol=lf
+scripts/*.py text eol=lf
