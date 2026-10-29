@@ -6,8 +6,8 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame;
-const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], renderedAnswers=new WeakMap();
+let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame;
+const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
@@ -112,9 +112,12 @@ function render()
     }
     // Reuse unchanged messages so expanded output, text selection and keyboard focus survive new replies.
     while (messageRows.length>state.messages.length) messageRows.pop().element.remove();
+    const commands=new Map(view.commands.map(command=>[command.after,command]));
     state.messages.forEach((message,index)=>
     {
-        const progress=progressByMessage.get(index) || [], key=JSON.stringify(progress), previous=messageRows[index];
+        const command=commands.get(index), result=command && state.messages[index+1]?.role==='tool'?state.messages[index+1].text:'';
+        const running=!!command && !result && view.busy;
+        const progress=progressByMessage.get(index) || [], key=JSON.stringify([progress,command,result,running]), previous=messageRows[index];
         if (previous?.text===message.text && previous.role===message.role && previous.progress===key) return;
         const group=document.createElement('div');
         if (previous) previous.element.replaceWith(group);
@@ -124,7 +127,7 @@ function render()
         {
             const details=document.createElement('details'), summary=document.createElement('summary');
             details.className='past-progress';
-            summary.textContent='Assistant progress'+(step.attempt>1?' · attempt '+step.attempt:'');
+            summary.innerHTML='<span>Thinking'+(step.attempt>1?' · attempt '+step.attempt:'')+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
             details.append(summary);
             for (const part of step.summaries)
             {
@@ -136,11 +139,21 @@ function render()
         }
         if (message.role==='tool')
         {
+            if (commands.has(index-1)) return;
             const details=document.createElement('details'), summary=document.createElement('summary'), output=document.createElement('pre');
-            details.className='tool-result';
-            summary.textContent=message.text.startsWith('User approved')?'Local command started':'Local command result';
-            output.textContent=message.text;
+            details.className='tool-result'+(running?' live-command':'');
+            summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span>'+(command?(running?'Running command…':result?'Ran commands':'Command started'):'Command details')+'</span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
+            output.textContent=command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):message.text;
             details.append(summary,output);
+            if (command)
+            {
+                const button=document.createElement('button');
+                button.className='quiet';
+                button.dataset.process=command.id;
+                button.textContent='Open in task manager';
+                details.append(button);
+            }
+            details.open=previous?.element.querySelector('details.tool-result')?.open || false;
             group.append(details);
             return;
         }
@@ -153,11 +166,13 @@ function render()
         article.append(text);
         group.append(article);
     });
+    renderCompletions();
     const activity=view.activity;
-    elements.activity.hidden=!activity || (!view.busy && !view.error);
+    elements.activity.hidden=!activity || !view.busy;
+    elements['activity-label'].classList.toggle('working',view.busy);
     if (activity)
     {
-        elements['activity-label'].textContent=view.error?'Interrupted · partial response':activity.label;
+        elements['activity-label'].textContent=activity.label;
         const summaries=activity.progress?.summaries || [], key=JSON.stringify(summaries);
         if (key!==summaryKey)
         {
@@ -176,6 +191,88 @@ function render()
     if (view.error) { elements.status.textContent=view.error; elements.status.dataset.taskError='true'; }
     else if (elements.status.dataset.taskError) { elements.status.textContent=''; delete elements.status.dataset.taskError; }
 }
+
+// Completed tasks keep their own timestamp and interrupted text, even when the next queued task starts.
+function renderCompletions()
+{
+    const runs=view.runs.filter(run=>run.finished_at), anchors=new Map();
+    while (completionRows.length>runs.length) completionRows.pop().element.remove();
+    runs.forEach((run,index)=>
+    {
+        const key=JSON.stringify(run);
+        let row=completionRows[index];
+        if (row?.key!==key)
+        {
+            const element=document.createElement('section');
+            element.className='completion';
+            if (run.summaries.length)
+            {
+                const details=document.createElement('details'), summary=document.createElement('summary');
+                details.className='past-progress';
+                summary.innerHTML='<span>Thinking</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
+                details.append(summary);
+                for (const part of run.summaries) { const paragraph=document.createElement('p'); paragraph.textContent=part.text; details.append(paragraph); }
+                element.append(details);
+            }
+            if (run.partial)
+            {
+                const partial=document.createElement('div');
+                partial.className='answer partial-answer';
+                renderAnswer(partial,run.partial);
+                element.append(partial);
+            }
+            const footer=document.createElement('div'), copy=document.createElement('button'), time=document.createElement('time'), status=document.createElement('span');
+            footer.className='completion-footer';
+            copy.className='icon-button copy-answer';
+            copy.dataset.copy=index;
+            copy.title='Copy response';
+            copy.setAttribute('aria-label','Copy response');
+            copy.disabled=!run.partial && !state.messages.slice(run.start,run.end).some(message=>message.role==='assistant' && message.text);
+            setIcon(copy,'copy');
+            const date=new Date(run.finished_at);
+            time.dateTime=date.toISOString();
+            time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+            time.title=date.toLocaleString();
+            status.textContent=run.error || 'Completed';
+            const seconds=Math.max(0,Math.round((run.finished_at-run.started_at)/1000));
+            status.title='Worked for '+Math.floor(seconds/60)+'m '+seconds%60+'s';
+            footer.append(copy,time,status);
+            element.append(footer);
+            if (row) row.element.replaceWith(element);
+            completionRows[index]=row={element,key};
+        }
+        const anchor=anchors.get(run.end) || messageRows[run.end-1]?.element;
+        if (anchor && row.element.previousElementSibling!==anchor) anchor.after(row.element);
+        else if (!anchor && elements.messages.firstElementChild!==row.element) elements.messages.prepend(row.element);
+        anchors.set(run.end,row.element);
+    });
+}
+
+// Copy the final response, or its interrupted preview, without commands or progress chatter.
+elements.messages.addEventListener('click',async event=>
+{
+    const copy=event.target.closest('[data-copy]'), process=event.target.closest('[data-process]');
+    if (copy)
+    {
+        const run=view.runs.filter(run=>run.finished_at)[Number(copy.dataset.copy)];
+        const text=run.partial || state.messages.slice(run.start,run.end).findLast(message=>message.role==='assistant')?.text || '';
+        try
+        {
+            await navigator.clipboard.writeText(text);
+            setIcon(copy,'check');
+            copy.title='Copied';
+            copy.setAttribute('aria-label','Copied');
+            setTimeout(()=>{setIcon(copy,'copy');copy.title='Copy response';copy.setAttribute('aria-label','Copy response');},1600);
+        }
+        catch (error) { elements.status.textContent='Could not copy: '+error.message; }
+    }
+    if (process)
+    {
+        selectedProcess=process.dataset.process;
+        processRecord=null;
+        toggleProcesses(true);
+    }
+});
 
 // Shared snapshots restore an active conversation after refresh without posting another request.
 async function watch()
@@ -203,8 +300,7 @@ async function watch()
                     if (!data) continue;
                     const follow=window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-100;
                     const next=JSON.parse(data);
-                    if (next.busy && !view.busy) startedAt=Date.now();
-                    if (!next.busy) startedAt=null;
+                    startedAt=next.busy?next.runs.at(-1)?.started_at:null;
                     view=next;
                     state=view.state;
                     for (const id of pendingIds)

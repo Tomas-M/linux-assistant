@@ -31,16 +31,34 @@ main { max-width:850px; margin:auto; padding:40px 28px calc(var(--composer-heigh
 .answer h3 { font-size:20px; line-height:1.3; margin:20px 0 12px; }
 .answer ul { padding-left:24px; margin:12px 0; }
 .answer code { font:14px/1.6 ui-monospace,Consolas,monospace; background:var(--surface); padding:2px 5px; border-radius:4px; }
-.tool-result { color:var(--muted); font-size:14px; border-left:2px solid var(--border); padding-left:16px; margin-bottom:24px; }
-.tool-result summary { cursor:pointer; }
+.tool-result { color:var(--muted); font-size:14px; margin:12px 0 24px; }
+.tool-result summary,.past-progress summary { display:flex; align-items:center; gap:8px; width:fit-content; cursor:pointer; list-style:none; border-radius:6px; padding:5px 7px; margin-left:-7px; }
+.tool-result summary::-webkit-details-marker,.past-progress summary::-webkit-details-marker { display:none; }
+.tool-result summary:hover,.past-progress summary:hover { color:var(--text); background:var(--surface); }
+.tool-result summary:focus-visible,.past-progress summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.tool-result summary svg,.past-progress summary svg { width:16px; height:16px; flex-shrink:0; }
+.tool-result .disclosure-arrow,.past-progress summary svg { opacity:.5; transition:transform .15s; }
+.tool-result[open] .disclosure-arrow,.past-progress[open] summary svg { transform:rotate(90deg); }
+.tool-result pre { max-height:320px; overflow:auto; margin:12px 0; }
+.tool-result>button { font-size:13px; padding:6px 0; text-decoration:underline; text-underline-offset:3px; }
 .activity { margin:28px 0; }
 .activity-heading { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:14px; margin-bottom:16px; }
 #elapsed { margin-left:auto; font-size:13px; }
-.pulse { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 1.7s infinite; }
+.activity-heading>svg { width:16px; height:16px; flex-shrink:0; }
+.working { background:linear-gradient(100deg,var(--muted) 25%,var(--text) 45%,var(--muted) 65%); background-size:250% 100%; background-clip:text; -webkit-background-clip:text; color:transparent; animation:working-light 2.4s linear infinite; }
+@keyframes working-light { from { background-position:150% 0; } to { background-position:-100% 0; } }
 .summaries { padding-left:17px; margin:0 0 20px 3px; border-left:1px solid var(--border); font-size:14px; color:var(--muted); }
 .summaries p { margin:0 0 10px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .past-progress { margin:18px 0 24px; color:var(--muted); font-size:14px; }
-.past-progress summary { cursor:pointer; padding-bottom:10px; }
+.past-progress p { white-space:pre-wrap; overflow-wrap:anywhere; padding-left:14px; border-left:1px solid var(--border); }
+.completion { margin:-18px 0 28px; }
+.completion-footer { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; }
+.completion-footer time { white-space:nowrap; }
+.completion-footer>span { overflow-wrap:anywhere; min-width:0; }
+.completion-footer .copy-answer { width:30px; height:30px; color:var(--muted); margin-left:-6px; border-radius:7px; }
+.copy-answer svg { width:16px; height:16px; }
+.partial-answer { margin:28px 0 16px; }
+@media (prefers-reduced-motion:reduce) { .working { animation:none; background:none; color:var(--muted); } .streaming > :last-child::after { animation:none; } }
 .streaming > :last-child::after { content:""; display:inline-block; height:1em; width:3px; background:var(--accent); margin-left:3px; vertical-align:middle; animation:pulse 1s infinite; }
 @keyframes pulse { 50% { opacity:.35; } }
 .composer-wrap { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:min(850px,100%); padding:26px 28px 26px; background:linear-gradient(transparent,var(--bg) 15%); z-index:2; }

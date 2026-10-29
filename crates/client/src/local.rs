@@ -289,6 +289,10 @@ async fn run(state: Local, operation: Operation) -> LocalResult {
             }
             Ok::<_,anyhow::Error>(engine.state())
         }.await;
+        let presentation=if result.is_err() || state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            engine.finish_activity(result.as_ref().err().map(ToString::to_string))
+        } else { Ok(()) };
+        let result=result.and_then(|_|presentation.map(|_|engine.state()));
         state.live.state(engine.state());
         state.live.0.send_modify(|view| {
             view["busy"]=json!(false);

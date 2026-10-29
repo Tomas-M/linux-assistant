@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::{processes::Processes, storage};
 mod output;
+mod presentation;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Settings { pub backend: String, pub commands_enabled: bool }
@@ -39,6 +40,13 @@ impl Engine {
         };
         validate_backend(&saved.settings.backend)?;
         let live=crate::stream::Live::new();
+        let presentation=directory.join("presentation.json");
+        if presentation.exists() {
+            let presentation:Value=storage::read(&presentation)?;
+            if presentation["conversation_id"]==saved.conversation_id.to_string() {
+                live.0.send_modify(|view| { for key in ["steps","runs","commands"] { view[key]=presentation[key].clone(); } });
+            }
+        }
         let controls=crate::controls::Controls::open(directory,live.clone())?;
         let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:reqwest::Client::builder().timeout(Duration::from_secs(660)).redirect(reqwest::redirect::Policy::none()).build()?,login:None,account:None };
         if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id).await?; }
@@ -56,6 +64,9 @@ impl Engine {
     /// Keep all state transitions durable before performing external side effects.
     fn save(&self) -> Result<()> {
         storage::write(&self.path,&self.saved)?;
+        let view=self.live.0.borrow();
+        storage::write(&self.path.with_file_name("presentation.json"),&json!({"conversation_id":self.saved.conversation_id,"steps":view["steps"],"runs":view["runs"],"commands":view["commands"]}))?;
+        drop(view);
         self.live.state(self.state());
         Ok(())
     }
@@ -147,7 +158,7 @@ impl Engine {
 
     /// A fresh chat clears pending approvals and retry state, keeping account settings.
     pub async fn new_chat(&mut self) -> Result<()> {
-        self.live.0.send_modify(|view| { view["steps"]=json!([]); view["activity"]=Value::Null; view["error"]=Value::Null; view["steering"]=json!([]); });
+        self.live.0.send_modify(|view| { for key in ["steps","runs","commands","steering"] { view[key]=json!([]); } view["activity"]=Value::Null; view["error"]=Value::Null; });
         self.saved.conversation_id = Uuid::new_v4();
         self.saved.task_id = None;
         self.saved.messages.clear();
@@ -167,6 +178,8 @@ impl Engine {
         self.saved.messages.push(Message { role:Role::User,text });
         self.saved.task_id=Some(id);
         if let Err(error)=self.prepare(cwd,id) { self.saved.messages.pop(); self.saved.task_id=None; return Err(error); }
+        self.begin_activity(self.saved.messages.len()-1);
+        self.save()?;
         Ok(())
     }
     /// Tests and direct engine callers use the same durable input path as queued browser messages.
@@ -195,6 +208,7 @@ impl Engine {
     pub async fn retry(&mut self) -> Result<Value> {
         if self.saved.pending_output.is_some() { self.finish_output()?; }
         let request = self.saved.request.as_ref().context("No unfinished request")?;
+        self.begin_activity(self.saved.messages.len());
         let _active=self.controls.active(crate::controls::Remote { backend:self.saved.settings.backend.clone(),token:self.saved.token.clone().unwrap(),request:request.request_id });
         self.live.activity("Waiting for assistant…",Some(Default::default()));
         let response = self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request).send().await?;
@@ -223,9 +237,11 @@ impl Engine {
         if self.controls.stopped.load(Ordering::SeqCst) && self.saved.pending.take().is_some() {
             self.saved.messages.push(Message { role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
         }
-        if self.saved.pending.is_none() { self.saved.task_id=None; }
         if let Some(account) = &mut self.account { account.credits = result.credits; }
-        self.save()?;
+        if self.saved.pending.is_none() {
+            self.saved.task_id=None;
+            self.finish_activity(None)?;
+        } else { self.save()?; }
         Ok(self.state())
     }
 
@@ -268,6 +284,9 @@ impl Engine {
         ensure!(pending.id==id,"This approval is stale");
         ensure!(!approve || self.saved.settings.commands_enabled,"Command execution is disabled");
         let pending = self.saved.pending.take().unwrap();
+        if approve {
+            self.live.0.send_modify(|view|view["commands"].as_array_mut().unwrap().push(json!({"after":self.saved.messages.len(),"id":pending.id,"command":pending.proposal.command,"cwd":pending.proposal.cwd})));
+        }
         self.saved.messages.push(Message { role:Role::Tool,text:if approve {
             format!("User approved command: {}\nDirectory: {}\nExecution started. If no result follows, its outcome is unknown; do not automatically rerun.",pending.proposal.command,pending.proposal.cwd)
         } else { "The user declined the command. It was not executed.".into() } });
@@ -476,6 +495,11 @@ mod tests {
         engine.settings(false)?;
         let cwd=directory.path().to_string_lossy().into_owned();
         for _ in 0..30 { engine.chat("世界".repeat(2000),cwd.clone()).await?; }
+        let runs=engine.live.0.borrow()["runs"].clone();
+        assert_eq!(runs.as_array().unwrap().len(),30);
+        assert!(runs.as_array().unwrap().iter().all(|run|run["finished_at"].as_u64()>=run["started_at"].as_u64() && run["finished_at"].is_u64()));
+        assert_eq!(runs[29]["end"],engine.saved.messages.len());
+        assert_eq!(Engine::open(directory.path(),&backend).await?.live.0.borrow()["runs"],runs);
         assert!(serde_json::to_vec(&engine.saved.messages)?.len()>96_000);
         assert_eq!(engine.saved.committed,60);
         let first=crate::controls::Queued { id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
