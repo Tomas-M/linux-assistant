@@ -1,6 +1,6 @@
 # Linux Assistant
 
-A Rust assistant for Linux and Windows with a terminal prompt and an embedded browser UI. Each platform has its own **single executable**; Linux uses static musl and Windows statically links the MSVC runtime. A separate Rust backend owns accounts, application credits, payments, and AI access. The browser UI has a light/dark conversation view, streaming progress, and a floating local process inspector.
+A Rust assistant for Linux and Windows with a terminal prompt and an embedded browser UI. Each platform has its own **single executable**; the Linux client links to the system's glibc and Windows statically links the MSVC runtime. A separate Rust backend owns accounts, application credits, payments, and AI access. The browser UI has a light/dark conversation view, streaming progress, and a floating local process inspector.
 
 ## Run locally
 
@@ -175,25 +175,26 @@ All dashboard APIs require a separate eight-hour administrator session; normal u
 
 Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). Integration references: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect), [Stripe webhook verification](https://docs.stripe.com/events/manage-webhook-endpoints), and [Google app passwords](https://support.google.com/accounts/answer/185833).
 
-## Build the standalone Linux executable
+## Build the Linux client executable
 
-On Linux, install `musl-tools`, then run this from the Git checkout:
+On a glibc-based Linux distribution, install Rust through rustup and the platform's C/C++ build tools, then run this from the Git checkout:
 
 ```sh
 ./scripts/build_client.sh
 ```
 
-The script installs the Rust musl target and initializes the pinned Codex submodule if missing, because Cargo reads the backend's workspace manifests even for a client-only build. It compiles only the client and its dependencies; Codex is not linked into the client.
+The script uses the host's default Rust target and initializes the pinned Codex submodule if missing, because Cargo reads the backend's workspace manifests even for a client-only build. It compiles only the client and its dependencies; Codex is not linked into the client. Musl tools are not needed.
 
-Distribute `target/x86_64-unknown-linux-musl/release/linux-assistant`. Browser HTML, JavaScript, and CSS are compiled into it. TLS uses Rustls and bundled trust roots, so the app does not require OpenSSL. A separate build is needed for another CPU architecture.
+Distribute `target/release/linux-assistant`. Browser HTML, JavaScript, and CSS are compiled into it. TLS uses Rustls and bundled trust roots, so the app does not require OpenSSL. The executable uses system libraries, including glibc; build on the oldest distribution you intend to support to avoid requiring a newer glibc. A separate build is needed for another CPU architecture.
 
-Cross-compilation from Windows can use Zig and `cargo-zigbuild`:
+Cross-compilation from Windows to x86-64 Linux can use Zig and `cargo-zigbuild`:
 
 ```sh
-cargo zigbuild --release --locked --target x86_64-unknown-linux-musl -p linux-assistant
+rustup target add x86_64-unknown-linux-gnu
+cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu -p linux-assistant --bin linux-assistant
 ```
 
-On this Windows workspace, an isolated Rust toolchain and Zig were installed in ignored `.tools/`; no system PATH changes were made. Builds and tests are run manually; no GitHub Actions build workflow is configured.
+The cross-compiled executable is at `target/x86_64-unknown-linux-gnu/release/linux-assistant`. On this Windows workspace, an isolated Rust toolchain and Zig were installed in ignored `.tools/`; no system PATH changes were made. Builds and tests are run manually; no GitHub Actions build workflow is configured.
 
 ## Build and run on Windows
 

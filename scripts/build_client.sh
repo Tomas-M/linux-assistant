@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the standalone x86-64 Linux client from a Git checkout.
+# Build the Linux client for the host system from a Git checkout.
 set -eu
 cd "$(dirname "$0")/.."
 if [ "$(uname -s)" != Linux ]; then
@@ -11,7 +11,6 @@ fi
 if [ ! -f vendor/codex/codex-rs/Cargo.toml ]; then
     git -c core.longpaths=true submodule update --init --depth 1 -- vendor/codex
 fi
-rustup target add x86_64-unknown-linux-musl
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-cargo build --release --locked --target x86_64-unknown-linux-musl -p linux-assistant --bin linux-assistant
-printf '%s\n' 'Built target/x86_64-unknown-linux-musl/release/linux-assistant.'
+cargo build --release --locked -p linux-assistant --bin linux-assistant
+printf '%s\n' 'Built target/release/linux-assistant.'
