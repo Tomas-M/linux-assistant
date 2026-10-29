@@ -177,12 +177,13 @@ Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server
 
 ## Build the standalone Linux executable
 
-On Linux, install `musl-tools` and the Rust target:
+On Linux, install `musl-tools`, then run this from the Git checkout:
 
 ```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --locked --target x86_64-unknown-linux-musl -p linux-assistant
+./scripts/build_client.sh
 ```
+
+The script installs the Rust musl target and initializes the pinned Codex submodule if missing, because Cargo reads the backend's workspace manifests even for a client-only build. It compiles only the client and its dependencies; Codex is not linked into the client.
 
 Distribute `target/x86_64-unknown-linux-musl/release/linux-assistant`. Browser HTML, JavaScript, and CSS are compiled into it. TLS uses Rustls and bundled trust roots, so the app does not require OpenSSL. A separate build is needed for another CPU architecture.
 

@@ -9,14 +9,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: git -c core.longpaths=true submodule update --init --depth 1
       - run: rustup show
-      - run: rustup target add x86_64-unknown-linux-musl
       - run: sudo apt-get update && sudo apt-get install -y musl-tools pkg-config libssl-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: python -m unittest discover -s scripts/tests
       - run: cargo build -p assistant-server --bin assistant-server --example provider-fixture --locked
       - run: ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture" ASSISTANT_TEST_SERVER="$PWD/target/debug/assistant-server" cargo test -p assistant-server integration_ --locked -- --ignored
-      - run: cargo build --release --locked --target x86_64-unknown-linux-musl -p linux-assistant
+      - run: ./scripts/build_client.sh
       - run: cargo build --release --locked -p assistant-server
       - uses: actions/upload-artifact@v4
         with:
