@@ -151,7 +151,7 @@ python scripts/update_codex.py latest         # Update and verify latest stable 
 python scripts/update_codex.py rust-v0.164.0
 ```
 
-The updater fetches the official release, updates the submodule, Rust version and upstream dependency patches, seeds Cargo's lockfile from upstream's tested dependency graph, then builds and runs the application and integration tests. It tests actual embedded-runtime startup without credentials and fixture-based account selection, thread persistence, failover, user isolation and parallel execution. An upgrade is reported as verified only after all checks pass. Run it in a clean checkout, review the changes and commit the submodule pin, manifests, toolchain, and lockfile together. CI verifies both operating systems. Updates are deliberate build-time changes, not downloads into a running production backend.
+The updater fetches the official release, updates the submodule, Rust version and upstream dependency patches, seeds Cargo's lockfile from upstream's tested dependency graph, then builds and runs the application and integration tests. It tests actual embedded-runtime startup without credentials and fixture-based account selection, thread persistence, failover, user isolation and parallel execution. An upgrade is reported as verified only after all checks pass. Run it in a clean checkout, review the changes and commit the submodule pin, manifests, toolchain, and lockfile together. Run validation on both Linux and Windows before deploying an upgrade. Updates are deliberate build-time changes, not downloads into a running production backend.
 
 Upstream Rust APIs and dependency constraints can change. A failing upgrade may require adjusting the isolated adapter or a dependency before rebuilding; the script leaves the candidate changes available for inspection. Do not deploy an unverified update. Roll back using the previous application commit and `git -c core.longpaths=true submodule update --init`. Use `assistant-server --codex-version` to inspect a built executable.
 
@@ -193,7 +193,7 @@ Cross-compilation from Windows can use Zig and `cargo-zigbuild`:
 cargo zigbuild --release --locked --target x86_64-unknown-linux-musl -p linux-assistant
 ```
 
-On this Windows workspace, an isolated Rust toolchain and Zig were installed in ignored `.tools/`; no system PATH changes were made. [CI](.github/workflows/check.yml) tests native command execution and builds artifacts on both Linux and Windows.
+On this Windows workspace, an isolated Rust toolchain and Zig were installed in ignored `.tools/`; no system PATH changes were made. Builds and tests are run manually; no GitHub Actions build workflow is configured.
 
 ## Build and run on Windows
 
@@ -232,7 +232,7 @@ ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture" \
 
 Tests cover ledger idempotency and crash recovery, insufficient credits, device-session consumption, email-code attempt limits, session revocation, payment signature validation and replay, account rotation over JSONL, local Origin/Host/token checks, HTTPS enforcement, OS-specific proposals, and actual execution through the approval flow. Process tests check live output and stopping while the conversation is locked, saved results, Unicode-safe output truncation, results staying in the main conversation, provider thread isolation, and restart/retry without command reexecution. Windows tests also check Unicode and quoting, working directories, PowerShell/native failures, both output caps, and descendant cleanup on Stop and cancellation. Live credentials are unnecessary for these tests.
 
-Native Linux execution is checked by CI because this Windows development host has no Linux runtime. The runtime contract test uses a fresh unsigned-in account directory and a local HTTP model stub to verify real App Server turns and thread resumption without contacting an AI provider. Protocol fixtures test quota behavior without using real subscriptions.
+Native Linux execution must be checked on a Linux host because this Windows development host has no Linux runtime. The runtime contract test uses a fresh unsigned-in account directory and a local HTTP model stub to verify real App Server turns and thread resumption without contacting an AI provider. Protocol fixtures test quota behavior without using real subscriptions.
 
 SMTP tests use a local TLS server to check authentication, configurable ports and senders, Unicode recipients, code delivery and verification, authentication failures, and rejection of untrusted certificates. They send no real email and require no mail account credentials.
 
