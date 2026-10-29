@@ -1,6 +1,7 @@
 'use strict';
 const state={page:0,userPage:0,users:[],accounts:[],selected:null,report:null,adjustment:null,refreshing:false,reportVersion:0,userVersion:0,filters:null,search:''};
 const number=new Intl.NumberFormat();
+const dollars=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:6});
 const markupCache=new WeakMap();
 
 // Preserve open disclosures and focus when the escaped markup has not changed.
@@ -20,6 +21,13 @@ function escapeHtml(value)
 
 // Keep unknown provider measurements visibly distinct from zero.
 function count(value) { return value===null || value===undefined ? 'Unknown' : number.format(value); }
+// Keep missing usage and very small positive estimates distinct from zero cost.
+function money(value)
+{
+    if (value===null) return 'Unknown';
+    if (value>0 && value<.000001) return '<$0.000001';
+    return dollars.format(value);
+}
 function utc(value) { return value ? new Date(value*1000).toISOString().replace('T',' ').slice(0,19)+' UTC' : 'Not yet'; }
 function localInput(date) { return new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16); }
 
@@ -92,7 +100,10 @@ async function loadAccounts()
         }
         card.querySelector('form').dataset.test=account.id;
         const stale=!account.checked_at || data.now-account.checked_at>330;
-        const status=account.error ? 'Refresh failed' : account.busy ? 'Busy' : stale ? 'Waiting for refresh' : 'Connected';
+        let status='Connected';
+        if (stale) status='Waiting for refresh';
+        if (account.active_requests) status=count(account.active_requests)+' active';
+        if (account.error) status='Refresh failed';
         const markup='<span class="badge '+(account.error ? 'error' : stale ? 'warn' : '')+'">'+status+'</span><h3>'+escapeHtml(account.email || 'Account '+(account.id+1))+'</h3><p>'+escapeHtml(account.plan || 'Plan unknown')+'</p>'+quotaMarkup(account.limits)+'<small>Last checked '+utc(account.checked_at)+'</small><small class="account-home">'+escapeHtml(account.home)+'</small>'+(account.error ? '<p>'+escapeHtml(account.error)+'</p>' : '');
         const statusBox=card.querySelector('.account-status');
         setMarkup(statusBox,markup);
@@ -169,8 +180,16 @@ async function loadReport()
     document.getElementById('metrics').innerHTML=metrics.map(([title,value,note])=>'<article class="metric"><span>'+title+'</span><strong>'+count(value)+'</strong><small>'+escapeHtml(note)+'</small></article>').join('');
     chart('token-chart',data.timeline.map(row=>({time:row.time,value:row.total_tokens})),'#087e74');
     chart('credit-chart',data.credit_timeline.map(row=>({time:row.time,value:row.debited-row.refunded})),'#6178ac');
+    document.getElementById('current-pricing').textContent='Current USD rates per million tokens: input '+money(data.pricing.input)+', cached input '+money(data.pricing.cached)+', output '+money(data.pricing.output)+'. Costs below reprice recorded tokens at these rates; they are not historical charges. Cached input is excluded from input cost. Missing usage is not estimated; mixed rows show measured usage only.';
     for (const [id,rows] of [['account-breakdown',data.accounts],['purpose-breakdown',data.purposes],['model-breakdown',data.models]])
-        table(id,['Source','Attempts','Credits','Input','Cached','Output','Reasoning','Total'],rows.map(row=>[escapeHtml(row.name || 'Not reported'),count(row.attempts),count(row.credits_charged),count(row.input_tokens),count(row.cached_tokens),count(row.output_tokens),count(row.reasoning_tokens),count(row.total_tokens)]));
+        table(id,['Source','Attempts','Credits charged','Input','Cached input','Output','Reasoning','Total tokens','Input USD','Cached USD','Output USD','Total USD'],rows.map(row=>
+        {
+            const input=row.input_tokens===null || row.cached_tokens===null?null:(row.input_tokens-row.cached_tokens)*data.pricing.input/1000000;
+            const cached=row.cached_tokens===null?null:row.cached_tokens*data.pricing.cached/1000000;
+            const output=row.output_tokens===null?null:row.output_tokens*data.pricing.output/1000000;
+            const total=[input,cached,output].includes(null)?null:input+cached+output;
+            return [escapeHtml(row.name || 'Not reported'),count(row.attempts),count(row.credits_charged),count(row.input_tokens),count(row.cached_tokens),count(row.output_tokens),count(row.reasoning_tokens),count(row.total_tokens),...[input,cached,output,total].map(value=>escapeHtml(money(value)))];
+        }));
     table('activity',['Started (UTC)','User / purpose','Account / model','Result','Credits','Tokens','Input / cached / output / reasoning','Request / conversation'],data.activity.map(row=>[
         utc(row.started_at),escapeHtml(row.email || 'Operator')+'<br>'+escapeHtml(row.purpose),escapeHtml(row.account_home)+'<br>'+escapeHtml(row.model || 'Not reported'),
         '<span class="badge '+(row.error ? 'error' : '')+'">'+(row.error ? 'Failed' : row.finished_at ? 'Completed' : 'Running')+'</span><br>'+escapeHtml(row.error || ''),count(row.credits_charged),count(row.total_tokens),[row.input_tokens,row.cached_tokens,row.output_tokens,row.reasoning_tokens].map(count).join(' / '),

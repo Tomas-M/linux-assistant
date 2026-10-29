@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde_json::json;
 
 impl Pool {
-    /// Read quotas in parallel without interrupting accounts currently generating a response.
+    /// Read quotas in parallel on the shared transports without interrupting active conversations.
     pub async fn monitor(self: Arc<Self>, db: Arc<Db>) {
         let mut interval=tokio::time::interval(Duration::from_secs(300));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -25,13 +25,13 @@ impl Pool {
     /// A failed refresh preserves the last successful reading and clearly marks it as stale.
     pub(super) async fn probe(&self, db: &Db, index: usize) -> Result<()> {
         let account=&self.accounts[index];
-        let Ok(mut slot)=account.worker.try_lock() else { return Ok(()); };
+        let mut cached=account.limits.lock().await;
+        if cached.is_some_and(|limits|now()-limits.checked_at<300) { return Ok(()); }
         let result=tokio::time::timeout(Duration::from_secs(20),async {
-            let mut rpc=match slot.take() { Some(rpc)=>rpc,None=>Rpc::start(&self.executable,&account.home).await? };
+            let mut rpc=self.rpc(index).await?;
             let identity=rpc.call("account/read",json!({"refreshToken":false})).await?;
             let limits=rpc.call("account/rateLimits/read",json!({})).await?;
-            *account.limits.lock().await=Limits::read(&limits).ok();
-            *slot=Some(rpc);
+            *cached=Some(Limits::read(&limits)?);
             Ok::<_,anyhow::Error>((identity,limits))
         }).await;
         let conn=db.0.lock().unwrap();
@@ -43,6 +43,7 @@ impl Pool {
                 conn.execute("INSERT INTO quota_history(account_home,checked_at,limits) VALUES(?1,?2,?3)",params![account.home,now(),limits.to_string()])?;
             }
             _ => {
+                *cached=None;
                 conn.execute("INSERT INTO provider_accounts(home,error) VALUES(?1,?2) ON CONFLICT(home) DO UPDATE SET error=excluded.error",
                     params![account.home,"Unable to refresh; check account sign-in or connectivity"])?;
             }
@@ -61,7 +62,9 @@ impl Pool {
             }).optional()?.unwrap_or(json!({"checked_at":null,"limits":null}));
             row["id"]=json!(index);
             row["home"]=json!(account.home);
-            row["busy"]=json!(account.worker.try_lock().is_err());
+            let active=account.worker.try_lock().ok().and_then(|worker|worker.as_ref().map(Rpc::active)).unwrap_or(0);
+            row["active_requests"]=json!(active);
+            row["busy"]=json!(active>0);
             row["limits"]=row["limits"].as_str().map(serde_json::from_str).transpose()?.unwrap_or(Value::Null);
             Ok(row)
         }).collect()
@@ -70,14 +73,14 @@ impl Pool {
     /// Test only the selected account, with an ephemeral thread, no tools, and no user debit.
     pub async fn test_account(&self, config: &Config, db: &Db, index: usize, prompt: String) -> Result<Value> {
         let account=self.accounts.get(index).context("Unknown account")?;
-        let mut slot=account.worker.try_lock().context("Account is busy; retry after its current request")?;
+
         let request=protocol::ChatRequest { task_id:uuid::Uuid::new_v4(),base:0,request_id:uuid::Uuid::new_v4(),conversation_id:uuid::Uuid::new_v4(),
             platform:Platform::Linux,messages:vec![protocol::Message { role:Role::User,text:prompt }],commands_enabled:false,cwd:"/".into() };
         let mut attempt=crate::usage::Attempt::start(db,None,&request,&account.home,"admin_test")?;
         let result=tokio::time::timeout(Duration::from_secs(180),async {
-            let mut rpc=match slot.take() { Some(rpc)=>rpc,None=>Rpc::start(&self.executable,&account.home).await? };
+            let mut rpc=self.rpc(index).await?;
             let (reply,thread,_)=rpc.answer(config,&request,None,&Value::Null,false,None,None,&attempt,&mut super::progress::Reporter::new(None,1)).await?;
-            if rpc.call("thread/unsubscribe",json!({"threadId":thread})).await.is_ok() { *slot=Some(rpc); }
+            rpc.call("thread/unsubscribe",json!({"threadId":thread})).await?;
             Ok::<_,anyhow::Error>(reply)
         }).await;
         let result=result.context("Test timed out").and_then(|result|result);

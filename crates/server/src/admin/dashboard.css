@@ -63,6 +63,8 @@ progress { width:100%; height:10px; accent-color:var(--accent); display:block; m
 .chart-grid>* { min-width:0; margin:0; }
 canvas { display:block; width:100%; height:230px; margin-top:20px; }
 .table-wrap { overflow:auto; max-height:460px; scrollbar-gutter:stable; }
+.usage-tables { display:grid; grid-template-columns:minmax(0,1fr); gap:24px; }
+.usage-tables td { white-space:nowrap; }
 table { border-collapse:collapse; width:100%; text-align:left; font-size:var(--secondary); font-variant-numeric:tabular-nums; }
 th { position:sticky; top:0; z-index:1; color:var(--muted); font-size:var(--small); font-weight:600; background:#f8faf9; white-space:nowrap; }
 th,td { padding:12px; border-bottom:1px solid var(--line); vertical-align:top; }

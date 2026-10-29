@@ -312,6 +312,9 @@ elements['code-form'].addEventListener('submit',async event=>
     try
     {
         state=await api('login/verify',{code});
+        view.error=null;
+        elements.status.textContent='';
+        delete elements.status.dataset.taskError;
         elements['code-form'].hidden=true;
         elements['email-form'].hidden=false;
         for (const input of codeInputs) input.value='';

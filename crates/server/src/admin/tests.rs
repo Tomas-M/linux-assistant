@@ -111,6 +111,7 @@ async fn reporting_and_recovery() -> anyhow::Result<()> {
     assert_eq!(report["credits"]["debited"],2);
     assert_eq!(report["credits"]["refunded"],1);
     assert_eq!(report["summary"]["credits_charged"],1);
+    assert_eq!(report["pricing"],json!({"input":2.0,"cached":0.1,"output":10.0}));
     let (_,filtered)=request(&app,"/admin/api/report?account=account-2&purpose=output_analysis",&cookie,None).await?;
     assert_eq!(filtered["summary"]["attempts"],1);
     assert!(filtered["summary"]["total_tokens"].is_null());

@@ -1,12 +1,12 @@
 //! A deterministic App Server fixture; never contacts OpenAI or executes commands.
-use std::{fs, io::{self,BufRead,Write}, path::PathBuf, time::{Duration,Instant}};
+use std::{collections::HashMap,fs, io::{self,BufRead,Write}, path::PathBuf, time::{Duration,Instant}};
 use anyhow::{ensure, Result};
 use serde_json::{json,Value};
 
 /// Emulate persistent threads, quota changes and concurrent workers over the real JSONL transport.
 fn main() -> Result<()> {
     let home=PathBuf::from(std::env::var("CODEX_HOME")?);
-    let mut held:Option<(String,String)>=None;
+    let mut held=HashMap::<String,(String,i64)>::new();
     for line in io::stdin().lock().lines() {
         let request: Value=serde_json::from_str(&line?)?;
         let method=request["method"].as_str().unwrap_or_default();
@@ -34,8 +34,8 @@ fn main() -> Result<()> {
             "thread/unsubscribe" => json!({}),
             "turn/start" => json!({"turn":{"id":turn_id,"status":"inProgress"}}),
             "turn/steer" => {
-                let (thread,turn)=held.as_ref().expect("No active fixture turn");
-                ensure!(request["params"]["threadId"]==*thread && request["params"]["expectedTurnId"]==*turn,"Wrong steering target");
+                let (turn,_)=held.get(request["params"]["threadId"].as_str().unwrap()).expect("No active fixture turn");
+                ensure!(request["params"]["expectedTurnId"]==*turn,"Wrong steering target");
                 json!({"turnId":turn})
             }
             "turn/interrupt" => json!({}),
@@ -49,8 +49,11 @@ fn main() -> Result<()> {
         println!("{}",json!({"id":request["id"],"result":result}));
         io::stdout().flush()?;
         if matches!(method,"turn/steer"|"turn/interrupt") {
-            let (thread,turn)=held.take().expect("No active fixture turn");
+            let thread=request["params"]["threadId"].as_str().unwrap();
+            let Some((turn,weight))=held.remove(thread) else { continue; };
             if method=="turn/steer" {
+                let usage=json!({"inputTokens":weight,"cachedInputTokens":weight/4,"outputTokens":10,"reasoningOutputTokens":5,"totalTokens":weight+10});
+                println!("{}",json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{"total":usage}}}));
                 let text=request["params"]["input"][0]["text"].as_str().unwrap();
                 println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"type":"agentMessage","text":json!({"text":format!("Steered: {text}"),"command":null}).to_string()}}}));
             }
@@ -69,7 +72,7 @@ fn main() -> Result<()> {
             let thread=request["params"]["threadId"].as_str().unwrap();
             println!("{}",json!({"method":"turn/started","params":{"threadId":thread,"turn":{"id":turn_id,"status":"inProgress"}}}));
             io::stdout().flush()?;
-            if settings["hold"]==true {
+            if settings["hold"]==true && !request.to_string().contains("ADMIN_QUICK") {
                 if settings["fragment"]==true {
                     let event=json!({"method":"item/reasoning/summaryTextDelta","params":{"threadId":thread,"turnId":turn_id,"itemId":"fragment","summaryIndex":0,"delta":"Fragmented 世界"}}).to_string();
                     let split=event.find('世').unwrap()+1;
@@ -81,7 +84,7 @@ fn main() -> Result<()> {
                     println!();
                     io::stdout().flush()?;
                 }
-                held=Some((thread.to_owned(),turn_id.clone()));
+                held.insert(thread.to_owned(),(turn_id.clone(),request["params"]["input"][0]["text"].as_str().unwrap().len() as i64));
                 continue;
             }
             let usage_path=home.join(format!("{thread}.usage.json"));
@@ -110,7 +113,7 @@ fn main() -> Result<()> {
                     settings["primary"]=json!(100);
                     fs::write(home.join("fixture.json"),serde_json::to_vec(&settings)?)?;
                 }
-                println!("{}",json!({"method":"turn/completed","params":{"turn":{"status":"failed","error":{"codexErrorInfo":error}}}}));
+                println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turnId":turn_id,"turn":{"id":turn_id,"status":"failed","error":{"codexErrorInfo":error}}}}));
             } else {
                 let text=format!("Fixture reply from {}",home.file_name().unwrap().to_string_lossy());
                 let mut answer=json!({"text":text,"command":null});
@@ -123,8 +126,8 @@ fn main() -> Result<()> {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 }
-                println!("{}",json!({"method":"item/completed","params":{"item":{"type":"agentMessage","text":answer.to_string()}}}));
-                println!("{}",json!({"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}));
+                println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn_id,"item":{"type":"agentMessage","text":answer.to_string()}}}));
+                println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turnId":turn_id,"turn":{"id":turn_id,"status":"completed","error":null}}}));
             }
             io::stdout().flush()?;
         }

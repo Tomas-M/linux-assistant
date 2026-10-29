@@ -147,7 +147,7 @@ impl Engine {
 
     /// A fresh chat clears pending approvals and retry state, keeping account settings.
     pub async fn new_chat(&mut self) -> Result<()> {
-        self.live.0.send_modify(|view| { view["steps"]=json!([]); view["activity"]=Value::Null; view["error"]=Value::Null; });
+        self.live.0.send_modify(|view| { view["steps"]=json!([]); view["activity"]=Value::Null; view["error"]=Value::Null; view["steering"]=json!([]); });
         self.saved.conversation_id = Uuid::new_v4();
         self.saved.task_id = None;
         self.saved.messages.clear();
@@ -448,7 +448,10 @@ mod tests {
         assert!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.pending.is_none());
         let conversation=engine.saved.conversation_id;
         assert_eq!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.conversation_id,conversation);
+        engine.live.0.send_modify(|view| { view["error"]=json!("Session expired; sign in again"); view["steering"]=json!([{"text":"Old steering"}]); });
         engine.new_chat().await?;
+        assert!(engine.live.0.borrow()["error"].is_null());
+        assert_eq!(engine.live.0.borrow()["steering"],json!([]));
         assert_ne!(engine.saved.conversation_id,conversation);
         assert_eq!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.conversation_id,engine.saved.conversation_id);
         Ok(())

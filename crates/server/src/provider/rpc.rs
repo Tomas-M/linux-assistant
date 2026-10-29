@@ -1,12 +1,16 @@
-use std::{collections::{HashMap,VecDeque}, path::Path, process::Stdio};
+use std::{collections::HashMap,path::Path,process::Stdio,sync::Arc};
 use anyhow::{bail, ensure, Context, Result};
 use protocol::{AssistantReply, ChatRequest};
 use serde_json::{json, Value};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, process::{Child, ChildStdin, ChildStdout, Command}};
+use tokio::{process::Command,sync::{broadcast,mpsc}};
+use super::transport::Transport;
 use crate::config::Config;
 use super::QuotaReached;
 
-pub(super) struct Rpc { child: Child, input: ChildStdin, output: BufReader<ChildStdout>, line: Vec<u8>, sequence: u64, usage: HashMap<String,Value>, pub(super) pending: VecDeque<Value> }
+pub(super) struct Rpc {
+    transport:Arc<Transport>, owner:uuid::Uuid, thread:Option<String>, events:Option<mpsc::Receiver<Value>>,
+    global:broadcast::Receiver<Value>, usage:HashMap<String,Value>,
+}
 
 impl Rpc {
     /// Start the same backend executable in its isolated, source-linked App Server mode.
@@ -26,13 +30,11 @@ impl Rpc {
         #[cfg(windows)] { command.creation_flags(0x08000000); }
         // Integration workers use temporary, unsigned-in homes; expose their startup failures to tests.
         #[cfg(test)] { command.stderr(Stdio::inherit()); }
-        let mut child = command.spawn().context("Cannot start embedded Codex worker")?;
-        let input = child.stdin.take().unwrap();
-        let output = BufReader::new(child.stdout.take().unwrap());
-        let mut rpc = Self { child,input,output,line:Vec::new(),sequence:0,usage:HashMap::new(),pending:VecDeque::new() };
+        let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?);
+        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,usage:HashMap::new() };
         rpc.call("initialize",json!({"clientInfo":{"name":"linux_assistant","title":"Linux Assistant","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true}})).await?;
-        rpc.send(json!({"method":"initialized","params":{}})).await?;
+        rpc.transport.initialized()?;
         Ok(rpc)
     }
 
@@ -44,57 +46,53 @@ impl Rpc {
         Ok(rpc)
     }
 
-    /// Write one JSON-RPC message on the worker's private stdio transport.
-    async fn send(&mut self, value: Value) -> Result<()> {
-        self.input.write_all(format!("{value}\n").as_bytes()).await?;
-        self.input.flush().await?;
+    /// Each caller gets its own thread subscription on the same authenticated account process.
+    pub(super) fn session(&self)->Self {
+        Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None,usage:HashMap::new() }
+    }
+
+    /// A dead transport must be recreated instead of repeatedly reusing its closed pipes.
+    pub(super) fn alive(&self)->bool { self.transport.alive() }
+
+    /// Derive active conversation counts from the dispatcher's subscriptions.
+    pub(super) fn active(&self)->usize { self.transport.threads.lock().unwrap().len() }
+
+    /// Subscribe before resume/start can emit usage or progress for the requested thread.
+    async fn subscribe(&mut self,thread:&str)->Result<()> {
+        if self.thread.as_deref()==Some(thread) { return Ok(()); }
+        if let Some(previous)=self.thread.replace(thread.into()) { self.transport.release(previous,self.owner); }
+        self.events=None;
+        match self.transport.subscribe(thread.into(),self.owner).await {
+            Ok(events)=>self.events=Some(events),
+            Err(error)=> { self.thread=None; return Err(error); }
+        }
         Ok(())
     }
 
-    /// Bound reads before allocation and refuse all server-initiated tools.
-    pub(super) async fn next(&mut self) -> Result<Value> {
-        // A steering select can cancel this read between chunks; retain the consumed prefix.
-        loop {
-            let chunk = self.output.fill_buf().await?;
-            ensure!(!chunk.is_empty(),"Embedded Codex stopped unexpectedly");
-            let count = chunk.iter().position(|b|*b==b'\n').map_or(chunk.len(),|i|i+1);
-            ensure!(self.line.len()+count<=2_000_000,"Provider event exceeds size limit");
-            let complete = chunk[count-1]==b'\n';
-            self.line.extend_from_slice(&chunk[..count]);
-            self.output.consume(count);
-            if complete { break; }
-        }
-        let message: Value = serde_json::from_slice(&std::mem::take(&mut self.line))?;
+    /// Read only this conversation's events; slow consumers fail independently of other threads.
+    pub(super) async fn next(&mut self)->Result<Value> {
+        let message=match &mut self.events {
+            Some(events)=>events.recv().await.context("Provider conversation stream closed or overflowed")?,
+            None=>self.global.recv().await?,
+        };
+        ensure!(message["method"]!="assistant/transportClosed","Embedded Codex transport closed");
         if message["method"]=="thread/tokenUsage/updated" {
             if let Some(thread)=message["params"]["threadId"].as_str() { self.usage.insert(thread.into(),message["params"]["tokenUsage"]["total"].clone()); }
-        }
-        if message.get("method").is_some() && message.get("id").is_some() {
-            self.send(json!({"id":message["id"],"error":{"code":-32601,"message":"Backend tools are disabled"}})).await?;
-            bail!("Provider attempted a backend tool request");
         }
         Ok(message)
     }
 
-    /// Permit notifications while waiting for the matching response, preserving typed quota errors.
-    pub(super) async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.sequence += 1;
-        let id = self.sequence;
-        self.send(json!({"id":id,"method":method,"params":params})).await?;
-        loop {
-            let message = self.next().await.with_context(||format!("Provider {method} response failed"))?;
-            if message["id"]!=id {
-                if matches!(method,"turn/start"|"turn/steer"|"turn/interrupt"|"thread/compact/start") {
-                    ensure!(self.pending.len()<256,"Too many notifications before turn acknowledgement");
-                    self.pending.push_back(message);
-                }
-                continue;
-            }
-            if let Some(error) = message.get("error") {
-                if error.pointer("/data/codexErrorInfo").is_some_and(|v|v=="usageLimitExceeded") { return Err(QuotaReached.into()); }
-                bail!("Codex protocol error: {}",error["message"]);
-            }
-            return Ok(message["result"].clone());
+    /// Match independent RPC responses while the account dispatcher continues delivering every thread's events.
+    pub(super) async fn call(&mut self,method:&str,params:Value)->Result<Value> {
+        if method=="thread/resume" { self.subscribe(params["threadId"].as_str().context("Missing thread ID")?).await?; }
+        let message=self.transport.call(self.owner,method,params).await?;
+        if let Some(error)=message.get("error") {
+            if error.pointer("/data/codexErrorInfo").is_some_and(|v|v=="usageLimitExceeded") { return Err(QuotaReached.into()); }
+            bail!("Codex protocol error: {}",error["message"]);
         }
+        let result=message["result"].clone();
+        if method=="thread/start" { self.subscribe(result["thread"]["id"].as_str().context("Missing thread ID")?).await?; }
+        Ok(result)
     }
 
     /// Resume the pinned thread with new input; replacements receive a bounded checkpoint and recent messages.
@@ -147,16 +145,10 @@ impl Rpc {
             "effort":config.reasoning_effort,"summary":"auto","outputSchema":schema})).await?;
         let turn_id=started["turn"]["id"].as_str().context("Missing provider turn ID")?;
         attempt.identify(&thread_id,turn_id,model.as_deref())?;
-        // Resume replays the previous counters before the next turn response. Missing history stays unknown.
-        for event in &self.pending {
-            if event["method"]=="thread/tokenUsage/updated" && event["params"]["threadId"]==thread_id && event["params"]["turnId"]!=turn_id {
-                baseline=event["params"]["tokenUsage"]["total"].clone();
-            }
-        }
         let mut answer = String::new();
         let mut turn_started=false;
         loop {
-            let event = if let Some(event)=self.pending.pop_front() { event } else {
+            let event = {
                 tokio::select! {
                     event=self.next()=>event?,
                     control=async { match controls.as_deref_mut() { Some(receiver)=>receiver.recv().await,None=>std::future::pending().await } }, if turn_started=> {
@@ -189,7 +181,11 @@ impl Rpc {
                 }
             };
             if event["params"]["threadId"].as_str().is_some_and(|id|id!=thread_id) { continue; }
-            if event["params"]["turnId"].as_str().is_some_and(|id|id!=turn_id) { continue; }
+            if event["params"]["turnId"].as_str().is_some_and(|id|id!=turn_id) {
+                // Resuming a thread replays the preceding counters before current-turn notifications.
+                if event["method"]=="thread/tokenUsage/updated" { baseline=event["params"]["tokenUsage"]["total"].clone(); }
+                continue;
+            }
             reporter.event(&event)?;
             match event["method"].as_str() {
                 Some("turn/started") if event["params"]["turn"]["id"]==turn_id => { turn_started=true; }
@@ -233,6 +229,6 @@ impl Rpc {
 }
 
 impl Drop for Rpc {
-    /// Cancellation and protocol failures terminate the worker before its stream can be reused.
-    fn drop(&mut self) { let _ = self.child.start_kill(); }
+    /// Releasing one conversation never terminates the shared account process or another user's turn.
+    fn drop(&mut self) { if let Some(thread)=self.thread.take() { self.transport.release(thread,self.owner); } }
 }

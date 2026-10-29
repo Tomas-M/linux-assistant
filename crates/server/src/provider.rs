@@ -1,4 +1,5 @@
 mod rpc;
+mod transport;
 mod progress;
 mod monitor;
 #[cfg(test)]
@@ -30,7 +31,15 @@ impl Pool {
         Ok(Self { accounts,executable:std::env::current_exe()?,selection:Mutex::new(()) })
     }
 
-    /// Different accounts run concurrently; a conversation only moves after a confirmed quota failure.
+    /// Lock only worker startup; each conversation then owns an independent session on that transport.
+    async fn rpc(&self,index:usize)->Result<Rpc> {
+        let account=&self.accounts[index];
+        let mut worker=account.worker.lock().await;
+        if worker.as_ref().is_none_or(|rpc|!rpc.alive()) { *worker=Some(Rpc::start(&self.executable,&account.home).await?); }
+        Ok(worker.as_ref().unwrap().session())
+    }
+
+    /// Conversations run concurrently on each account and move only after a confirmed quota failure.
     #[cfg(test)]
     pub async fn answer(&self, config: &Config, db: &Db, user: i64, request: &ChatRequest) -> Result<Answer> {
         self.answer_stream(config,db,user,request,None,None).await
@@ -87,16 +96,10 @@ impl Pool {
                 };
                 tried.push(index);
                 let account = &self.accounts[index];
-                // Taking ownership ensures cancellation kills an unfinished worker instead of reusing its RPC stream.
-                let mut slot = tokio::time::timeout(Duration::from_secs(5),account.worker.lock()).await.context("Account is busy; retry shortly")?;
-                let mut rpc = match slot.take() { Some(rpc) => rpc, None => Rpc::start(&self.executable,&account.home).await? };
-                let cached=*account.limits.lock().await;
-                let limits=match cached.filter(|limits|now()-limits.checked_at<300) {
-                    Some(limits)=>limits,
-                    None=>Limits::read(&rpc.call("account/rateLimits/read",serde_json::json!({})).await?)?,
-                };
-                *account.limits.lock().await = Some(limits);
-                if limits.retry_at>now() { *slot=Some(rpc); continue; }
+                self.probe(db,index).await?;
+                let limits=account.limits.lock().await.context("Account quota is unavailable; retry shortly")?;
+                if limits.retry_at>now() { continue; }
+                let mut rpc=self.rpc(index).await?;
                 let same_account = session.account_home.as_deref()==Some(account.home.as_str());
                 let thread = if same_account { session.thread_id.as_deref() } else { None };
                 db.bind_conversation(user,request.conversation_id,&account.home)?;
@@ -114,16 +117,16 @@ impl Pool {
                 attempt.finish(failure)?;
                 match result {
                     Ok((reply,thread_id,checkpoint)) => {
-                        *slot=Some(rpc);
                         return Ok(Answer { reply,account_home:Some(account.home.clone()),thread_id:Some(thread_id),checkpoint });
                     }
                     Err(error) if error.downcast_ref::<QuotaReached>().is_some() => {
+                        let mut cache=account.limits.lock().await;
                         let mut limits = match rpc.call("account/rateLimits/read",serde_json::json!({})).await {
                             Ok(value) => Limits::read(&value).unwrap_or(limits),
                             Err(_) => limits,
                         };
                         limits.retry_at = limits.retry_at.max(now()+60);
-                        *account.limits.lock().await = Some(limits);
+                        *cache=Some(limits);
                     }
                     Err(error) => return Err(error),
                 }
@@ -137,22 +140,7 @@ impl Pool {
         let mut candidates = Vec::new();
         for (index,account) in self.accounts.iter().enumerate() {
             if tried.contains(&index) { continue; }
-            let cached = *account.limits.lock().await;
-            if cached.is_some_and(|limits|limits.retry_at>now()) { continue; }
-            if let Ok(mut slot) = account.worker.try_lock() {
-                if cached.is_none_or(|limits|now()-limits.checked_at>=300) {
-                    let probe = async {
-                        let mut rpc = match slot.take() { Some(rpc) => rpc, None => Rpc::start(&self.executable,&account.home).await? };
-                        let limits = Limits::read(&rpc.call("account/rateLimits/read",serde_json::json!({})).await?)?;
-                        *slot = Some(rpc);
-                        Ok::<_,anyhow::Error>(limits)
-                    };
-                    match tokio::time::timeout(Duration::from_secs(20),probe).await {
-                        Ok(Ok(limits)) => *account.limits.lock().await=Some(limits),
-                        _ => { *account.limits.lock().await=None; continue; }
-                    }
-                }
-            }
+            self.probe(db,index).await?;
             if let Some(limits) = *account.limits.lock().await {
                 if limits.retry_at<=now() { candidates.push((index,limits.used,db.assigned_conversations(&account.home)?)); }
             }

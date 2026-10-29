@@ -1,3 +1,4 @@
+mod parallel;
 use super::*;
 use clap::Parser;
 use protocol::Message;
@@ -292,7 +293,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(40),async {
         let mut compacted=false;
         loop {
-            let event=match rpc.pending.pop_front() { Some(event)=>event,None=>rpc.next().await? };
+            let event=rpc.next().await?;
             if event["method"]=="item/completed" && event["params"]["item"]["type"]=="contextCompaction" { compacted=true; }
             if compacted && event["method"]=="turn/completed" { return Ok::<_,anyhow::Error>(()); }
             if event["method"]=="error" { anyhow::bail!("Compaction failed: {event}"); }
@@ -350,7 +351,7 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
     let _busy=pool.accounts[1].worker.lock().await;
     pool.probe(&db,1).await?;
-    assert_eq!(pool.account_status(&db)?[1]["busy"],true);
+    assert_eq!(pool.account_status(&db)?[1]["busy"],false);
     assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
     Ok(())
 }

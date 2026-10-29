@@ -33,6 +33,13 @@ impl std::str::FromStr for Rate {
 }
 
 impl Pricing {
+    /// Admin estimates use today's configured rates; one USD is 100 credits, with no task rounding.
+    pub fn usd_per_million(&self)->serde_json::Value {
+        serde_json::json!({"input":self.input_credits_per_million.0 as f64/(SCALE as f64*100.0),
+            "cached":self.cached_input_credits_per_million.0 as f64/(SCALE as f64*100.0),
+            "output":self.output_credits_per_million.0 as f64/(SCALE as f64*100.0)})
+    }
+
     /// Cached tokens are a subset of input; output already includes reasoning tokens.
     fn cost(&self,input:i64,cached:i64,output:i64)->Result<i128> {
         ensure!(input>=0 && cached>=0 && cached<=input && output>=0,"Invalid token counts");
