@@ -1,0 +1,71 @@
+
+
+/var/www/html/linux-assistant/scripts/build_server.sh
+
+# Replace the installed executable atomically.
+install -m 755 target/release/assistant-server /usr/local/bin/assistant-server.new
+mv -f /usr/local/bin/assistant-server.new /usr/local/bin/assistant-server
+
+useradd --system --user-group --create-home --home-dir /var/lib/linux-assistant --shell /usr/sbin/nologin linux-assistant
+chmod 700 /var/lib/linux-assistant
+
+runuser -u linux-assistant -- /usr/local/bin/assistant-server --login-account /var/lib/linux-assistant/account-1
+#runuser -u linux-assistant -- /usr/local/bin/assistant-server --login-account /var/lib/linux-assistant/account-2
+#runuser -u linux-assistant -- /usr/local/bin/assistant-server --login-account /var/lib/linux-assistant/account-3
+
+install -d -m 750 -o root -g linux-assistant /etc/linux-assistant
+
+
+# Store backend settings in a private file.
+# systemd reads this file before starting the service as linux-assistant.
+install -m 600 /dev/null /etc/linux-assistant/server.env
+
+cat > /etc/linux-assistant/server.env <<'CONFIG'
+ASSISTANT_LISTEN=127.0.0.1:8787
+ASSISTANT_PUBLIC_URL=https://ai.slax.org
+ASSISTANT_DATABASE=/var/lib/linux-assistant/assistant.db
+ASSISTANT_CODEX_HOMES=/var/lib/linux-assistant/account-1
+ASSISTANT_FREE_CREDITS=25
+# SMTP uses TLS immediately upon connection.
+# Enter the hostname without ssl://.
+ASSISTANT_SMTP_HOST=smtp.gmail.com
+ASSISTANT_SMTP_PORT=465
+ASSISTANT_SMTP_USERNAME=tomas@slax.org
+ASSISTANT_SMTP_PASSWORD="klefrhawmksuhrgb"
+ASSISTANT_EMAIL_FROM="Linux Assistant <tomas@slax.org>"
+CONFIG
+
+# Install the service definition and start it with the new configuration.
+install -m 644 deploy/linux-assistant.service /etc/systemd/system/linux-assistant.service
+systemctl daemon-reload
+systemctl enable linux-assistant
+systemctl restart linux-assistant
+
+# Verify that the backend starts. Expected: {"ok":true}
+curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:8787/health
+
+
+a2enmod proxy proxy_http ssl
+install -d -m 755 /var/www/ai.slax.org
+
+cat > /etc/apache2/sites-enabled/000-ai.slax.org.conf <<'APACHE'
+<VirtualHost *:80>
+    ServerName ai.slax.org
+    DocumentRoot /var/www/ai.slax.org
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+
+    ProxyPass "/.well-known/acme-challenge/" "!"
+    ProxyPass "/" "http://127.0.0.1:8787/" connectiontimeout=5 timeout=300
+    ProxyPassReverse "/" "http://127.0.0.1:8787/"
+
+    ErrorLog ${APACHE_LOG_DIR}/ai.slax.org-error.log
+    CustomLog ${APACHE_LOG_DIR}/ai.slax.org-access.log combined
+</VirtualHost>
+APACHE
+
+apache2ctl configtest
+systemctl reload apache2
+
+certbot --apache --cert-name ai.slax.org -d ai.slax.org --redirect
