@@ -16,7 +16,7 @@ pub async fn run(connection: Connection) -> Result<()> {
     }
     if state["authenticated"]!=true {
         println!("Backend: {}",state["settings"]["backend"].as_str().unwrap());
-        println!("Type /login to sign in with email or Google. Use /backend URL to change the server.");
+        println!("Type /login to sign in with email.");
     }
     loop {
         let Some(line) = read_line("you> ")? else { break; };
@@ -43,30 +43,26 @@ async fn handle(connection: &Connection, line: &str, state: &Value) -> Result<Op
     let (name,arg) = line.split_once(' ').unwrap_or((line,""));
     let next = match name {
         "/help" => {
-            println!("/login  /logout  /character guide|companion|specialist  /commands on|off\n/full on|off  /approve  /deny  /credits  /buy  /new  /retry  /history\n/backend URL  /stop (stop daemon)  /quit (leave prompt)");
+            println!("/login  /logout  /commands on|off\n/full on|off  /approve  /deny  /credits  /buy  /new  /retry  /history\n/stop (stop daemon)  /quit (leave prompt)");
             return Ok(None);
         }
         "/login" => {
-            let login = connection.post("/api/login",json!({})).await?;
-            let url = login["url"].as_str().unwrap();
-            println!("Sign in here: {url}");
-            let _ = webbrowser::open(url);
-            println!("Waiting for browser sign-in (Ctrl+C cancels this terminal)...");
+            let Some(email)=read_line("Email: ")? else { return Ok(None); };
+            let login=connection.post("/api/login",json!({"email":email.trim()})).await?;
+            if let Some(code)=login["development_code"].as_str() { println!("Development code: {code}"); }
+            println!("Enter the six-digit code sent to your email.");
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                if connection.post("/api/login/poll",json!({})).await?["complete"]==true { break; }
+                let Some(code)=read_line("Code (empty to cancel): ")? else { return Ok(None); };
+                if code.trim().is_empty() { return Ok(None); }
+                match connection.post("/api/login/verify",json!({"code":code.trim()})).await {
+                    Ok(state)=>break state,
+                    Err(error)=>println!("{}",safe(&error.to_string())),
+                }
             }
-            println!("Choose a character: /character guide, /character companion, or /character specialist");
-            connection.get("/api/state").await?
-        }
-        "/character" => {
-            anyhow::ensure!(["guide","companion","specialist"].contains(&arg),"Choose guide, companion, or specialist");
-            connection.post("/api/settings",json!({"character":arg,"commands_enabled":state["settings"]["commands_enabled"]})).await?
         }
         "/commands" => {
             anyhow::ensure!(["on","off"].contains(&arg),"Use /commands on or /commands off");
-            let character=state["settings"]["character"].as_str().unwrap_or("guide");
-            connection.post("/api/settings",json!({"character":character,"commands_enabled":arg=="on"})).await?
+            connection.post("/api/settings",json!({"commands_enabled":arg=="on"})).await?
         }
         "/full" => {
             anyhow::ensure!(["on","off"].contains(&arg),"Use /full on or /full off; enable commands first");
@@ -84,7 +80,6 @@ async fn handle(connection: &Connection, line: &str, state: &Value) -> Result<Op
             let _=webbrowser::open(url);
             return Ok(None);
         }
-        "/backend" => connection.post("/api/backend",json!({"backend":arg})).await?,
         "/logout" => connection.post("/api/logout",json!({})).await?,
         "/retry" => live_post(connection,"/api/retry",json!({})).await?,
         "/new" => connection.post("/api/new",json!({})).await?,

@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, time::Duration, sync::{Arc,atomic::{AtomicBool,Ordering}}};
 use anyhow::{bail, ensure, Context, Result};
-use protocol::{Account, Character, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, PollLogin, Role, MAX_REQUEST_BYTES, MAX_MESSAGE_BYTES};
+use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES, MAX_MESSAGE_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -8,7 +8,7 @@ use crate::{processes::Processes, storage};
 mod output;
 
 #[derive(Clone, Deserialize, Serialize)]
-pub struct Settings { pub backend: String, pub character: Option<Character>, pub commands_enabled: bool }
+pub struct Settings { pub backend: String, pub commands_enabled: bool }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct PendingCommand { pub id: Uuid, pub proposal: CommandProposal }
 #[derive(Clone, Deserialize, Serialize)]
@@ -26,21 +26,22 @@ pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Control
 
 impl Engine {
     /// One daemon owns settings and conversation state for both frontends.
-    pub fn open(directory: &Path) -> Result<Self> {
+    pub async fn open(directory: &Path, backend:&str) -> Result<Self> {
         let platform = match std::env::consts::OS {
             "linux" => Platform::Linux, "windows" => Platform::Windows,
             name => bail!("Unsupported operating system: {name}"),
         };
         let path = directory.join("state.json");
         let saved = if path.exists() { storage::read(&path)? } else {
-            Saved { conversation_id:Uuid::new_v4(),settings:Settings { backend:std::env::var("LINUX_ASSISTANT_BACKEND").unwrap_or_else(|_|"http://127.0.0.1:8787".into()),character:None,commands_enabled:false },
+            Saved { conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },
                 token:None,committed:0,messages:vec![],pending:None,request:None,pending_output:None }
         };
         validate_backend(&saved.settings.backend)?;
         let live=crate::stream::Live::new();
         let controls=crate::controls::Controls::open(directory,live.clone())?;
-        let engine=Self { controls,saved,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(false)),platform,path,http:reqwest::Client::builder().timeout(Duration::from_secs(660)).redirect(reqwest::redirect::Policy::none()).build()?,login:None,account:None };
-        if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id)?; }
+        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:reqwest::Client::builder().timeout(Duration::from_secs(660)).redirect(reqwest::redirect::Policy::none()).build()?,login:None,account:None };
+        if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id).await?; }
+        if engine.saved.settings.backend!=backend { engine.set_backend(backend.into()).await?; }
         engine.live.state(engine.state());
         Ok(engine)
     }
@@ -74,22 +75,20 @@ impl Engine {
     }
 
     /// Changing the backend signs out and clears conversation state to prevent cross-server leaks.
-    pub fn set_backend(&mut self, backend: String) -> Result<()> {
+    pub async fn set_backend(&mut self, backend: String) -> Result<()> {
         let backend = backend.trim_end_matches('/').to_owned();
         validate_backend(&backend)?;
         self.saved.settings.backend = backend;
         self.saved.token = None;
-        self.saved.settings.character = None;
-        self.saved.settings.commands_enabled = false;
-        self.full_access.store(false,Ordering::SeqCst);
+        self.saved.settings.commands_enabled = true;
+        self.full_access.store(true,Ordering::SeqCst);
         self.account = None;
         self.login = None;
-        self.new_chat()
+        self.new_chat().await
     }
 
     /// Disabling execution immediately invalidates every unapproved command.
-    pub fn settings(&mut self, character: Character, enabled: bool) -> Result<()> {
-        self.saved.settings.character = Some(character);
+    pub fn settings(&mut self, enabled: bool) -> Result<()> {
         self.saved.settings.commands_enabled = enabled;
         if !enabled { self.full_access.store(false,Ordering::SeqCst); }
         if !enabled && self.saved.pending.take().is_some() {
@@ -98,30 +97,27 @@ impl Engine {
         self.save()
     }
 
-    /// Start backend-owned email/Google sign-in; both interfaces open the same hosted page.
-    pub async fn login(&mut self) -> Result<String> {
-        let login: DeviceLogin = Self::response(self.backend(reqwest::Method::POST,"/v1/auth/device").send().await?).await?;
-        let url = login.verification_url.clone();
-        self.login = Some(login);
-        Ok(url)
+    /// Request a code without opening a browser or exposing the device secret to the UI.
+    pub async fn login(&mut self,email:String) -> Result<EmailChallenge> {
+        let login:DeviceLogin=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/device").send().await?).await?;
+        let input=EmailLogin { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),email };
+        let challenge=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/email").json(&input).send().await?).await?;
+        self.login=Some(login);
+        Ok(challenge)
     }
 
-    /// Persist the application session once the hosted browser login is approved.
-    pub async fn poll_login(&mut self) -> Result<bool> {
-        let login = self.login.as_ref().context("Start sign-in first")?;
-        let result: LoginResult = Self::response(self.backend(reqwest::Method::POST,"/v1/auth/poll")
-            .json(&PollLogin { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone() }).send().await?).await?;
-        if let Some(token) = result.token {
-            self.saved.token = Some(token);
-            self.login = None;
-            self.account = None;
-            self.saved.settings.character = None;
-            self.saved.settings.commands_enabled = false;
-            self.new_chat()?;
-            self.refresh_account().await?;
-            return Ok(true);
-        }
-        Ok(false)
+    /// Verify inside the client and persist the session before loading account details.
+    pub async fn verify_login(&mut self,code:String) -> Result<Value> {
+        let login=self.login.as_ref().context("Request a sign-in code first")?;
+        let input=VerifyEmail { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),code };
+        let result:LoginResult=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/verify").json(&input).send().await?).await?;
+        self.saved.token=Some(result.token.context("Backend did not issue a session")?);
+        self.login=None;
+        self.account=None;
+        self.saved.settings.commands_enabled=true;
+        self.full_access.store(true,Ordering::SeqCst);
+        self.new_chat().await?;
+        self.refresh_account().await
     }
 
     /// Query the authoritative balance rather than estimating provider usage locally.
@@ -144,18 +140,17 @@ impl Engine {
         self.saved.token = None;
         self.saved.settings.commands_enabled = false;
         self.full_access.store(false,Ordering::SeqCst);
-        self.saved.settings.character = None;
         self.account = None;
-        self.new_chat()
+        self.new_chat().await
     }
 
     /// A fresh chat clears pending approvals and retry state, keeping account settings.
-    pub fn new_chat(&mut self) -> Result<()> {
+    pub async fn new_chat(&mut self) -> Result<()> {
         self.live.0.send_modify(|view| { view["steps"]=json!([]); view["activity"]=Value::Null; view["error"]=Value::Null; });
         self.saved.conversation_id = Uuid::new_v4();
         self.saved.messages.clear();
         self.saved.committed=0;
-        self.controls.clear()?;
+        self.controls.clear().await?;
         self.saved.pending = None;
         self.saved.request = None;
         self.saved.pending_output = None;
@@ -179,9 +174,7 @@ impl Engine {
     }
     /// Acknowledge dequeue only after saving its stable ID, making crash recovery unambiguous.
     pub async fn next(&mut self)->Result<bool> {
-        let Some(input)=self.controls.next() else { return Ok(false); };
-        self.prepare_message(input.text,input.cwd,input.id)?;
-        self.controls.remove(input.id)?;
+        if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id)).await? { return Ok(false); }
         self.retry().await?;
         Ok(true)
     }
@@ -189,8 +182,7 @@ impl Engine {
     /// Send only new input after the last committed conversation revision.
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
         ensure!(self.saved.token.is_some(),"Sign in first");
-        let character = self.saved.settings.character.context("Choose an assistant character first")?;
-        let request = ChatRequest { base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,character,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
+        let request = ChatRequest { base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
         ensure!(serde_json::to_vec(&request)?.len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
         self.saved.request = Some(request);
         self.save()
@@ -214,6 +206,8 @@ impl Engine {
         let result=self.read_stream(response).await?;
         let expected=self.saved.messages.len()+result.steering.len()+1;
         ensure!(result.revision==expected,"Backend returned an unexpected conversation revision");
+        // Completion is authoritative even if the separate steering acknowledgement was lost.
+        for input in &result.steering { self.controls.remove(input.id).await?; }
         self.saved.messages.extend(result.steering.into_iter().map(|input|Message { role:Role::User,text:input.text }));
         self.saved.messages.push(Message { role:Role::Assistant,text:result.reply.text });
         self.saved.committed=result.revision;
@@ -244,6 +238,7 @@ impl Engine {
                     protocol::ChatEvent::Complete { response } => return Ok(response),
                     protocol::ChatEvent::Error { message,refunded,steering } => {
                         if refunded {
+                            for input in &steering { self.controls.remove(input.id).await?; }
                             self.saved.messages.extend(steering.into_iter().map(|input|Message { role:Role::User,text:input.text }));
                             let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
                             self.saved.request=None;
@@ -290,9 +285,19 @@ impl Engine {
     }
 }
 
+/// Normalize a required launch argument to a validated backend origin.
+pub fn normalize_backend(value:&str)->Result<String> {
+    let value=value.trim();
+    ensure!(!value.is_empty(),"Provide a backend server address");
+    let value=if value.contains("://") { value.to_owned() } else { format!("https://{value}") };
+    validate_backend(&value)?;
+    Ok(reqwest::Url::parse(&value)?.origin().ascii_serialization())
+}
+
 /// Allow unencrypted transport only to loopback development servers.
 fn validate_backend(value: &str) -> Result<()> {
     let url = reqwest::Url::parse(value)?;
+    ensure!(url.host_str().is_some(),"Backend must have a hostname");
     let local = matches!(url.host_str(),Some("localhost"|"127.0.0.1"|"[::1]"));
     if url.scheme()!="https" && !(local && url.scheme()=="http") { bail!("Backend must use HTTPS (HTTP is allowed only on localhost)"); }
     ensure!(url.username().is_empty() && url.password().is_none() && url.query().is_none() && url.fragment().is_none() && url.path()=="/","Backend must be an origin without credentials or a path");
@@ -323,10 +328,10 @@ mod tests {
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open(directory.path())?;
-        engine.set_backend(backend)?;
+        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        engine.set_backend(backend.clone()).await?;
         engine.saved.token=Some("fixture".into());
-        engine.settings(Character::Guide,true)?;
+        engine.settings(true)?;
         assert!(engine.chat("Hello".into(),directory.path().to_string_lossy().into_owned()).await.is_err());
         assert_eq!(engine.saved.messages.len(),1);
         assert!(engine.saved.pending.is_none());
@@ -345,10 +350,10 @@ mod tests {
     async fn executes_only_current_approved_proposals() -> Result<()> {
         use axum::{routing::post, Json, Router};
         let dir = tempfile::tempdir()?;
-        let mut engine = Engine::open(dir.path())?;
+        let mut engine = Engine::open(dir.path(),"http://127.0.0.1:8787").await?;
         let platform = engine.platform;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        engine.set_backend(format!("http://{}",listener.local_addr()?))?;
+        engine.set_backend(format!("http://{}",listener.local_addr()?)).await?;
         let app = Router::new().route("/v1/chat",post(move |Json(request): Json<ChatRequest>| async move {
             assert_eq!(request.platform,platform);
             let command = (request.messages.last().unwrap().role==Role::User).then(|| CommandProposal { 
@@ -361,19 +366,19 @@ mod tests {
         }));
         let server = tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         engine.saved.token = Some("test-session".into());
-        engine.settings(Character::Guide,false)?;
+        engine.settings(false)?;
         let cwd = dir.path().to_string_lossy().into_owned();
         engine.chat("Create marker".into(),cwd.clone()).await?;
         assert!(engine.saved.pending.is_none());
         assert!(!dir.path().join("approval.txt").exists());
-        engine.settings(Character::Guide,true)?;
+        engine.settings(true)?;
         engine.chat("Create marker".into(),cwd.clone()).await?;
         let id = engine.saved.pending.as_ref().unwrap().id;
         assert!(engine.decide(Uuid::new_v4(),true).await.is_err());
-        engine.settings(Character::Guide,false)?;
+        engine.settings(false)?;
         assert!(engine.decide(id,true).await.is_err());
         assert!(!dir.path().join("approval.txt").exists());
-        engine.settings(Character::Guide,true)?;
+        engine.settings(true)?;
         engine.chat("Create marker".into(),cwd.clone()).await?;
         engine.decide(engine.saved.pending.as_ref().unwrap().id,false).await?;
         assert!(!dir.path().join("approval.txt").exists());
@@ -391,20 +396,20 @@ mod tests {
     }
 
     /// An expired approval cannot run after permission was revoked or a chat was cleared.
-    #[test]
-    fn disabling_commands_invalidates_proposals() -> Result<()> {
+    #[tokio::test]
+    async fn disabling_commands_invalidates_proposals() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let mut engine = Engine::open(dir.path())?;
+        let mut engine = Engine::open(dir.path(),"http://127.0.0.1:8787").await?;
         engine.saved.pending = Some(PendingCommand { id:Uuid::new_v4(),proposal:CommandProposal {  command:"true".into(),cwd:"/tmp".into(),reason:"test".into() } });
-        engine.settings(Character::Guide,false)?;
+        engine.settings(false)?;
         assert!(engine.saved.pending.is_none());
         assert!(!engine.state().to_string().contains("poll_secret"));
-        assert!(Engine::open(dir.path())?.saved.pending.is_none());
+        assert!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.pending.is_none());
         let conversation=engine.saved.conversation_id;
-        assert_eq!(Engine::open(dir.path())?.saved.conversation_id,conversation);
-        engine.new_chat()?;
+        assert_eq!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.conversation_id,conversation);
+        engine.new_chat().await?;
         assert_ne!(engine.saved.conversation_id,conversation);
-        assert_eq!(Engine::open(dir.path())?.saved.conversation_id,engine.saved.conversation_id);
+        assert_eq!(Engine::open(dir.path(),"http://127.0.0.1:8787").await?.saved.conversation_id,engine.saved.conversation_id);
         Ok(())
     }
     /// Growing visible history never increases the next request, and queued input survives a dequeue crash.
@@ -421,25 +426,25 @@ mod tests {
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path())?;
-        engine.set_backend(backend)?;
+        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        engine.set_backend(backend.clone()).await?;
         engine.saved.token=Some("fixture".into());
-        engine.settings(Character::Guide,false)?;
+        engine.settings(false)?;
         let cwd=directory.path().to_string_lossy().into_owned();
         for _ in 0..30 { engine.chat("世界".repeat(2000),cwd.clone()).await?; }
         assert!(serde_json::to_vec(&engine.saved.messages)?.len()>96_000);
         assert_eq!(engine.saved.committed,60);
-        let first=crate::controls::Queued { id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone() };
-        let second=crate::controls::Queued { id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone() };
-        engine.controls.enqueue(first.clone())?;
-        engine.controls.enqueue(second.clone())?;
+        let first=crate::controls::Queued { id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
+        let second=crate::controls::Queued { id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
+        engine.controls.enqueue(first.clone()).await?;
+        engine.controls.enqueue(second.clone()).await?;
         engine.prepare_message(first.text,cwd,first.id)?;
         drop(engine);
-        let mut engine=Engine::open(directory.path())?;
-        assert_eq!(engine.controls.next().unwrap().id,second.id);
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        assert_eq!(engine.live.0.borrow()["queue"][0]["id"],second.id.to_string());
         engine.retry().await?;
         assert!(engine.next().await?);
-        assert!(engine.controls.next().is_none());
+        assert!(engine.live.0.borrow()["queue"].as_array().unwrap().is_empty());
         assert_eq!(engine.saved.messages.len(),64);
         server.abort();
         Ok(())
@@ -452,5 +457,30 @@ mod tests {
         assert!(validate_backend("https://user:password@example.com").is_err());
         assert!(validate_backend("http://127.0.0.1:8787").is_ok());
         assert!(validate_backend("https://assistant.example.com").is_ok());
+    }
+
+    /// A terminal reply reconciles a queued steer whose acknowledgement was lost in transit.
+    #[tokio::test]
+    async fn confirmed_steering_is_not_dispatched_again()->Result<()> {
+        use axum::{routing::post,Json,Router};
+        let directory=tempfile::tempdir()?;
+        let id=Uuid::new_v4();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>|async move {
+            let response=ChatResponse { reply:protocol::AssistantReply { text:"Done".into(),command:None },credits:10,revision:request.base+request.messages.len()+2,
+                steering:vec![protocol::Steering { id,text:"Queued steering".into() }] };
+            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
+        }));
+        let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        engine.saved.token=Some("fixture".into());
+        engine.controls.enqueue(crate::controls::Queued { id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
+        engine.chat("Original task".into(),"/tmp".into()).await?;
+        assert!(!engine.next().await?);
+        assert_eq!(engine.saved.messages.len(),3);
+        assert_eq!(engine.saved.messages[1].text,"Queued steering");
+        server.abort();
+        Ok(())
     }
 }

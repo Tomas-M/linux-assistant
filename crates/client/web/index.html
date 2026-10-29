@@ -9,38 +9,44 @@
 </head>
 <body>
     <header class="topbar">
-        <a class="brand" href="/" aria-label="Linux Assistant home"><span class="brand-mark" aria-hidden="true">a<span>•</span></span> Linux Assistant</a>
-        <span id="connection" class="connection">Connecting</span>
+        <a class="brand" href="/" aria-label="Linux Assistant home"><span class="brand-mark" aria-hidden="true">a<span>•</span></span><span class="brand-name">Linux Assistant</span></a>
         <nav aria-label="Workspace">
-            <button id="new" class="quiet">＋ <span>New chat</span></button>
+            <button id="new" class="quiet" aria-label="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span></button>
             <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme">☾</button>
+            <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
             <button id="settings-open" class="avatar" aria-label="Open settings and account">T</button>
         </nav>
     </header>
     <main>
-        <section id="setup" class="setup" hidden>
-            <span class="eyebrow">YOUR COMPUTER. A LITTLE MORE CAPABLE.</span>
-            <h1>Meet your assistant.</h1>
-            <p>Ask a question. Work through an idea. Get something done.</p>
-            <button id="login" class="primary">Sign in to get started ↗</button>
-            <a id="login-link" target="_blank" rel="noopener noreferrer" hidden>Continue sign-in</a>
-            <p class="muted">Use your email or Google account.</p>
-            <details class="server-settings"><summary>Backend connection</summary>
-                <form id="backend-form"><label for="backend">Server URL</label><input id="backend" type="url" required><button>Save server</button></form>
-            </details>
-        </section>
         <div id="status" role="status" aria-live="polite"></div>
-        <section id="workspace" hidden>
+        <section id="workspace">
             <section id="welcome" class="welcome">
-                <div class="welcome-mark" aria-hidden="true">✳</div>
-                <span class="eyebrow">A LITTLE HELP GOES A LONG WAY</span>
                 <h1>What can I help you with?</h1>
-                <p>From a quick question to the next thing on your list.</p>
-                <div class="suggestions">
-                    <button data-prompt="Help me understand what is using space on my computer."><span aria-hidden="true">▤</span> Understand my computer <span aria-hidden="true">↗</span></button>
-                    <button data-prompt="Help me organize my Downloads folder. Show me a plan first."><span aria-hidden="true">▱</span> Make a little order <span aria-hidden="true">↗</span></button>
-                    <button data-prompt="Help me troubleshoot a problem, one step at a time."><span aria-hidden="true">⌘</span> Work through a problem <span aria-hidden="true">↗</span></button>
-                </div>
+            </section>
+            <section id="setup" class="auth-card" hidden aria-label="Sign in">
+                <form id="email-form">
+                    <h2>Sign in to continue</h2>
+                    <p>Enter your email and we’ll send you a sign-in code.</p>
+                    <label for="email">Email address</label>
+                    <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254" required>
+                    <button id="login" class="primary">Send sign-in code</button>
+                </form>
+                <form id="code-form" hidden>
+                    <h2>Check your inbox</h2>
+                    <p>Enter the six-digit code sent to <strong id="login-email"></strong>.</p>
+                    <fieldset id="code-digits" class="code-digits"><legend class="sr-only">Six-digit sign-in code</legend>
+                        <input aria-label="Digit 1" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12" required>
+                        <input aria-label="Digit 2" type="text" inputmode="numeric" autocomplete="off" maxlength="12" required>
+                        <input aria-label="Digit 3" type="text" inputmode="numeric" autocomplete="off" maxlength="12" required>
+                        <input aria-label="Digit 4" type="text" inputmode="numeric" autocomplete="off" maxlength="12" required>
+                        <input aria-label="Digit 5" type="text" inputmode="numeric" autocomplete="off" maxlength="12" required>
+                        <input aria-label="Digit 6" type="text" inputmode="numeric" autocomplete="off" maxlength="12" required>
+                    </fieldset>
+                    <button id="verify" class="primary">Verify and sign in</button>
+                    <div class="auth-actions"><button id="resend" type="button" class="quiet">Resend code</button><button id="change-email" type="button" class="quiet">Change email</button></div>
+                    <p id="development-code" class="muted" hidden></p>
+                </form>
+                <p id="auth-status" role="status" aria-live="polite"></p>
             </section>
             <section id="messages" aria-label="Conversation"></section>
             <section id="activity" class="activity" hidden aria-label="Assistant progress">
@@ -58,29 +64,27 @@
             </section>
             <button id="retry" hidden>Retry unfinished request</button>
             <div id="scroll-anchor"></div>
-            <div class="composer-wrap">
+            <div id="composer-wrap" class="composer-wrap" hidden>
                 <div id="queued-messages" class="queued-messages" hidden></div>
+                <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
                 <form id="chat-form" class="composer">
                     <label for="prompt" class="sr-only">Message your assistant</label>
                     <textarea id="prompt" rows="2" placeholder="Ask anything, or describe a task…"></textarea>
                     <div class="composer-bottom">
-                        <label class="access-toggle"><input id="full-access" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span><span>Full access</span></label>
-                        <span id="permission-note" class="muted">You approve every command</span>
+                        <label class="access-toggle"><input id="full-access" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span><span>Full access</span></label>
+                        <span id="permission-note" class="muted">Commands run automatically</span>
                         <button id="send" class="send" aria-label="Send message">↑</button>
                     </div>
                 </form>
-                <p id="send-hint" class="send-hint">Enter to send · Shift+Enter for a new line</p>
-                <div class="composer-caption"><span id="platform"></span><span id="credit-balance"></span></div>
+                <div class="composer-caption"><span id="platform"></span></div>
             </div>
         </section>
     </main>
     <dialog id="settings-dialog" aria-labelledby="settings-title">
-        <header class="dialog-heading"><h2 id="settings-title">Make yourself at home</h2><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></header>
+        <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></header>
         <p id="account" class="muted"></p>
-        <label for="character">Assistant character</label>
-        <select id="character"><option value="">Choose your character</option><option value="guide">Guide — patient and clear</option><option value="companion">Companion — warm and conversational</option><option value="specialist">Specialist — direct and technical</option></select>
         <label class="setting"><span>Allow local commands<small>Review each command, or enable full access.</small></span><input id="commands" type="checkbox" role="switch"></label>
-        <p class="muted">Full access runs commands automatically as your user. Turning it off pauses automatic execution before the next command. It resets when the local assistant restarts.</p>
+        <p class="muted">Full access runs commands automatically as your user. Turn it off to approve each command. It starts enabled when local commands are allowed.</p>
         <div class="button-row"><button id="buy">Buy credits ↗</button><button id="credits">Refresh balance</button></div>
         <a id="checkout-link" target="_blank" rel="noopener noreferrer" hidden>Open secure checkout</a>
         <div class="settings-footer"><button id="logout" class="quiet">Sign out</button><button id="stop" class="quiet">Stop local assistant</button></div>

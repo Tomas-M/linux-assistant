@@ -2,7 +2,6 @@ use std::{fs::OpenOptions, future::IntoFuture, path::{Path, PathBuf}, sync::Arc,
 use anyhow::{bail, Context, Result};
 use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Response}, routing::{get, post}, Json, Router};
 use fs2::FileExt;
-use protocol::Character;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
@@ -50,10 +49,13 @@ impl Connection {
 }
 
 /// Reuse a live daemon, or detach this executable and wait for its private discovery file.
-pub async fn connect(directory: &Path) -> Result<Connection> {
+pub async fn connect(directory: &Path, backend:&str) -> Result<Connection> {
     let path = directory.join("daemon.json");
     if let Ok(connection) = storage::read::<Connection>(&path) {
-        if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) { return Ok(connection); }
+        if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
+            anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client is already running for a different backend; stop it before changing servers");
+            return Ok(connection);
+        }
     }
     #[cfg(unix)] {
         use std::os::unix::fs::OpenOptionsExt;
@@ -61,26 +63,29 @@ pub async fn connect(directory: &Path) -> Result<Connection> {
         use std::process::Stdio;
         let log=OpenOptions::new().create(true).append(true).mode(0o600).open(directory.join("daemon.log"))?;
         let mut command=std::process::Command::new(std::env::current_exe()?);
-        command.arg("--daemon").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        command.args(["--daemon","--backend",backend]).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
         unsafe { command.pre_exec(|| { if libc::setsid()==-1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
         command.spawn()?;
     }
     #[cfg(windows)]
-    crate::windows_launcher::spawn()?;
+    crate::windows_launcher::spawn(backend)?;
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(connection) = storage::read::<Connection>(&path) {
-            if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) { return Ok(connection); }
+            if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
+                anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client started for a different backend; stop it before changing servers");
+                return Ok(connection);
+            }
         }
     }
     bail!("Local daemon did not start; inspect {}",directory.join("daemon.log").display())
 }
 
 /// Bind loopback only and hold an exclusive lock for this entire daemon lifetime.
-pub async fn serve(directory: PathBuf) -> Result<()> {
+pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
     if lock.try_lock_exclusive().is_err() { return Ok(()); }
-    let engine = Engine::open(&directory)?;
+    let engine = Engine::open(&directory,backend).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let connection = Connection { url:format!("http://{}",listener.local_addr()?),secret:format!("{}{}",Uuid::new_v4().simple(),Uuid::new_v4().simple()) };
     storage::write(&directory.join("daemon.json"),&connection)?;
@@ -107,9 +112,10 @@ fn router(state: Local) -> Router {
         .route("/api/health",get(||async { Json(json!({"ok":true})) }))
         .route("/api/events",get(events)).route("/api/access",post(access))
         .route("/api/state",get(state_view)).route("/api/account",post(account))
-        .route("/api/settings",post(settings)).route("/api/backend",post(backend))
-        .route("/api/login",post(login)).route("/api/login/poll",post(poll_login)).route("/api/logout",post(logout))
+        .route("/api/settings",post(settings))
+        .route("/api/login",post(login)).route("/api/login/verify",post(verify_login)).route("/api/logout",post(logout))
         .route("/api/chat",post(chat)).route("/api/steer",post(steer)).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
+        .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
         .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/stop",post(stop))
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
         .route("/api/processes/{id}/stop",post(process_stop))
@@ -138,9 +144,11 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
 }
 
 #[derive(Deserialize)]
-struct SettingsInput { character: Character, commands_enabled: bool }
+struct SettingsInput { commands_enabled: bool }
 #[derive(Deserialize)]
-struct BackendInput { backend: String }
+struct EmailInput { email: String }
+#[derive(Deserialize)]
+struct CodeInput { code: String }
 #[derive(Deserialize)]
 struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid> }
 #[derive(Deserialize)]
@@ -164,24 +172,18 @@ async fn access(State(state): State<Local>, Json(input): Json<Value>) -> LocalRe
     if let Some(id)=pending { return run(state,Operation::Decide(id,true)).await; }
     Ok(Json(state.live.0.borrow()["state"].clone()))
 }
-/// Persist the shared personality and execution permission.
+/// Persist execution permission shared by the browser and terminal.
 async fn settings(State(state): State<Local>, Json(input): Json<SettingsInput>) -> LocalResult {
     let mut engine = state.engine.try_lock().context("Assistant is busy")?;
-    engine.settings(input.character,input.commands_enabled)?;
-    Ok(Json(engine.state()))
-}
-/// Set the account backend before setup or when moving to a different deployment.
-async fn backend(State(state): State<Local>, Json(input): Json<BackendInput>) -> LocalResult {
-    let mut engine = state.engine.try_lock().context("Assistant is busy")?;
-    engine.set_backend(input.backend)?;
+    engine.settings(input.commands_enabled)?;
     Ok(Json(engine.state()))
 }
 /// Fetch the latest backend account and balance.
 async fn account(State(state): State<Local>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.refresh_account().await?)) }
-/// Begin the shared hosted login flow.
-async fn login(State(state): State<Local>) -> LocalResult { Ok(Json(json!({"url":state.engine.try_lock().context("Assistant is busy")?.login().await?}))) }
-/// Check approval without exposing the device polling secret to browser JavaScript.
-async fn poll_login(State(state): State<Local>) -> LocalResult { Ok(Json(json!({"complete":state.engine.try_lock().context("Assistant is busy")?.poll_login().await?}))) }
+/// Send a code while keeping login input inside the client.
+async fn login(State(state): State<Local>,Json(input):Json<EmailInput>) -> LocalResult { Ok(Json(serde_json::to_value(state.engine.try_lock().context("Assistant is busy")?.login(input.email).await?)?)) }
+/// Exchange the code without exposing session credentials to browser JavaScript.
+async fn verify_login(State(state): State<Local>,Json(input):Json<CodeInput>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.verify_login(input.code).await?)) }
 /// Revoke this session and clear its local conversation.
 async fn logout(State(state): State<Local>) -> LocalResult {
     let mut engine = state.engine.try_lock().context("Assistant is busy")?;
@@ -191,7 +193,7 @@ async fn logout(State(state): State<Local>) -> LocalResult {
 /// Accept only text and a working directory, never client-supplied tool definitions.
 async fn chat(State(state): State<Local>, Json(input): Json<ChatInput>) -> LocalResult {
     let cwd = match input.cwd { Some(path) => path,None => dirs::home_dir().context("Home directory not found")?.to_string_lossy().into_owned() };
-    state.controls.enqueue(crate::controls::Queued { id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd })?;
+    state.controls.enqueue(crate::controls::Queued { id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
     if state.live.0.borrow()["busy"]==true || !state.live.0.borrow()["state"]["pending"].is_null() { return Ok(Json(state.live.0.borrow()["state"].clone())); }
     run(state,Operation::Next).await
 }
@@ -200,7 +202,7 @@ async fn retry(State(state): State<Local>) -> LocalResult { run(state,Operation:
 /// Reset conversation and invalidate all stale approvals.
 async fn new_chat(State(state): State<Local>) -> LocalResult {
     let mut engine = state.engine.try_lock().context("Assistant is busy")?;
-    engine.new_chat()?;
+    engine.new_chat().await?;
     Ok(Json(engine.state()))
 }
 /// Execute only the exact proposal identified by the one-use approval ID.
@@ -209,14 +211,19 @@ async fn decide(State(state): State<Local>, Json(input): Json<Decision>) -> Loca
 }
 /// Steering bypasses the engine lock and uses the backend's active-turn protocol.
 async fn steer(State(state):State<Local>,Json(input):Json<protocol::Steering>)->LocalResult {
-    let result=state.controls.send("steer",serde_json::to_value(&input)?).await?;
+    let result=state.controls.steer(&input).await?;
+    record_steering(&state,&input);
+    wake_queue(state);
+    Ok(Json(result))
+}
+/// Show accepted live input from either the composer or queue without waiting for the turn to finish.
+fn record_steering(state:&Local,input:&protocol::Steering) {
     state.live.0.send_modify(|view| {
         if view["busy"]==true {
             let inputs=view["steering"].as_array_mut().unwrap();
             if !inputs.iter().any(|old|old["id"]==input.id.to_string()) { inputs.push(json!(input)); }
         }
     });
-    Ok(Json(result))
 }
 /// Stop the current task and its owned command; queued messages remain paused.
 async fn interrupt(State(state):State<Local>)->LocalResult {
@@ -228,8 +235,30 @@ async fn interrupt(State(state):State<Local>)->LocalResult {
 }
 /// Removing queued input never sends it to the model.
 async fn remove_queued(State(state):State<Local>,axum::extract::Path(id):axum::extract::Path<Uuid>)->LocalResult {
-    state.controls.remove(id)?;
+    state.controls.remove(id).await?;
+    wake_queue(state);
     Ok(Json(json!({"ok":true})))
+}
+/// Editing reserves the original position and prevents that message from being dispatched.
+async fn edit_queued(State(state):State<Local>,axum::extract::Path(id):axum::extract::Path<Uuid>,Json(input):Json<Value>)->LocalResult {
+    let editing=input["editing"].as_bool().context("Expected an edit state")?;
+    let input=state.controls.edit(id,editing).await?;
+    if !editing { wake_queue(state); }
+    Ok(Json(json!(input)))
+}
+/// Atomically steer a queued message so it cannot also be dispatched as the next turn.
+async fn steer_queued(State(state):State<Local>,axum::extract::Path(id):axum::extract::Path<Uuid>)->LocalResult {
+    let input=state.controls.steer_queued(id).await?;
+    record_steering(&state,&input);
+    wake_queue(state);
+    Ok(Json(json!({"ok":true})))
+}
+/// Continue after a held queue entry is released, but respect explicit stops and pending approvals.
+fn wake_queue(state:Local) {
+    let view=state.live.0.borrow().clone();
+    let waiting=view["busy"]==true || !view["state"]["pending"].is_null() || view["state"]["retry_available"]==true;
+    if waiting || state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { return; }
+    tokio::spawn(async move { let _=run(state,Operation::Next).await; });
 }
 enum Operation { Next, Retry, Decide(Uuid,bool) }
 
@@ -308,10 +337,10 @@ mod tests {
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });
-        let mut engine=Engine::open(directory.path())?;
-        engine.set_backend(backend)?;
+        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        engine.set_backend(backend.clone()).await?;
         engine.saved.token=Some("fixture".into());
-        engine.settings(Character::Guide,true)?;
+        engine.settings(true)?;
         engine.full_access.store(true,std::sync::atomic::Ordering::SeqCst);
         let live=engine.live.clone();
         let processes=engine.processes.clone();
@@ -344,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn controls_processes_while_conversation_is_busy() -> Result<()> {
         let directory=tempfile::tempdir()?;
-        let engine=Engine::open(directory.path())?;
+        let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
         let processes=engine.processes.clone();
         let live=engine.live.clone();
         let full_access=engine.full_access.clone();
@@ -382,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let engine=Engine::open(directory.path())?;
+        let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
         let local = Local { controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         for (host,origin,token,status) in [

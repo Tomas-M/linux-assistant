@@ -1,13 +1,13 @@
-use axum::{extract::{Path, Query, State}, http::{header, HeaderMap}, response::{Html, IntoResponse, Redirect, Response}, Form, Json};
+use axum::{extract::{Path, Query, State}, http::{header, HeaderMap}, response::{Html, IntoResponse, Redirect, Response}, Json};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use protocol::{DeviceLogin, LoginResult, PollLogin};
+use protocol::{DeviceLogin, EmailChallenge, EmailLogin, LoginResult, PollLogin, VerifyEmail};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use crate::{db::{hash, now, secret}, App, ApiError, ApiResult};
 
-/// Begin a browser-assisted login usable from either the CLI or localhost UI.
+/// Begin a short-lived sign-in owned by the client, without navigating to the backend.
 pub async fn start(State(app): State<App>) -> ApiResult<Json<DeviceLogin>> {
     let device_id = secret();
     let poll_secret = secret();
@@ -18,7 +18,7 @@ pub async fn start(State(app): State<App>) -> ApiResult<Json<DeviceLogin>> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM devices",[],|r|r.get(0))?;
     if count >= 1000 { return Err(ApiError::busy("Too many pending sign-ins")); }
     conn.execute("INSERT INTO devices(id,poll_hash,expires_at) VALUES(?1,?2,?3)",params![device_id,hash(&poll_secret),expires_at])?;
-    Ok(Json(DeviceLogin { verification_url:format!("{}/login/{device_id}",app.config.public_url),device_id,poll_secret,expires_at }))
+    Ok(Json(DeviceLogin { device_id,poll_secret,expires_at }))
 }
 
 /// Exchange an approved device for a single-use session issuance.
@@ -36,57 +36,59 @@ pub async fn poll(State(app): State<App>, Json(input): Json<PollLogin>) -> ApiRe
     Ok(Json(LoginResult { token:Some(token) }))
 }
 
-/// Serve a minimal hosted sign-in page without third-party scripts.
-pub async fn page(State(app): State<App>, Path(id): Path<String>) -> ApiResult<Html<String>> {
-    require_device(&app,&id)?;
-    let google = if app.config.google_client_id.is_some() { format!("<p><a href='/auth/google/{id}'>Sign in with Google</a></p>") } else { String::new() };
-    let dev = if app.config.dev { "<p>Development mode: email delivery and AI are simulated.</p>" } else { "" };
-    Ok(Html(document(&format!("<h1>Sign in to Linux Assistant</h1>{dev}<p>Only continue if you started this sign-in on your computer.</p><form method='post' action='/auth/email'><input type='hidden' name='device' value='{id}'><label>Email <input name='email' type='email' required maxlength='254' autocomplete='email'></label><button>Send sign-in code</button></form>{google}"))))
-}
-
-#[derive(Deserialize)]
-pub struct EmailForm { device: String, email: String }
-#[derive(Deserialize)]
-pub struct CodeForm { device: String, code: String }
-
-/// Deliver a short-lived code, limiting sends across all devices for the same email.
-pub async fn email(State(app): State<App>, Form(input): Form<EmailForm>) -> ApiResult<Html<String>> {
-    require_device(&app,&input.device)?;
+/// Deliver six random digits, limiting sends across all devices for the same email.
+pub async fn email(State(app): State<App>, Json(input): Json<EmailLogin>) -> ApiResult<Json<EmailChallenge>> {
+    require_login(&app,&input.device_id,&input.poll_secret)?;
     let email = input.email.trim().to_lowercase();
     if email.len() > 254 || !email.contains('@') || email.chars().any(char::is_whitespace) { return Err(ApiError::bad("Enter a valid email")); }
     let recipient=email.parse::<lettre::Address>().map_err(|_|ApiError::bad("Enter a valid email"))?;
-    let code = uuid::Uuid::new_v4().simple().to_string()[..10].to_owned();
+    // Rejection sampling keeps each digit uniform; these UUID bytes come from the OS RNG.
+    let mut code=String::new();
+    while code.len()<6 {
+        for byte in &uuid::Uuid::new_v4().as_bytes()[..6] {
+            if *byte<250 && code.len()<6 { code.push(char::from(b'0'+byte%10)); }
+        }
+    }
+    let expires_at;
     {
         let mut conn = app.db.0.lock().unwrap();
         let tx = conn.transaction()?;
         let recent: i64 = tx.query_row("SELECT COUNT(*) FROM devices WHERE email=?1 AND sent_at>?2",params![email,now()-60],|r|r.get(0))?;
         if recent > 0 { return Err(ApiError::busy("Wait one minute before requesting another code")); }
-        let changed = tx.execute("UPDATE devices SET email=?1,code_hash=?2,sent_at=?3 WHERE id=?4 AND user_id IS NULL AND attempts<5",params![email,hash(&format!("{}:{code}",input.device)),now(),input.device])?;
+        let changed = tx.execute("UPDATE devices SET email=?1,code_hash=?2,sent_at=?3 WHERE id=?4 AND user_id IS NULL AND attempts<5 AND expires_at>?3",params![email,hash(&format!("{}:{code}",input.device_id)),now(),input.device_id])?;
         if changed != 1 { return Err(ApiError::bad("Start a new sign-in")); }
+        expires_at=tx.query_row("SELECT expires_at FROM devices WHERE id=?1",[&input.device_id],|r|r.get(0))?;
         tx.commit()?;
     }
-    let hint = if app.config.dev { format!("<p>Development code: <strong>{code}</strong></p>") } else {
-        crate::mail::send_code(&app,recipient,&code).await?;
-        "<p>Check your email for the sign-in code.</p>".into()
-    };
-    Ok(Html(document(&format!("<h1>Verify your email</h1>{hint}<form method='post' action='/auth/verify'><input type='hidden' name='device' value='{}'><label>Code <input name='code' required autocomplete='one-time-code' maxlength='10'></label><button>Sign in</button></form>",input.device))))
+    if !app.config.dev { crate::mail::send_code(&app,recipient,&code).await?; }
+    Ok(Json(EmailChallenge { expires_at,development_code:app.config.dev.then_some(code) }))
 }
 
-/// Consume verification attempts before comparing codes, including failed attempts.
-pub async fn verify(State(app): State<App>, Form(input): Form<CodeForm>) -> ApiResult<Html<String>> {
+/// Consume verification attempts before comparison and issue the session inside the client flow.
+pub async fn verify(State(app): State<App>, Json(input): Json<VerifyEmail>) -> ApiResult<Json<LoginResult>> {
+    require_login(&app,&input.device_id,&input.poll_secret)?;
+    let code:String=input.code.chars().filter(|c|!c.is_whitespace()).collect();
     let email = {
         let mut conn = app.db.0.lock().unwrap();
         let tx = conn.transaction()?;
-        let row: Option<(String,String)> = tx.query_row("SELECT email,code_hash FROM devices WHERE id=?1 AND expires_at>?2 AND attempts<5 AND user_id IS NULL AND code_hash IS NOT NULL",params![input.device,now()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        let Some((email,expected)) = row else { return Err(ApiError::bad("Code expired; start sign-in again")); };
-        tx.execute("UPDATE devices SET attempts=attempts+1 WHERE id=?1",[&input.device])?;
+        let row: Option<(String,String)> = tx.query_row("SELECT email,code_hash FROM devices WHERE id=?1 AND expires_at>?2 AND attempts<5 AND user_id IS NULL AND code_hash IS NOT NULL",params![input.device_id,now()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let Some((email,expected)) = row else { return Err(ApiError::bad("Code expired; request a new code")); };
+        tx.execute("UPDATE devices SET attempts=attempts+1 WHERE id=?1",[&input.device_id])?;
         tx.commit()?;
-        if expected != hash(&format!("{}:{}",input.device,input.code.trim().to_lowercase())) { return Err(ApiError::bad("Incorrect sign-in code")); }
+        if code.len()!=6 || !code.bytes().all(|c|c.is_ascii_digit()) || expected != hash(&format!("{}:{code}",input.device_id)) { return Err(ApiError::bad("Incorrect sign-in code")); }
         email
     };
     let user = app.db.user(&email,None,app.config.free_credits)?;
-    approve(&app,&input.device,user)?;
-    Ok(Html(document("<h1>Signed in</h1><p>Return to Linux Assistant. You can close this tab.</p>")))
+    approve(&app,&input.device_id,user)?;
+    poll(State(app),Json(PollLogin { device_id:input.device_id,poll_secret:input.poll_secret })).await
+}
+
+/// Email operations require the initiating client's secret as well as its device ID.
+fn require_login(app:&App,id:&str,secret:&str)->ApiResult<()> {
+    require_device(app,id)?;
+    let valid:bool=app.db.0.lock().unwrap().query_row("SELECT poll_hash=?1 FROM devices WHERE id=?2",params![hash(secret),id],|r|r.get(0))?;
+    if !valid { return Err(ApiError::bad("Invalid sign-in")); }
+    Ok(())
 }
 
 /// Bind Google OAuth state to this browser and protect the authorization code with PKCE.

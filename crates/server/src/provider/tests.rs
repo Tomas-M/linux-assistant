@@ -1,13 +1,13 @@
 use super::*;
 use clap::Parser;
-use protocol::{Character, Message};
+use protocol::Message;
 use serde_json::json;
 use uuid::Uuid;
 
 /// Fixtures and HTTP tests use the same conversation schema as the real client.
 fn request() -> ChatRequest {
     ChatRequest { base:0,request_id:Uuid::new_v4(),conversation_id:Uuid::new_v4(),platform:Platform::Linux,
-        character:Character::Guide,messages:vec![Message { role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
+        messages:vec![Message { role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
 }
 
 /// Persist a provider success exactly as the production HTTP handler does.

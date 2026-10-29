@@ -1,41 +1,36 @@
 # Server source bundle
 
-## Required reset for the conversation protocol update
+## Update for in-client email sign-in and queued editing
 
-This build replaces full-history requests with new-message requests and adds steering/interruption. Update both backend and client. Existing conversation/request tables must be reset; no migration or compatibility path is included.
+Deploy the backend and client together. The client now uses JSON email verification, six-digit codes, and no character field. This update does not require a backend database wipe. Existing users, credits, sessions and usage records remain.
 
 ```sh
 # Build the new binary before stopping the running service.
 cd /var/www/html/linux-assistant
 sh scripts/build_server.sh
 
-# Stop the backend, back up its database, and clear only conversation/request state.
-# Users, sign-in sessions, credits, purchases, usage records and ChatGPT account logins remain.
-# Pending request credits are refunded once. The service stays stopped until installation.
-sh scripts/reset_conversations.sh
-
-# Install the new backend; it recreates the conversation tables with the new schema.
+# Install the new backend without clearing its database.
 sh scripts/install_server_update.sh
 
 # Verify startup. Then test a streamed conversation, steering, and Stop through Apache.
 curl --fail https://ai.slax.org/health
 ```
 
-The reset script defaults to `/var/lib/linux-assistant/assistant.db`; pass a different database path as its first argument if needed. Its backup contains private account data and is created beside the database with mode 600. Existing provider rollout files are retained, but the new application conversation state does not resume them.
+The existing SMTP configuration is reused. Email and code entry stay inside the client. Public backend APIs allow requests from any origin; local command APIs and the administrator dashboard retain their access controls. Test email delivery and a conversation after deployment. Full access is enabled by default when local commands are allowed.
 
-Stop the local assistant through Settings → Stop local assistant (closing its browser is insufficient). Run the **new** executable once with `--reset-chat`, then launch normally or with `--desktop`. The explicit reset preserves sign-in and settings, backs up local state, and clears only the chat, pending approvals/requests, and queued input. It refuses to reset while a daemon is running.
+Stop the local assistant through Settings → Stop local assistant (closing its browser is insufficient). Run the **new** executable once with `--reset-chat` to clear old pending requests and queued input. The reset preserves sign-in and settings and backs up local state. Every launch requires `--backend`; a hostname without a scheme uses HTTPS. Backend configuration and character selection are no longer in the UI. Reset refuses to run while a daemon is running.
 
 ```powershell
 # Windows: after stopping the old local assistant, reset its chat for the new protocol.
-.\linux-assistant.exe --reset-chat
+.\linux-assistant.exe --backend ai.slax.org --reset-chat
 # Start the new client and open its browser.
-.\linux-assistant.exe --desktop
+.\linux-assistant.exe --backend ai.slax.org --desktop
 ```
 
 ```sh
 # Linux: after stopping the old daemon, reset the chat and print the new local URL.
-./linux-assistant --reset-chat
-./linux-assistant
+./linux-assistant --backend ai.slax.org --reset-chat
+./linux-assistant --backend ai.slax.org
 ```
 
 
@@ -135,7 +130,7 @@ sudo systemctl enable --now linux-assistant
 curl --fail http://127.0.0.1:8787/health
 ```
 
-The health response should be `{"ok":true}`. Check failures with `sudo journalctl -u linux-assistant -n 100 --no-pager`. Set the backend URL in the client to your HTTPS domain.
+The health response should be `{"ok":true}`. Check failures with `sudo journalctl -u linux-assistant -n 100 --no-pager`. Launch the client with `--backend YOUR-HOST`.
 
 To add another account later, sign into a new account directory, append its absolute path to `ASSISTANT_CODEX_HOMES`, and run `sudo systemctl restart linux-assistant`. New chats select an available account with the lowest reported usage and stay assigned to it. Exhaustion can trigger a new provider thread on another account with history replay, which consumes additional usage.
 

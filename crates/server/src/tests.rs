@@ -16,7 +16,7 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
     let app=router(state.clone());
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
     let input=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
-        "character":"guide","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
+        "messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     let http=reqwest::Client::new();
     let mut response=http.post(&url).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
     assert!(response.status().is_success());
@@ -73,7 +73,7 @@ async fn login_and_chat_are_bound_to_user_and_request() -> anyhow::Result<()> {
     let (_,session)=request(&app,"/v1/auth/poll",None,poll.clone()).await?;
     let token=session["token"].as_str().unwrap();
     assert_eq!(request(&app,"/v1/auth/poll",None,poll).await?.0,StatusCode::BAD_REQUEST);
-    let chat=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","character":"guide","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
+    let chat=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     assert_eq!(request(&app,"/v1/chat",None,chat.clone()).await?.0,StatusCode::UNAUTHORIZED);
     let (status,reply)=request(&app,"/v1/chat",Some(token),chat.clone()).await?;
     assert_eq!(status,StatusCode::OK);
@@ -131,12 +131,50 @@ async fn email_codes_expire_after_five_attempts() -> anyhow::Result<()> {
     let app=router(state.clone());
     let (_,device)=request(&app,"/v1/auth/device",None,json!({})).await?;
     let id=device["device_id"].as_str().unwrap();
-    state.db.0.lock().unwrap().execute("UPDATE devices SET email='code@example.com',code_hash=?1 WHERE id=?2",rusqlite::params![db::hash(&format!("{id}:correct")),id])?;
-    for code in ["wrong","wrong","wrong","wrong","wrong","correct"] {
-        let response=app.clone().oneshot(Request::builder().method("POST").uri("/auth/verify").header(header::CONTENT_TYPE,"application/x-www-form-urlencoded")
-            .body(Body::from(format!("device={id}&code={code}")))?).await?;
-        assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+    state.db.0.lock().unwrap().execute("UPDATE devices SET email='code@example.com',code_hash=?1 WHERE id=?2",rusqlite::params![db::hash(&format!("{id}:012345")),id])?;
+    for code in ["999999","999999","999999","999999","999999","012345"] {
+        assert_eq!(request(&app,"/v1/auth/verify",None,json!({"device_id":id,"poll_secret":device["poll_secret"],"code":code})).await?.0,StatusCode::BAD_REQUEST);
     }
     assert!(request(&app,"/v1/auth/poll",None,json!({"device_id":id,"poll_secret":device["poll_secret"]})).await?.1["token"].is_null());
+    Ok(())
+}
+
+/// The in-client flow accepts spaced codes once, keeps leading zeros, and limits resend attempts.
+#[tokio::test]
+async fn email_sign_in_uses_six_digits_and_consumes_the_code() -> anyhow::Result<()> {
+    let state=application()?;
+    let app=router(state.clone());
+    let (_,device)=request(&app,"/v1/auth/device",None,json!({})).await?;
+    let id=device["device_id"].as_str().unwrap();
+    let email=json!({"device_id":id,"poll_secret":device["poll_secret"],"email":"  Person@example.test  "});
+    let mut wrong_secret=email.clone();
+    wrong_secret["poll_secret"]=json!("wrong");
+    assert_eq!(request(&app,"/v1/auth/email",None,wrong_secret).await?.0,StatusCode::BAD_REQUEST);
+    let (status,challenge)=request(&app,"/v1/auth/email",None,email.clone()).await?;
+    assert_eq!(status,StatusCode::OK);
+    let generated=challenge["development_code"].as_str().unwrap();
+    assert_eq!(generated.len(),6);
+    assert!(generated.bytes().all(|c|c.is_ascii_digit()));
+    assert_eq!(request(&app,"/v1/auth/email",None,email).await?.0,StatusCode::SERVICE_UNAVAILABLE);
+    state.db.0.lock().unwrap().execute("UPDATE devices SET code_hash=?1 WHERE id=?2",rusqlite::params![db::hash(&format!("{id}:012345")),id])?;
+    let verify=json!({"device_id":id,"poll_secret":device["poll_secret"],"code":" \n012 345\t"});
+    let (status,session)=request(&app,"/v1/auth/verify",None,verify.clone()).await?;
+    assert_eq!(status,StatusCode::OK);
+    assert!(state.db.authenticate(session["token"].as_str().unwrap()).is_ok());
+    assert_eq!(request(&app,"/v1/auth/verify",None,verify).await?.0,StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+/// Public API CORS allows arbitrary origins without making cookie-authenticated admin routes public.
+#[tokio::test]
+async fn public_cors_keeps_account_and_admin_authentication() -> anyhow::Result<()> {
+    let app=router(application()?);
+    for (method,path,status) in [("OPTIONS","/v1/auth/email",StatusCode::NO_CONTENT),("GET","/v1/me",StatusCode::UNAUTHORIZED),("GET","/admin",StatusCode::FORBIDDEN)] {
+        let response=app.clone().oneshot(Request::builder().method(method).uri(path).header(header::ORIGIN,"http://127.0.0.1:54321")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD,"POST").header(header::ACCESS_CONTROL_REQUEST_HEADERS,"content-type,authorization").body(Body::empty())?).await?;
+        assert_eq!(response.status(),status);
+        assert_eq!(response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).map(|v|v.to_str().unwrap()),if path=="/admin" { None } else { Some("*") });
+        assert!(!response.headers().contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+    }
     Ok(())
 }

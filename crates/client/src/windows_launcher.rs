@@ -3,12 +3,12 @@ use anyhow::Result;
 use windows_sys::Win32::{Foundation::CloseHandle, System::{Console::{SetStdHandle,STD_ERROR_HANDLE,STD_OUTPUT_HANDLE},Threading::{CreateProcessW,PROCESS_INFORMATION,STARTUPINFOW,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP}}};
 
 /// Start a detached daemon without inheriting PowerShell's capture pipes or any other launcher handles.
-pub fn spawn() -> Result<()> {
+pub fn spawn(backend:&str) -> Result<()> {
     let executable=std::env::current_exe()?;
     let executable:Vec<u16>=executable.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut command=vec![b'"' as u16];
     command.extend_from_slice(&executable[..executable.len()-1]);
-    command.extend("\" --daemon\0".encode_utf16());
+    command.extend(format!("\" --daemon --backend \"{backend}\"\0").encode_utf16());
     let startup=STARTUPINFOW { cb:std::mem::size_of::<STARTUPINFOW>() as u32,..unsafe { std::mem::zeroed() } };
     let mut process:PROCESS_INFORMATION=unsafe { std::mem::zeroed() };
     // No handles are inherited. The child opens its own log after startup.
@@ -44,7 +44,7 @@ mod tests {
             let mut previous=String::new();
             for _ in 0..2 {
                 let output=tokio::time::timeout(Duration::from_secs(15),tokio::process::Command::new(&executable)
-                    .env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
+                    .args(["--backend","assistant.example.test"]).env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
                 anyhow::ensure!(output.status.success(),"Launcher failed");
                 let url=String::from_utf8(output.stdout)?;
                 anyhow::ensure!(url.starts_with("http://127.0.0.1:") && url.contains("/#"),"Missing browser URL");

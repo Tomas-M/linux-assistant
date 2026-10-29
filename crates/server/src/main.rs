@@ -90,7 +90,7 @@ async fn run() -> anyhow::Result<()> {
 fn router(app: App) -> Router {
     Router::new().merge(admin::router(app.clone())).route("/health",get(||async { Json(json!({"ok":true})) }))
         .route("/v1/auth/device",post(auth::start)).route("/v1/auth/poll",post(auth::poll))
-        .route("/login/{id}",get(auth::page)).route("/auth/email",post(auth::email)).route("/auth/verify",post(auth::verify))
+        .route("/v1/auth/email",post(auth::email)).route("/v1/auth/verify",post(auth::verify))
         .route("/auth/google/{device}",get(auth::google)).route("/auth/google/callback",get(auth::callback))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat))
         .route("/v1/chat/{id}/steer",post(turns::steer)).route("/v1/chat/{id}/stop",post(turns::stop))
@@ -100,13 +100,21 @@ fn router(app: App) -> Router {
         .layer(DefaultBodyLimit::max(256*1024)).layer(middleware::from_fn_with_state(app.clone(),browser_security)).with_state(app)
 }
 
-/// Reject cross-origin browser writes and prevent credential-bearing pages being cached.
+/// Public bearer-token APIs allow any origin; cookie-based admin and OAuth routes stay same-origin.
 async fn browser_security(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
     let admin=request.uri().path().starts_with("/admin");
-    if let Some(origin) = request.headers().get(header::ORIGIN) {
-        if origin.to_str().ok() != Some(app.config.public_url.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+    let public=request.uri().path().starts_with("/v1/") || request.uri().path()=="/health";
+    if !public {
+        if let Some(origin) = request.headers().get(header::ORIGIN) {
+            if origin.to_str().ok() != Some(app.config.public_url.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+        }
     }
-    let mut response = next.run(request).await;
+    let mut response = if public && request.method()==axum::http::Method::OPTIONS { StatusCode::NO_CONTENT.into_response() } else { next.run(request).await };
+    if public {
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN,"*".parse().unwrap());
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_METHODS,"GET, POST, OPTIONS".parse().unwrap());
+        response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_HEADERS,"authorization, content-type, accept".parse().unwrap());
+    }
     response.headers_mut().insert(header::CACHE_CONTROL,"no-store".parse().unwrap());
     response.headers_mut().insert("Referrer-Policy","same-origin".parse().unwrap());
     response.headers_mut().insert("X-Content-Type-Options","nosniff".parse().unwrap());

@@ -6,8 +6,9 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, state, view={busy:false,steps:[]}, busy=false, acting=false, loginTimer, polling=false, stopped=false, messageKey='', startedAt;
-const eventController=new AbortController();
+let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[]}, busy=false, acting=false, stopped=false, messageKey='', startedAt;
+const eventController=new AbortController(), pendingIds=new Set();
+let queueKey='';
 document.documentElement.dataset.theme=localStorage.getItem('assistant-theme') || 'light';
 elements.theme.textContent=document.documentElement.dataset.theme==='dark'?'☼':'☾';
 elements.theme.setAttribute('aria-label',document.documentElement.dataset.theme==='dark'?'Switch to light mode':'Switch to dark mode');
@@ -60,25 +61,25 @@ function render()
 {
     if (!state) return;
     busy=view.busy || acting;
+    document.body.classList.toggle('signed-out',!state.authenticated);
     elements.setup.hidden=state.authenticated;
-    elements.workspace.hidden=!state.authenticated;
+    elements['composer-wrap'].hidden=!state.authenticated;
+    elements['settings-open'].hidden=!state.authenticated;
+    elements['credit-balance'].hidden=!state.authenticated;
     elements['process-toggle'].hidden=!state.authenticated;
     elements.welcome.hidden=state.messages.length>0;
-    elements.backend.value=state.settings.backend;
-    elements.character.value=state.settings.character || '';
     elements.commands.checked=state.settings.commands_enabled;
     elements['full-access'].checked=state.full_access;
-    elements['full-access'].disabled=!state.settings.character || (busy && !state.full_access);
+    elements['full-access'].disabled=!state.authenticated || (busy && !state.full_access);
     elements['permission-note'].textContent=state.full_access?'Commands run automatically':state.settings.commands_enabled?'You approve every command':'Local commands are off';
     elements.platform.textContent=(state.platform==='windows'?'Windows · PowerShell':'Linux · sh')+' · Local workspace';
     elements.account.textContent=state.account?state.account.email+' · '+state.account.credits+' credits':'Sign in to your assistant account';
-    elements['credit-balance'].textContent=state.account?(state.account.development?'Simulated AI · ':'')+state.account.credits+' credits':'';
+    elements['credit-balance'].textContent=state.account?state.account.credits.toLocaleString()+' credits':'Credits…';
     elements['settings-open'].textContent=state.account?Array.from(state.account.email)[0].toUpperCase():'○';
-    for (const id of ['new','character','commands','login','backend','credits','buy','logout','approve','deny','retry'])
-        elements[id].disabled=busy;
+    for (const id of ['new','commands','credits','buy','logout','approve','deny','retry'])
+        elements[id].disabled=busy || !state.authenticated;
     renderComposer();
-    elements.prompt.disabled=!state.settings.character;
-    elements.prompt.placeholder=state.settings.character?'Ask anything, or describe a task…':'Choose your assistant character in settings to begin';
+    renderLogin();
     elements.retry.hidden=!state.retry_available || busy;
     elements.proposal.hidden=!state.pending || busy;
     if (state.pending)
@@ -122,13 +123,6 @@ function render()
             }
             const article=document.createElement('article');
             article.className=message.role;
-            if (message.role==='assistant')
-            {
-                const label=document.createElement('div');
-                label.className='assistant-label';
-                label.textContent='✳ Assistant';
-                article.append(label);
-            }
             const text=document.createElement('div');
             text.className='answer';
             if (message.role==='assistant') renderAnswer(text,message.text);
@@ -164,7 +158,7 @@ async function watch()
         {
             const response=await fetch('/api/events',{headers:{Authorization:'Bearer '+token},signal:eventController.signal});
             if (!response.ok) throw new Error('Open the URL printed by the executable to authorize this tab.');
-            elements.connection.textContent='Connected locally';
+            if (elements.status.dataset.connection) { elements.status.textContent=''; delete elements.status.dataset.connection; }
             const reader=response.body.getReader(), decoder=new TextDecoder();
             let buffer='';
             while (!stopped)
@@ -185,6 +179,8 @@ async function watch()
                     if (!next.busy) startedAt=null;
                     view=next;
                     state=view.state;
+                    for (const id of pendingIds)
+                        if (!(view.queue || []).some(input=>input.id===id && input.editing)) pendingIds.delete(id);
                     render();
                     if (follow && state.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
                 }
@@ -194,8 +190,8 @@ async function watch()
         catch (error)
         {
             if (stopped) break;
-            elements.connection.textContent='Reconnecting…';
-            if (!state) elements.status.textContent=error.message;
+            elements.status.dataset.connection='true';
+            elements.status.textContent='Reconnecting to the local assistant… '+error.message;
             await new Promise(resolve=>setTimeout(resolve,1500));
         }
     }
@@ -228,44 +224,103 @@ elements.theme.addEventListener('click',()=>
 });
 elements['settings-open'].addEventListener('click',()=>elements['settings-dialog'].showModal());
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
-elements['backend-form'].addEventListener('submit',event=>{event.preventDefault(); const backend=elements.backend.value; action(()=>api('backend',{backend}));});
-elements.login.addEventListener('click',()=>action(async()=>
+elements['credit-balance'].addEventListener('click',()=>elements['settings-dialog'].showModal());
+const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
+
+// Keep the sign-in form local, including resend timing and development-only delivery hints.
+function renderLogin()
 {
-    const result=await api('login',{});
-    elements['login-link'].href=result.url;
-    elements['login-link'].hidden=false;
-    window.open(result.url,'_blank','noopener,noreferrer');
-    clearInterval(loginTimer);
-    loginTimer=setInterval(async()=>
+    const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));
+    for (const id of ['email','login','verify','change-email']) elements[id].disabled=loginBusy;
+    elements['code-digits'].disabled=loginBusy;
+    elements.resend.disabled=loginBusy || remaining>0;
+    elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
+    elements.login.textContent=loginBusy?'Sending…':'Send sign-in code';
+}
+
+// Both the initial request and resend use the same email and never navigate away.
+async function requestCode()
+{
+    if (loginBusy || !elements['email-form'].reportValidity()) return;
+    loginBusy=true;
+    elements['auth-status'].textContent='';
+    renderLogin();
+    try
     {
-        if (polling || busy) return;
-        polling=true;
-        try
-        {
-            if ((await api('login/poll',{})).complete)
-            {
-                clearInterval(loginTimer);
-                state=await api('state');
-                render();
-                elements['settings-dialog'].showModal();
-            }
-        }
-        catch (error) { clearInterval(loginTimer); elements.status.textContent=error.message; }
-        finally { polling=false; }
-    },2000);
-}));
-for (const id of ['character','commands']) elements[id].addEventListener('change',()=>
+        const result=await api('login',{email:elements.email.value.trim()});
+        resendAt=Date.now()+60000;
+        elements['email-form'].hidden=true;
+        elements['code-form'].hidden=false;
+        elements['login-email'].textContent=elements.email.value.trim();
+        elements['development-code'].hidden=!result.development_code;
+        elements['development-code'].textContent=result.development_code?'Development code: '+result.development_code:'';
+        for (const input of codeInputs) input.value='';
+    }
+    catch (error) { elements['auth-status'].textContent=error.message; }
+    finally { loginBusy=false; renderLogin(); if (!elements['code-form'].hidden) codeInputs[0].focus(); }
+}
+elements['email-form'].addEventListener('submit',event=>{event.preventDefault(); requestCode();});
+elements.resend.addEventListener('click',requestCode);
+elements['change-email'].addEventListener('click',()=>
 {
-    const character=elements.character.value, commands_enabled=elements.commands.checked;
-    if (character) action(()=>api('settings',{character,commands_enabled}));
+    elements['email-form'].hidden=false;
+    elements['code-form'].hidden=true;
+    elements['auth-status'].textContent='';
+    elements.email.focus();
 });
+elements['code-form'].addEventListener('submit',async event=>
+{
+    event.preventDefault();
+    if (loginBusy) return;
+    const code=codeInputs.map(input=>input.value).join('').trim();
+    if (!/^[0-9]{6}$/u.test(code)) { elements['auth-status'].textContent='Enter all six digits.'; return; }
+    loginBusy=true;
+    elements['auth-status'].textContent='';
+    renderLogin();
+    try
+    {
+        state=await api('login/verify',{code});
+        elements['code-form'].hidden=true;
+        elements['email-form'].hidden=false;
+        for (const input of codeInputs) input.value='';
+        render();
+        elements.prompt.focus();
+    }
+    catch (error) { elements['auth-status'].textContent=error.message; }
+    finally { loginBusy=false; renderLogin(); }
+});
+
+// Accept a full pasted/autofilled code in any cell, or advance one digit at a time.
+function fillCode(value,index)
+{
+    const digits=value.replace(/\s/gu,'');
+    if (!/^[0-9]{0,6}$/u.test(digits)) { elements['auth-status'].textContent='Use the six digits from your email.'; codeInputs[index].value=''; return; }
+    elements['auth-status'].textContent='';
+    if (digits.length===6) index=0;
+    if (!digits.length) { codeInputs[index].value=''; return; }
+    for (let offset=0; offset<digits.length && index+offset<6; offset++) codeInputs[index+offset].value=digits[offset];
+    codeInputs[Math.min(5,index+digits.length)].focus();
+}
+codeInputs.forEach((input,index)=>
+{
+    input.addEventListener('focus',()=>input.select());
+    input.addEventListener('input',()=>fillCode(input.value,index));
+    input.addEventListener('paste',event=>{event.preventDefault(); fillCode(event.clipboardData.getData('text').trim(),index);});
+    input.addEventListener('keydown',event=>
+    {
+        if (event.key==='Backspace' && !input.value && index) { event.preventDefault(); codeInputs[index-1].value=''; codeInputs[index-1].focus(); }
+        if (event.key==='ArrowLeft' && index) { event.preventDefault(); codeInputs[index-1].focus(); }
+        if (event.key==='ArrowRight' && index<5) { event.preventDefault(); codeInputs[index+1].focus(); }
+    });
+});
+elements.commands.addEventListener('change',()=>action(()=>api('settings',{commands_enabled:elements.commands.checked})));
 elements['full-access'].addEventListener('change',async()=>
 {
     const enabled=elements['full-access'].checked;
     try
     {
         if (enabled && !state.settings.commands_enabled)
-            await api('settings',{character:state.settings.character,commands_enabled:true});
+            await api('settings',{commands_enabled:true});
         state=await api('access',{enabled});
     }
     catch (error) { elements.status.textContent=error.message; }
@@ -275,11 +330,20 @@ elements['full-access'].addEventListener('change',async()=>
 function renderComposer()
 {
     if (!state) return;
-    const text=elements.prompt.value.trim(), stop=view.busy && !text, queueing=view.busy || !!state.pending;
+    elements.prompt.disabled=!state.authenticated || queueAction;
+    const queue=view.queue || [], held=queue.find(input=>input.editing);
+    if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value)
+    {
+        editingId=held.id;
+        elements.prompt.value=held.text;
+    }
+    if (editingId && !queue.some(input=>input.id===editingId)) editingId=null;
+    elements['editing-message'].hidden=!editingId;
+    elements['cancel-edit'].disabled=queueAction;
+    const text=elements.prompt.value.trim(), stop=view.busy && !text, queueing=view.busy || !!state.pending || !!editingId;
     elements.send.textContent=stop?'■':'↑';
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
-    elements.send.disabled=!state.settings.character || (!view.busy && state.retry_available) || (!stop && !text);
-    elements['send-hint'].textContent=queueing?(view.can_steer?'Enter to queue · Ctrl+Enter to steer now':'Enter to queue · AI steering is available during generation'):'Enter to send · Shift+Enter for a new line';
+    elements.send.disabled=!state.authenticated || queueAction || (!view.busy && state.retry_available) || (!stop && !text);
     elements['steering-messages'].replaceChildren();
     for (const input of view.steering || [])
     {
@@ -287,21 +351,36 @@ function renderComposer()
         message.textContent='You · '+input.text;
         elements['steering-messages'].append(message);
     }
-    const queue=view.queue || [];
-    elements['queued-messages'].hidden=!queue.length;
+    elements['queued-messages'].hidden=!queue.some(input=>!input.editing);
+    const key=JSON.stringify([queue,view.can_steer,queueAction]);
+    if (key===queueKey) return;
+    queueKey=key;
     elements['queued-messages'].replaceChildren();
-    for (const input of queue)
+    const paths={edit:'M16 3l5 5M3 21l5-1L21 7a2 2 0 0 0-4-4L4 16z',remove:'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'};
+    for (const input of queue.filter(input=>!input.editing))
     {
-        const row=document.createElement('div'), text=document.createElement('span'), remove=document.createElement('button');
-        text.textContent='Queued: '+input.text;
-        remove.textContent='×';
-        remove.dataset.remove=input.id;
-        remove.setAttribute('aria-label','Remove queued message');
-        row.append(text,remove);
+        const row=document.createElement('div'), text=document.createElement('span');
+        text.textContent=input.text;
+        text.title=input.text;
+        row.append(text);
+        for (const [action,label] of [['steer','Steer'],['edit','Edit queued message'],['remove','Delete queued message']])
+        {
+            const button=document.createElement('button');
+            button.type='button';
+            button.dataset.action=action;
+            button.dataset.id=input.id;
+            button.setAttribute('aria-label',label);
+            button.title=label;
+            button.disabled=queueAction || (action==='steer' && !view.can_steer);
+            if (action==='steer') button.textContent=label;
+            else button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="'+paths[action]+'"/></svg>';
+            row.append(button);
+        }
         elements['queued-messages'].append(row);
     }
 }
-// Keep input editable while a previous submission is running; backend IDs protect retries.
+
+// Clear each submitted draft immediately so another message can be queued during generation.
 async function submitPrompt(steer=false)
 {
     const text=elements.prompt.value;
@@ -311,17 +390,30 @@ async function submitPrompt(steer=false)
         return;
     }
     if (elements.send.disabled) return;
-    if (steer && view.busy && !view.can_steer) { elements.status.textContent='No AI turn is running. Press Enter to queue this message.'; return; }
-    const steering=steer && view.busy, id=steering?(steerId || (steerId=crypto.randomUUID())):crypto.randomUUID();
+    if (steer && view.busy && !view.can_steer) { elements.status.textContent='No AI turn is accepting steering. Press Enter to queue this message.'; return; }
+    const steering=steer && view.busy, draftId=editingId;
+    const id=draftId || (steering?(steerId || crypto.randomUUID()):crypto.randomUUID());
+    pendingIds.add(id);
+    editingId=null;
+    steerId=null;
     elements.prompt.value='';
+    elements.prompt.style.height='auto';
+    elements.status.textContent='';
     renderComposer();
-    try { await api(steering?'steer':'chat',{id,text}); steerId=null; }
+    try { await api(steering?'steer':'chat',{id,text}); }
     catch (error)
     {
+        pendingIds.delete(id);
         elements.status.textContent=error.message;
-        if (!elements.prompt.value && (steering || !state.messages.some(message=>message.role==='user' && message.text===text))) elements.prompt.value=text;
+        const accepted=state.messages.some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
+        if (!elements.prompt.value && !editingId && !accepted)
+        {
+            elements.prompt.value=text;
+            editingId=draftId;
+            if (steering) steerId=id;
+        }
     }
-    renderComposer();
+    finally { if (!(view.queue || []).some(input=>input.id===id && input.editing)) pendingIds.delete(id); renderComposer(); }
 }
 elements['chat-form'].addEventListener('submit',event=>{event.preventDefault(); submitPrompt();});
 elements.prompt.addEventListener('keydown',event=>
@@ -331,10 +423,31 @@ elements.prompt.addEventListener('keydown',event=>
 elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(180,elements.prompt.scrollHeight)+'px'; renderComposer();});
 elements['queued-messages'].addEventListener('click',async event=>
 {
-    const id=event.target.closest('[data-remove]')?.dataset.remove;
-    if (id) try { await api('queue/'+id+'/remove',{}); } catch (error) { elements.status.textContent=error.message; }
+    const button=event.target.closest('[data-action]');
+    if (!button || queueAction || button.disabled) return;
+    const {id,action}=button.dataset;
+    if (action==='edit' && (elements.prompt.value || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
+    queueAction=true;
+    renderComposer();
+    try
+    {
+        const result=await api('queue/'+id+'/'+action,action==='edit'?{editing:true}:{});
+        if (action==='edit') { editingId=id; elements.prompt.value=result.text; }
+    }
+    catch (error) { elements.status.textContent=error.message; }
+    finally { queueAction=false; renderComposer(); if (action==='edit' && editingId===id) elements.prompt.focus(); }
 });
-for (const button of document.querySelectorAll('[data-prompt]')) button.addEventListener('click',()=>{elements.prompt.value=button.dataset.prompt; renderComposer(); elements.prompt.focus();});
+elements['cancel-edit'].addEventListener('click',async()=>
+{
+    if (!editingId || queueAction) return;
+    const id=editingId;
+    pendingIds.add(id);
+    queueAction=true;
+    renderComposer();
+    try { await api('queue/'+id+'/edit',{editing:false}); editingId=null; elements.prompt.value=''; }
+    catch (error) { pendingIds.delete(id); elements.status.textContent=error.message; }
+    finally { queueAction=false; renderComposer(); }
+});
 for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
 {
     const proposalId=state.pending.id;
@@ -358,7 +471,6 @@ elements.stop.addEventListener('click',async()=>
         stopped=true;
         eventController.abort();
         clearInterval(processTimer);
-        clearInterval(loginTimer);
         clearInterval(elapsedTimer);
         document.body.textContent='Linux Assistant stopped. Launch the executable to start again.';
     }
@@ -502,13 +614,12 @@ for (const stream of ['stdout','stderr']) elements['download-'+stream].addEventL
 
 
 const processTimer=setInterval(()=>{if (state?.authenticated) pollProcesses();},1000);
-const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':'';},1000);
+const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin();},1000);
 watch();
 api('state').then(async current=>
 {
     state=current;
     render();
-    if (state.authenticated && !state.settings.character) elements['settings-dialog'].showModal();
     if (state.authenticated && !view.busy)
     {
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }

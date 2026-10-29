@@ -111,31 +111,28 @@ async fn smtp_delivery_and_authentication_failure() -> anyhow::Result<()> {
         let app=router(state.clone());
         let (_,device)=request(&app,"/v1/auth/device",None,json!({})).await?;
         let id=device["device_id"].as_str().unwrap();
-        let response=app.clone().oneshot(Request::builder().method("POST").uri("/auth/email")
-            .header(header::CONTENT_TYPE,"application/x-www-form-urlencoded")
-            .body(Body::from(format!("device={id}&email=žluťoučký%40example.test")))?).await?;
-        let status=response.status();
-        let body=String::from_utf8(to_bytes(response.into_body(),256*1024).await?.to_vec())?;
+        let (status,body)=request(&app,"/v1/auth/email",None,json!({"device_id":id,"poll_secret":device["poll_secret"],"email":"žluťoučký@example.test"})).await?;
         let message=server.await??;
         if reject_auth {
             assert_eq!(status,StatusCode::INTERNAL_SERVER_ERROR);
             assert!(message.is_empty());
-            assert!(!body.contains("Check your email"));
+            assert!(body["error"].is_string());
         } else {
             assert_eq!(status,StatusCode::OK);
-            assert!(body.contains("Check your email"));
+            assert!(body["development_code"].is_null());
             assert!(message.contains("Subject: Your Linux Assistant sign-in code"));
-            let code=message.split("Your sign-in code is ").nth(1).unwrap().split('.').next().unwrap();
-            assert_eq!(code.len(),10);
-            assert!(!body.contains(code));
+            let code=message.split("Enter this code in your assistant:").nth(1).unwrap().trim_start().lines().next().unwrap().trim();
+            assert_eq!(code.len(),6);
+            assert!(code.bytes().all(|c|c.is_ascii_digit()));
+            assert!(!body.to_string().contains(code));
+            assert!(message.contains("multipart/alternative") && message.contains("text/html") && message.contains("text/plain"));
+            let html=message.replace("=\r\n","").replace("=3D","=");
+            assert!(html.contains("<h1 ") && html.contains(&format!("<span>{}</span><span style=\"margin-left:0.35em\">{}</span>",&code[..3],&code[3..])));
             let stored: String=state.db.0.lock().unwrap().query_row("SELECT code_hash FROM devices WHERE id=?1",[id],|row|row.get(0))?;
             assert_eq!(stored,db::hash(&format!("{id}:{code}")));
-            let verified=app.oneshot(Request::builder().method("POST").uri("/auth/verify")
-                .header(header::CONTENT_TYPE,"application/x-www-form-urlencoded")
-                .body(Body::from(format!("device={id}&code={code}")))?).await?;
-            assert_eq!(verified.status(),StatusCode::OK);
+            assert_eq!(request(&app,"/v1/auth/verify",None,json!({"device_id":id,"poll_secret":device["poll_secret"],"code":code})).await?.0,StatusCode::OK);
         }
-        assert!(!body.contains("test-password"));
+        assert!(!body.to_string().contains("test-password"));
     }
     Ok(())
 }
@@ -152,7 +149,7 @@ async fn smtp_rejects_untrusted_certificate() -> anyhow::Result<()> {
     let server=tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(10),smtp_session(listener,tls,false)).await?
     });
-    assert!(crate::mail::send_code(&state,"žluťoučký@example.test".parse()?,"0123456789").await.is_err());
+    assert!(crate::mail::send_code(&state,"žluťoučký@example.test".parse()?,"012345").await.is_err());
     assert!(server.await?.is_err());
     Ok(())
 }

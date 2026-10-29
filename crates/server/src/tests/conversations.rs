@@ -9,7 +9,7 @@ async fn long_history_uses_small_requests_and_stable_replay()->anyhow::Result<()
     state.db.0.lock().unwrap().execute("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?1,?2,?3)",rusqlite::params![db::hash(&token),user,db::now()+60])?;
     let app=router(state.clone());
     let conversation=uuid::Uuid::new_v4();
-    let mut input=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":conversation,"platform":"linux","character":"guide","messages":[{"role":"user","text":"世界".repeat(2000)}],"commands_enabled":false,"cwd":"/tmp"});
+    let mut input=json!({"base":0,"request_id":uuid::Uuid::new_v4(),"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"世界".repeat(2000)}],"commands_enabled":false,"cwd":"/tmp"});
     let original=input.clone();
     for revision in 0..20 {
         input["base"]=json!(revision*2);
@@ -47,7 +47,7 @@ async fn live_steering_and_stop_are_durable()->anyhow::Result<()> {
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
     let id=uuid::Uuid::new_v4();
     let conversation=uuid::Uuid::new_v4();
-    let input=json!({"base":0,"request_id":id,"conversation_id":conversation,"platform":"linux","character":"guide","messages":[{"role":"user","text":"Long development reply. ".repeat(100)}],"commands_enabled":false,"cwd":"/tmp"});
+    let input=json!({"base":0,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Long development reply. ".repeat(100)}],"commands_enabled":false,"cwd":"/tmp"});
     let http=reqwest::Client::new();
     let mut response=http.post(format!("{url}/v1/chat")).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
     response.chunk().await?;

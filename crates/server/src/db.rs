@@ -191,7 +191,7 @@ mod tests {
         let db=Db::open(&path)?;
         let user=db.user("restart@example.test",None,3)?;
         let mut request=ChatRequest { base:0,request_id:Uuid::new_v4(),conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
-            character:protocol::Character::Guide,messages:vec![Message { role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() };
+            messages:vec![Message { role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() };
         db.reserve(user,&request.request_id.to_string(),"first",&request.conversation_id.to_string())?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         db.complete(user,&request,&AssistantReply { text:"Hi".into(),command:None },Some("account-a"),Some("thread-a"),None)?;

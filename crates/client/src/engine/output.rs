@@ -77,17 +77,17 @@ mod tests {
             }
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path())?;
-        engine.set_backend(backend)?;
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        engine.set_backend(backend.clone()).await?;
         engine.saved.token=Some("test-session".into());
-        engine.settings(Character::Guide,true)?;
+        engine.settings(true)?;
         engine.chat("Inspect diagnostics".into(),directory.path().to_string_lossy().into_owned()).await?;
         let id=engine.saved.pending.as_ref().unwrap().id;
         assert!(engine.decide(id,true).await.is_err());
         assert!(engine.saved.pending_output.is_none() && engine.saved.pending.is_none());
         let request_id=engine.saved.request.as_ref().unwrap().request_id;
         drop(engine);
-        let mut engine=Engine::open(directory.path())?;
+        let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.retry().await?;
         assert_eq!(std::fs::read_to_string(directory.path().join("runs.txt"))?.lines().count(),1);
         assert!(engine.processes.get(id)?.stdout.len()>100_000);

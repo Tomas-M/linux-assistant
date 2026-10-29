@@ -15,31 +15,31 @@ cargo build --workspace --locked
 In another terminal:
 
 ```sh
-./target/debug/linux-assistant
+./target/debug/linux-assistant --backend http://127.0.0.1:8787
 # Prints a localhost URL; open it in your preferred browser.
 # For an interactive terminal prompt use --cli.
 # Or explicitly open browser mode:
-./target/debug/linux-assistant --desktop
+./target/debug/linux-assistant --backend http://127.0.0.1:8787 --desktop
 ```
 
-The default backend is `http://127.0.0.1:8787`. Development mode is **simulated AI** and **simulated email**, binds only to loopback, and rejects payments. The sign-in page displays a development verification code. Sign in with any test email, choose a character, and send a message. Enable commands and ask for `demo command` to test a harmless `printf` proposal on Linux or `Write-Output` on Windows.
+Every launch requires `--backend`; there is no default server. A hostname without a scheme uses HTTPS; explicit HTTP is allowed only for loopback development servers. Development mode is **simulated AI** and **simulated email**, binds only to loopback, and rejects payments. Sign in with any test email and enter the displayed six-digit development code directly in the client. Commands and full access start enabled; ask for `demo command` to test a harmless `printf` proposal on Linux or `Write-Output` on Windows.
 
 For a deployed backend:
 
 ```sh
-./linux-assistant --backend https://assistant.example.com
-./linux-assistant --install-desktop
+./linux-assistant --backend ai.slax.org
+./linux-assistant --backend ai.slax.org --install-desktop
 ```
 
-The optional Linux desktop launcher points to the executable's current location. Install the executable where it will remain before creating the launcher. Desktop/browser launch needs the system's normal default-browser opener (`xdg-open` or equivalent on Linux). There is no Node.js, Python, external web asset, or Codex runtime dependency on the **client**. Commands use the host's `/bin/sh` on Linux or built-in Windows PowerShell 5.1 on Windows, plus installed programs.
+The optional Linux desktop launcher stores the backend argument and points to the executable's current location. Install the executable where it will remain before creating the launcher. Desktop/browser launch needs the system's normal default-browser opener (`xdg-open` or equivalent on Linux). There is no Node.js, Python, external web asset, or Codex runtime dependency on the **client**. Commands use the host's `/bin/sh` on Linux or built-in Windows PowerShell 5.1 on Windows, plus installed programs.
 
 ## Client behavior
 
-- Launching without flags starts or reuses the background server, prints its complete browser URL, and exits. The fragment is a private access token: keep it in the URL when opening your chosen browser. `--cli` opens the interactive terminal prompt; `--desktop` explicitly opens the default browser.
+- Launching with `--backend SERVER` starts or reuses the background server, prints its complete browser URL, and exits. The fragment is a private access token: keep it in the URL when opening your chosen browser. `--cli` opens the interactive terminal prompt; `--desktop` explicitly opens the default browser.
 - Both frontends attach to one background daemon on an ephemeral `127.0.0.1` port. Closing the browser or leaving the prompt keeps it running. Use `/stop` or the browser's stop button to stop it.
-- State is stored under `$XDG_DATA_HOME/linux-assistant` (normally `~/.local/share/linux-assistant`) on Linux or `%LOCALAPPDATA%\linux-assistant` on Windows. `LINUX_ASSISTANT_HOME` overrides the directory for isolated tests. Session tokens, history, pending approvals, and unfinished request IDs are saved atomically. Linux files use private permissions; Windows files inherit the user directory's ACLs. `LINUX_ASSISTANT_BACKEND` supplies the initial backend before state exists.
-- The browser receives a local capability token in a URL fragment, removes it from the address bar, and keeps it in tab-scoped session storage. API routes require that token plus the exact loopback Host and same Origin. There is no permissive CORS.
-- Commands are disabled initially. Enabling them permits **proposals**, with approval of each exact command and directory. **Full access** authorizes automatic execution of validated proposals, including an already displayed proposal. Turning it off takes effect before the next command; stopping a process also turns it off. Full access resets when the daemon restarts. Approval IDs remain one-use, and disabling commands invalidates pending approvals.
+- State is stored under `$XDG_DATA_HOME/linux-assistant` (normally `~/.local/share/linux-assistant`) on Linux or `%LOCALAPPDATA%\linux-assistant` on Windows. `LINUX_ASSISTANT_HOME` overrides the directory for isolated tests. Session tokens, history, pending approvals, and unfinished request IDs are saved atomically. Linux files use private permissions; Windows files inherit the user directory's ACLs. The backend is configured only by the launch argument. An active daemon can only be reused with the same backend; stop it before switching. Switching servers clears the previous session and chat.
+- The browser receives a local capability token in a URL fragment, removes it from the address bar, and keeps it in tab-scoped session storage. Local API routes require that token plus the exact loopback Host and same Origin. The remote backend allows CORS from any origin for `/v1/*` and `/health`, without cookies; account APIs still require bearer authentication. Admin and OAuth routes retain their origin checks.
+- Local commands and **Full access** start enabled. Full access authorizes automatic execution of validated proposals, including an already displayed proposal. Turning it off requires approval of each exact command and directory and takes effect before the next command; stopping a process also turns it off. On daemon restart, full access starts enabled if local commands are allowed. Approval IDs remain one-use, and disabling commands entirely in settings invalidates pending approvals.
 - The client detects its operating system automatically and supplies it to the backend with every chat request. The AI chooses shell syntax and paths for that client, regardless of the backend's own OS. Both interfaces display the selected shell.
 - Commands run as the current user, **not in a sandbox**, with no automatic elevation and no execution time limit. They run until completion, a Stop request, or application shutdown. Stop terminates the Linux process group or Windows Job Object, including ordinary descendants. Cleanup also runs when execution is cancelled or the shell exits. Capture retains up to 1 MiB per stdout/stderr stream, keeps draining after that limit, and marks truncation. Deliberately detached Linux sessions or work delegated to external services can outlive execution; this is not a containment boundary.
 - The floating **Task manager** shows currently running commands in a table with command text, PID, elapsed time, and Stop. Stop kills that command and its child processes and turns off full access. Completed commands move to a separate history section (latest 50 records). Expand a row for PID, timestamps, directory, exact command, executable arguments, live stdout/stderr, exit code, and execution errors. You can save either captured stream as text. Process polling and stopping remain responsive during command execution and AI requests.
@@ -69,9 +69,9 @@ Codex retains the provider thread and performs its native token-based context co
 
 In the browser, **Enter** sends a message when idle and queues it during a task. **Ctrl+Enter** steers the currently running AI turn; during local command execution, use the queue instead. **Shift+Enter** inserts a newline. With an empty prompt during a task, the Send button becomes **Stop**. Stop interrupts generation, terminates the current local command if one is running, disables automatic execution, and leaves queued messages paused. Completed model replies that raced with Stop may still arrive, but their command proposals are not executed. Confirmed interrupted generations are refunded in application credits; consumed provider tokens remain recorded, potentially partially if the worker had to be terminated.
 
-Queued messages survive browser refreshes and daemon restarts, can be removed before dispatch, and wait behind pending command approvals. Steering is sent to Codex's active turn, stored after acknowledgement, and included in the authoritative completion or refunded-error event. A lost acknowledgement can be retried with the same steering ID without sending it twice.
+Queued messages survive browser refreshes and daemon restarts and wait behind pending command approvals. Each has Steer, Edit, and Delete actions. Editing holds its original slot and pauses dispatch at that slot until submitted or cancelled; submitting replaces it in place. Ctrl+Enter can steer an edited draft directly. Queued steering removes an entry only after backend acceptance, under the same lock used for dispatch. Steering is included in the authoritative completion or refunded-error event. A lost acknowledgement can be retried with the same steering ID without sending it twice.
 
-This is a deliberate protocol/schema break. Deploy the backend and client together; use the conversation reset instructions in `deploy/START-HERE.md`. There is no old-client compatibility path.
+Deploy the backend and client together; use the local chat reset instructions in `deploy/START-HERE.md` when replacing an earlier client. The in-client email sign-in update does not require a backend database wipe. There is no old-client compatibility path.
 
 ### Command output limits
 
@@ -86,8 +86,7 @@ Only the normal follow-up reply consumes an application credit; there are no sep
 CLI commands:
 
 ```text
-/login                 Sign in through the hosted email/Google page
-/character guide       Or companion / specialist
+/login                 Enter your email and six-digit code in the terminal
 /commands on           Or off
 /full on               Or off; requires commands enabled
 /approve               Run the displayed pending command once
@@ -97,7 +96,6 @@ CLI commands:
 /retry                 Retry an unfinished request safely
 /new                   Start a new conversation
 /history               Refresh and show shared conversation state
-/backend https://…     Change server and clear the old local session
 /logout                Revoke the current backend session
 /quit                  Leave the terminal prompt
 /stop                  Stop the local daemon
@@ -111,7 +109,8 @@ Build `assistant-server` and run under a dedicated OS user. Codex App Server is 
 
 1. Put a TLS reverse proxy in front of `127.0.0.1:8787`. Set `ASSISTANT_PUBLIC_URL` to the external origin. Use the example [systemd unit](deploy/linux-assistant.service), a private environment file, and a private state directory. Configure proxy request limits and authentication endpoint rate limits for an internet-facing deployment.
 2. Configure SMTP delivery with `ASSISTANT_SMTP_HOST` (hostname without `ssl://`), `ASSISTANT_SMTP_PORT`, `ASSISTANT_SMTP_USERNAME`, `ASSISTANT_SMTP_PASSWORD`, and `ASSISTANT_EMAIL_FROM`. Connections use implicit TLS with certificate validation; Gmail uses `smtp.gmail.com:465` and an app password for the configured account. Store the password in the private server environment file, not in source control. SMTP settings are excluded from provider worker environments. Email login issues expiring, single-use codes with five verification attempts per device and a one-minute resend limit per email. The backend stores hashes of codes and session tokens. Sessions expire after 30 days and can be revoked by sign-out. Development mode does not connect to SMTP.
-3. Configure a Google web OAuth client. Register exactly `https://YOUR-HOST/auth/google/callback`. The flow uses browser-bound state and PKCE, exchanges codes server-side, and queries Google's UserInfo endpoint for the verified email and stable `sub` identity.
+   Email sign-in uses `/v1/auth/device`, `/v1/auth/email`, and `/v1/auth/verify` JSON APIs. Codes are six random digits, displayed in HTML email as two adjacent three-digit spans with CSS margin and no intervening whitespace; a plain-text alternative is included. Email and code entry remain inside the client.
+3. Google OAuth endpoints remain available for separate integrations; the current client uses email codes only. To configure OAuth, create a Google web OAuth client and register exactly `https://YOUR-HOST/auth/google/callback`. The flow uses browser-bound state and PKCE, exchanges codes server-side, and queries Google's UserInfo endpoint for the verified email and stable `sub` identity.
 4. Create a one-time Stripe Price and set the three Stripe variables plus `ASSISTANT_PACK_CREDITS`. Register `/webhooks/stripe` for `checkout.session.completed` and `checkout.session.async_payment_succeeded`. The backend verifies the raw-body signature and five-minute timestamp tolerance, requires `payment_status=paid`, and matches a server-created purchase. Redirects never grant credits. Repeated events cannot grant credits twice. Refunds/disputes are not automated in this MVP; reconcile them operationally before enabling public sales.
 5. Back up the SQLite database using SQLite's online backup mechanism. Run one backend process per database; a file lock prevents two instances from refunding each other's active requests. Horizontal scaling would require a different queue/lease and database design.
 
@@ -205,9 +204,9 @@ cargo test --workspace --locked
 cargo build --release --locked --workspace
 .\target\release\assistant-server.exe --dev
 # In another terminal:
-.\target\release\linux-assistant.exe --cli
+.\target\release\linux-assistant.exe --backend http://127.0.0.1:8787 --cli
 # Or launch browser mode:
-.\target\release\linux-assistant.exe --desktop
+.\target\release\linux-assistant.exe --backend http://127.0.0.1:8787 --desktop
 ```
 
 Distribute `target/release/linux-assistant.exe`. The repository's `.cargo/config.toml` statically links the MSVC runtime; only normal Windows system libraries and Windows PowerShell are needed. Backend accounts, credits, and settings work identically in both client modes. The `--install-desktop` option creates a Linux freedesktop launcher and is Linux-only.
