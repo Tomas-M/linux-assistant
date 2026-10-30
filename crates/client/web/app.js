@@ -66,7 +66,7 @@ function render()
     }
     elements['credit-balance'].textContent=state.account?state.account.credits.toLocaleString()+' credits':'Credits…';
     const depleted=state.account && state.account.credits<=0;
-    elements['credit-balance'].classList.toggle('depleted',!!depleted);
+    for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
     if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
     else setIcon(elements['settings-open'],'user');

@@ -136,6 +136,7 @@ dialog::backdrop { background:#14261b38; backdrop-filter:blur(3px); }
 .dialog-heading h2 { margin:0; }
 .account-balance { display:grid; gap:8px; margin:24px 0; }
 .account-balance strong { font-size:32px; line-height:1.2; color:var(--accent); }
+.account-balance strong.depleted { color:var(--warning); }
 .purchase-history { border-top:1px solid var(--border); margin-top:24px; padding-top:20px; }
 .purchase-history h3 { font-size:16px; }
 #purchases { list-style:none; padding:0; margin:0; }
