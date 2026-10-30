@@ -10,12 +10,12 @@ use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock}};
 use anyhow::{ensure, Context, Result};
 use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform, Role};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex,RwLock as AsyncRwLock};
 use crate::{config::Config, db::{now, Db}};
 use rpc::Rpc;
 
 pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, login:Mutex<Option<accounts::Login>>, executable:PathBuf, selection:Mutex<()> }
-struct ProviderAccount { home: String, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>> }
+struct ProviderAccount { home: String, access:AsyncRwLock<()>, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>> }
 #[derive(Clone, Copy, Debug)]
 struct Limits { used:f64, retry_at:i64, checked_at:i64, api_key:bool }
 pub struct Answer { pub reply: AssistantReply, pub account_home: Option<String>, pub thread_id: Option<String>, pub checkpoint: Option<String> }
@@ -39,7 +39,7 @@ impl Pool {
                     if let Some(key)=auth["OPENAI_API_KEY"].as_str() { crate::diagnostics::protect(key); }
                 }
             }
-            accounts.push(Arc::new(ProviderAccount { home,worker:Mutex::new(None),limits:Mutex::new(None) }));
+            accounts.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None) }));
         }
         Ok(Self { accounts:RwLock::new(accounts),managed,login:Mutex::new(None),executable:std::env::current_exe()?,selection:Mutex::new(()) })
     }
@@ -47,9 +47,11 @@ impl Pool {
     /// Snapshot shared account handles without holding the registry lock across network operations.
     fn accounts(&self)->Vec<Arc<ProviderAccount>> { self.accounts.read().unwrap().clone() }
 
+    /// Retained handles cannot accidentally target another account when the registry changes.
+    fn registered(&self,account:&Arc<ProviderAccount>)->bool { self.accounts.read().unwrap().iter().any(|saved|Arc::ptr_eq(saved,account)) }
+
     /// Lock only worker startup; each conversation then owns an independent session on that transport.
-    async fn rpc(&self,index:usize)->Result<Rpc> {
-        let account=self.accounts()[index].clone();
+    async fn rpc(&self,account:&ProviderAccount)->Result<Rpc> {
         let mut worker=account.worker.lock().await;
         if worker.as_ref().is_none_or(|rpc|!rpc.alive()) { *worker=Some(Rpc::start(&self.executable,&account.home).await?); }
         Ok(worker.as_ref().unwrap().session())
@@ -102,21 +104,21 @@ impl Pool {
             let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000 || request.messages.iter().any(|message|message.attachments.is_some());
             let mut tried = Vec::new();
             let mut assigned = match &session.account_home {
-                Some(home) => self.accounts().iter().position(|account|&account.home==home),
+                Some(home) => self.accounts().into_iter().find(|account|&account.home==home),
                 None => None,
             };
             loop {
-                let index = match assigned.take() {
-                    Some(index) => index,
+                let account = match assigned.take() {
+                    Some(account) => account,
                     None => self.select(db,user,request,&tried).await?,
                 };
-                tried.push(index);
-                let account=self.accounts()[index].clone();
-                if self.paused(db,&account.home)? { continue; }
-                self.probe(db,index).await?;
+                tried.push(account.home.clone());
+                let _access=account.access.read().await;
+                if !self.registered(&account) || self.paused(db,&account.home)? { continue; }
+                self.probe(db,&account).await?;
                 let limits=account.limits.lock().await.with_context(||format!("{}: account quota unavailable; see quota_refresh diagnostics",account.home))?;
                 if limits.retry_at>now() { continue; }
-                let mut rpc=self.rpc(index).await?;
+                let mut rpc=self.rpc(&account).await?;
                 let same_account = session.account_home.as_deref()==Some(account.home.as_str());
                 let thread = if same_account { session.thread_id.as_deref() } else { None };
                 db.bind_conversation(user,request.conversation_id,&account.home)?;
@@ -153,24 +155,25 @@ impl Pool {
     }
 
     /// Rank fresh quota snapshots by the most depleted window, then spread ties across conversations.
-    async fn select(&self, db: &Db, user: i64, request: &ChatRequest, tried: &[usize]) -> Result<usize> {
+    async fn select(&self, db: &Db, user: i64, request: &ChatRequest, tried: &[String]) -> Result<Arc<ProviderAccount>> {
         let _selection = self.selection.lock().await;
         let mut candidates = Vec::new();
         let mut excluded=Vec::new();
-        for (index,account) in self.accounts().iter().enumerate() {
-            if tried.contains(&index) { excluded.push(format!("{}: already tried for this request",account.home)); continue; }
+        for account in self.accounts() {
+            if tried.contains(&account.home) { excluded.push(format!("{}: already tried for this request",account.home)); continue; }
             if self.paused(db,&account.home)? { excluded.push(format!("{}: paused by operator",account.home)); continue; }
-            self.probe(db,index).await?;
+            self.probe(db,&account).await?;
             if let Some(limits) = *account.limits.lock().await {
-                if limits.retry_at<=now() { candidates.push((index,limits.api_key,limits.used,db.assigned_conversations(&account.home)?)); }
+                if limits.retry_at<=now() { candidates.push((account.clone(),limits.api_key,limits.used,db.assigned_conversations(&account.home)?)); }
                 else { excluded.push(format!("{}: quota/cooldown blocks selection until {} UTC (Unix time); {:.1}% used; checked at {}",account.home,limits.retry_at,limits.used,limits.checked_at)); }
             } else { excluded.push(format!("{}: quota unavailable; see quota_refresh diagnostics for this account",account.home)); }
         }
         // Prefer subscription allowance when both modes are enabled; pausing ChatGPT selects API access.
-        let index = candidates.into_iter().min_by(|a,b|a.1.cmp(&b.1).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3))).map(|c|c.0)
+        let account = candidates.into_iter().min_by(|a,b|a.1.cmp(&b.1).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3))).map(|c|c.0)
             .with_context(||format!("No selectable AI account. {}",if excluded.is_empty() { "No accounts configured".into() } else { excluded.join("; ") }))?;
-        db.bind_conversation(user,request.conversation_id,&self.accounts()[index].home)?;
-        Ok(index)
+        let _access=account.access.read().await;
+        if self.registered(&account) { db.bind_conversation(user,request.conversation_id,&account.home)?; }
+        Ok(account.clone())
     }
 }
 

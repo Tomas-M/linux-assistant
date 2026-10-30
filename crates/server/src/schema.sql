@@ -28,5 +28,6 @@ CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, user_id INTEGER REFEREN
 CREATE INDEX IF NOT EXISTS usage_time ON usage(started_at);
 CREATE INDEX IF NOT EXISTS usage_user ON usage(user_id,started_at);
 CREATE INDEX IF NOT EXISTS usage_request ON usage(user_id,request_id);
+CREATE INDEX IF NOT EXISTS usage_account ON usage(account_home);
 CREATE TABLE IF NOT EXISTS quota_history(id INTEGER PRIMARY KEY, account_home TEXT NOT NULL, checked_at INTEGER NOT NULL, limits TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS quota_history_time ON quota_history(checked_at);

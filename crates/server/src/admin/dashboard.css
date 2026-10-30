@@ -43,7 +43,9 @@ section { scroll-margin-top:110px; margin-bottom:40px; }
 .account-add { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:30px; }
 .account-add form h3,.account-add form p { margin:0; }
 #account-login-code { display:block; font-size:32px; line-height:1.2; letter-spacing:3px; margin:20px 0; }
-.account-access { margin-top:16px; }
+.account-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }
+.account-actions .danger { color:#a73535; }
+.account-actions button:disabled { cursor:not-allowed; }
 .account details { border-top:1px solid var(--line); padding-top:16px; }
 .account details summary { font-size:var(--secondary); }
 .account .account-home { margin:8px 0; }

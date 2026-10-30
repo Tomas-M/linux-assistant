@@ -36,8 +36,8 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     assert_eq!(pool.account_status(&db)?[0]["active_requests"],3);
     // Force a due quota refresh during three active generations, then exercise the same account's test UI.
     pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
-    pool.probe(&db,0).await?;
-    assert!(pool.test_account(&config,&db,0,"ADMIN_QUICK".into()).await?["text"].as_str().unwrap().contains("shared"));
+    pool.probe(&db,&pool.accounts()[0]).await?;
+    assert!(pool.test_account(&config,&db,&crate::db::hash(&pool.accounts()[0].home),"ADMIN_QUICK".into()).await?["text"].as_str().unwrap().contains("shared"));
     tasks[2].abort();
     assert!(matches!(tasks.pop().unwrap().await,Err(error) if error.is_cancelled()));
     let (reply,ack)=tokio::sync::oneshot::channel();

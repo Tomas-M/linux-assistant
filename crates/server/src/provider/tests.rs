@@ -98,13 +98,13 @@ async fn integration_diagnostics_preserve_causes()->Result<()> {
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let mut pool=Pool::new(&config)?;
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
-    pool.probe(&db,0).await?;
+    pool.probe(&db,&pool.accounts()[0]).await?;
     let status=pool.account_status(&db)?;
     let error=status[0]["error"].as_str().unwrap();
     assert!(error.contains("account/rateLimits/read") && error.contains("HTTP 401"));
     assert!(!error.contains("PRIVATE_TOKEN"));
     account(home,json!({"primary":23,"turn_error":"unexpectedServerError","error_message":"Upstream failed 世界; refresh_token=PRIVATE_TOKEN"}))?;
-    pool.probe(&db,0).await?;
+    pool.probe(&db,&pool.accounts()[0]).await?;
     assert!(pool.account_status(&db)?[0]["error"].is_null());
     let user=db.user("diagnostic@example.test",None,100)?;
     let error=pool.answer(&config,&db,user,&request()).await.err().unwrap();
@@ -405,7 +405,7 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     let events=std::fs::read_to_string(config.test_homes[0].join("events.jsonl"))?;
     assert_eq!(events.lines().filter(|line|line.contains("account/rateLimits/read")).count(),1);
     assert_eq!(db.0.lock().unwrap().query_row("SELECT SUM(total_tokens) FROM usage",[],|r|r.get::<_,i64>(0))?,220);
-    let result=pool.test_account(&config,&db,1,"Say OK".into()).await?;
+    let result=pool.test_account(&config,&db,&crate::db::hash(&pool.accounts()[1].home),"Say OK".into()).await?;
     assert!(result["text"].as_str().unwrap().contains("second"));
     let events=std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?;
     let test:Value=serde_json::from_str(events.lines().find(|line|line.contains("\"method\":\"turn/start\"")).unwrap())?;
@@ -413,20 +413,20 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     assert_eq!(db.balance(user)?,8);
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE user_id IS NULL AND purpose='admin_test' AND total_tokens=110",[],|r|r.get::<_,i64>(0))?,1);
     account(&config.test_homes[0],json!({"primary":10,"turn_error":"usageLimitExceeded"}))?;
-    assert!(pool.test_account(&config,&db,0,"Say OK".into()).await.is_err());
+    assert!(pool.test_account(&config,&db,&crate::db::hash(&pool.accounts()[0].home),"Say OK".into()).await.is_err());
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE error IS NOT NULL AND total_tokens=110",[],|r|r.get::<_,i64>(0))?,1);
     account(&config.test_homes[0],json!({"primary":10,"missing_usage":true}))?;
-    pool.test_account(&config,&db,0,"Say OK".into()).await?;
+    pool.test_account(&config,&db,&crate::db::hash(&pool.accounts()[0].home),"Say OK".into()).await?;
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE total_tokens IS NULL AND finished_at IS NOT NULL",[],|r|r.get::<_,i64>(0))?,1);
     // Read-only dashboard refreshes reuse stored readings instead of asking ChatGPT again.
-    pool.probe(&db,1).await?;
+    pool.probe(&db,&pool.accounts()[1]).await?;
     let before=std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?;
     assert_eq!(pool.account_status(&db)?[1]["email"],"fixture@example.test");
     pool.account_status(&db)?;
     assert_eq!(before,std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?);
     let account=pool.accounts()[1].clone();
     let _busy=account.worker.lock().await;
-    pool.probe(&db,1).await?;
+    pool.probe(&db,&pool.accounts()[1]).await?;
     assert_eq!(pool.account_status(&db)?[1]["busy"],false);
     assert_eq!(before,std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?);
     Ok(())
@@ -510,5 +510,74 @@ async fn integration_provider_controls() -> Result<()> {
         if stop { assert!(result.err().unwrap().downcast_ref::<crate::turns::Interrupted>().is_some()); }
         else { assert_eq!(result?.reply.text,"Steered: Switch to 世界"); assert_eq!(db.steering(user,chat.request_id)?.len(),1); }
     }
+    Ok(())
+}
+
+/// Removing one account preserves parallel work, historical usage, recovery and durable credential deletion.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn integration_admin_account_deletion()->Result<()> {
+    let directory=tempfile::tempdir()?;
+    let config=Config { database:directory.path().join("test.db"),..Config::default() };
+    let db=Arc::new(Db::open(&config.database)?);
+    let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into(); let pool=Arc::new(pool);
+    for key in ["sk-fixture-delete-first-12345","sk-fixture-delete-second-12345"] { pool.clone().add(db.clone(),Some(key.into())).await?; }
+    let first=pool.accounts()[0].clone(); let second=pool.accounts()[1].clone();
+    let first_id=crate::db::hash(&first.home); let second_id=crate::db::hash(&second.home);
+    let user=db.user("delete-test@example.test",None,100)?;
+    let mut previous=request();
+    let initial=turn(&pool,&config,&db,user,&mut previous).await?;
+    assert_eq!(initial.account_home.as_deref(),Some(first.home.as_str()));
+    assert_eq!(pool.account_status(&db)?[0]["usage"],json!({"attempts":1,"measured":1,"input":100,"cached":20,"output":10}));
+    let messages=db.conversation(user,previous.conversation_id)?.messages;
+    account(std::path::Path::new(&second.home),json!({"auth_type":"apiKey","hold":true}))?;
+    let current=request(); db.reserve(user,&current,"deletion-test",&config.pricing)?;
+    let (controls,mut receiver)=tokio::sync::mpsc::channel(4);
+    let (running_pool,running_db,running_config)=(pool.clone(),db.clone(),config.clone());
+    let task=tokio::spawn(async move { running_pool.answer_stream(&running_config,&running_db,user,&current,None,Some(&mut receiver)).await });
+    tokio::time::timeout(Duration::from_secs(5),async {
+        while pool.account_status(&db)?[1]["active_requests"]!=1 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    assert!(pool.remove(&db,&second_id).await.unwrap_err().to_string().contains("in use"));
+    assert!(std::path::Path::new(&second.home).join("auth.json").is_file());
+    pool.pause(&db,&first_id,true)?;
+    pool.remove(&db,&first_id).await?;
+    assert!(!std::path::Path::new(&first.home).exists());
+    assert!(!task.is_finished());
+    let recovered=db.conversation(user,previous.conversation_id)?;
+    assert!(recovered.account_home.is_none() && recovered.thread_id.is_none());
+    assert_eq!(serde_json::to_value(recovered.messages)?,serde_json::to_value(messages)?);
+    assert!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE account_home=?1",[&first.home],|row|row.get::<_,i64>(0))?>0);
+    assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM provider_pauses WHERE home=?1",[&first.home],|row|row.get::<_,i64>(0))?,0);
+    assert_eq!(pool.account_status(&db)?[0]["id"],second_id);
+    assert!(pool.test_account(&config,&db,&second_id,"ADMIN_QUICK".into()).await?["text"].as_str().unwrap().contains(std::path::Path::new(&second.home).file_name().unwrap().to_str().unwrap()));
+    let (reply,ack)=tokio::sync::oneshot::channel(); controls.send(crate::turns::Control::Stop(reply)).await?; ack.await?.map_err(anyhow::Error::msg)?;
+    assert!(tokio::time::timeout(Duration::from_secs(5),task).await??.err().unwrap().downcast_ref::<crate::turns::Interrupted>().is_some());
+    account(std::path::Path::new(&second.home),json!({"auth_type":"apiKey"}))?;
+    assert_eq!(turn(&pool,&config,&db,user,&mut previous).await?.account_home.as_deref(),Some(second.home.as_str()));
+    pool.remove(&db,&second_id).await?;
+    assert!(pool.account_status(&db)?.is_empty());
+    let pending=pool.clone().add(db.clone(),None).await?;
+    tokio::time::timeout(Duration::from_secs(5),async { while pool.login_status().await["finished"]!=true { tokio::time::sleep(Duration::from_millis(10)).await; } }).await?;
+    assert!(pool.login_status().await["error"].is_null(),"{pending}");
+    let chatgpt=pool.account_status(&db)?[0]["id"].as_str().unwrap().to_owned();
+    pool.remove(&db,&chatgpt).await?;
+    assert!(pool.remove(&db,&chatgpt).await.is_err());
+    assert!(Pool::new(&config)?.account_status(&db)?.is_empty());
+    Ok(())
+}
+
+/// A registry entry cannot authorize deletion outside the application's managed account directory.
+#[tokio::test]
+async fn account_deletion_rejects_unmanaged_home()->Result<()> {
+    let directory=tempfile::tempdir()?;
+    let outside=directory.path().join("outside"); account(&outside,json!({}))?;
+    let config=Config { database:directory.path().join("test.db"),test_homes:vec![outside.clone()],..Config::default() };
+    std::fs::create_dir_all(directory.path().join("managed-accounts"))?;
+    let pool=Pool::new(&config)?; let db=Db::open(&config.database)?;
+    let id=crate::db::hash(&pool.accounts()[0].home);
+    assert!(pool.remove(&db,&id).await.unwrap_err().to_string().contains("Only managed"));
+    assert!(outside.join("fixture.json").is_file());
     Ok(())
 }

@@ -4,7 +4,7 @@ use serde_json::{json,Value};
 use tokio::{io::{AsyncBufReadExt,AsyncReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStderr,ChildStdout},sync::{broadcast,mpsc,oneshot}};
 use uuid::Uuid;
 
-enum Outbound { Call(Value,Uuid,Option<oneshot::Sender<Value>>), Subscribe(String,Uuid,mpsc::Sender<Value>,oneshot::Sender<bool>), Release(String,Uuid) }
+enum Outbound { Call(Value,Uuid,Option<oneshot::Sender<Value>>), Subscribe(String,Uuid,mpsc::Sender<Value>,oneshot::Sender<bool>), Release(String,Uuid), Shutdown(oneshot::Sender<()>) }
 pub(super) struct Transport {
     sender:mpsc::UnboundedSender<Outbound>,
     pub(super) threads:Arc<Mutex<HashMap<String,(Uuid,mpsc::Sender<Value>)>>>,
@@ -77,10 +77,12 @@ impl Transport {
             let mut turns=HashMap::<String,String>::new();
             let mut line=Vec::new();
             let mut sequence=0u64;
+            let mut stopped=None;
             let result:Result<()>=async {
                 loop {
                     let write=tokio::select! {
                         outgoing=receiver.recv()=>match outgoing.context("Provider transport closed")? {
+                            Outbound::Shutdown(reply)=> { stopped=Some(reply); break Ok(()); }
                             Outbound::Subscribe(thread,owner,sender,reply)=> {
                                 let mut routes=routes.lock().unwrap();
                                 let available=!routes.contains_key(&thread);
@@ -153,8 +155,17 @@ impl Transport {
             routes.lock().unwrap().clear();
             let _=notifications.send(json!({"method":"assistant/transportClosed"}));
             let _=child.kill().await;
+            if let Some(reply)=stopped { let _=reply.send(()); }
         });
         Arc::new(Self { sender,threads,global,task,failure,stderr })
+    }
+
+    /// Wait for process exit before removing credentials or databases it may still have open.
+    pub(super) async fn shutdown(&self)->Result<()> {
+        if !self.alive() { return Ok(()); }
+        let (reply,result)=oneshot::channel();
+        self.sender.send(Outbound::Shutdown(reply))?;
+        Ok(result.await?)
     }
 
     /// Route one response to its caller; a dropped caller never consumes another request's reply.

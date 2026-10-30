@@ -57,7 +57,7 @@ Use your existing TLS certificate and HTTPS virtual host. Enable Apache's proxy 
 6. Configure and enable Google, Microsoft and GitHub sign-in as desired. Each section includes a short guide and exact callback URL. See [SOCIAL_SIGN_IN.md](SOCIAL_SIGN_IN.md) for full registration instructions. SMTP is also used for first-time ownership checks on some social accounts.
 7. Click **Save settings**. Saved secrets are never displayed; blank fields preserve them. Explicit clear checkboxes remove saved secrets.
 8. Under **Accounts → Add account**, sign into ChatGPT using the displayed device code or paste an OpenAI API key. Credentials are saved in `/var/lib/linux-assistant/managed-accounts/<UUID>/auth.json`. Pause/resume controls determine which accounts can accept new turns. No account-directory list or separate Codex installation is needed.
-9. Use the per-account **Run test** action to verify AI access.
+9. Use the per-account **Run test** action to verify AI access. To remove saved credentials, pause the account, wait for active turns to finish, then use **Delete account** or **Delete API key**. Usage and credit history are kept. API cards show locally recorded usage and an estimate at current configured rates; use their OpenAI billing link for the actual prepaid balance.
 
 User sign-in methods start disabled on a fresh backend. Enable the ones you configure. Reload the local client page to refresh its buttons.
 

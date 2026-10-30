@@ -18,7 +18,7 @@ impl Drop for Login {
 
 impl Pool {
     /// Stable path-derived identifiers cannot target a different account after a backend restart.
-    pub fn index(&self,id:&str)->Result<usize> { self.accounts().iter().position(|account|crate::db::hash(&account.home)==id).context("Unknown account") }
+    pub(super) fn account(&self,id:&str)->Result<Arc<ProviderAccount>> { self.accounts().into_iter().find(|account|crate::db::hash(&account.home)==id).context("Unknown account") }
 
     /// A pause prevents new turns while already-running generations retain their account transport.
     pub(super) fn paused(&self,db:&Db,home:&str)->Result<bool> {
@@ -27,11 +27,34 @@ impl Pool {
 
     /// Persist pause changes without touching credentials or interrupting active threads.
     pub fn pause(&self,db:&Db,id:&str,paused:bool)->Result<()> {
-        let account=self.accounts()[self.index(id)?].clone();
+        let account=self.account(id)?;
+        let _access=account.access.try_read().context("Account is being deleted; refresh the dashboard")?;
+        ensure!(self.registered(&account),"Unknown account");
         let connection=db.0.lock().unwrap();
         if paused { connection.execute("INSERT OR IGNORE INTO provider_pauses(home) VALUES(?1)",[&account.home])?; }
         else { connection.execute("DELETE FROM provider_pauses WHERE home=?1",[&account.home])?; }
         crate::diagnostics::record("info","account_access",None,Some(&account.home),if paused { "Account paused" } else { "Account resumed" });
+        Ok(())
+    }
+
+    /// Delete only a managed account after all its users release their shared access guards.
+    pub async fn remove(&self,db:&Db,id:&str)->Result<()> {
+        let account=self.account(id)?;
+        let _access=account.access.try_write().context("Account is in use. Pause it, wait for active turns or quota refreshes to finish, and retry")?;
+        ensure!(self.registered(&account),"Unknown account");
+        let home=std::path::Path::new(&account.home).canonicalize()?;
+        let managed=self.managed.canonicalize()?;
+        ensure!(home==std::path::Path::new(&account.home) && home.parent()==Some(managed.as_path()),"Only managed account directories can be deleted");
+        if let Some(worker)=account.worker.lock().await.take() { worker.shutdown().await?; }
+        std::fs::remove_dir_all(&home).context("Deleting saved account credentials")?;
+        self.accounts.write().unwrap().retain(|saved|!Arc::ptr_eq(saved,&account));
+        let mut connection=db.0.lock().unwrap();
+        let tx=connection.transaction()?;
+        tx.execute("DELETE FROM provider_accounts WHERE home=?1",[&account.home])?;
+        tx.execute("DELETE FROM provider_pauses WHERE home=?1",[&account.home])?;
+        tx.execute("UPDATE conversations SET account_home=NULL,thread_id=NULL WHERE account_home=?1",[&account.home])?;
+        tx.commit()?;
+        crate::diagnostics::record("info","account_access",None,Some(&account.home),"Saved account credentials deleted; recorded usage retained");
         Ok(())
     }
 
@@ -104,12 +127,9 @@ impl Pool {
         let identity=rpc.call("account/read",json!({"refreshToken":false})).await?;
         ensure!(matches!(identity["account"]["type"].as_str(),Some("chatgpt"|"apiKey")),"Provider did not authenticate the account");
         ensure!(std::path::Path::new(&home).join("auth.json").is_file(),"Provider did not save account credentials");
-        let index={
-            let mut accounts=self.accounts.write().unwrap();
-            accounts.push(Arc::new(ProviderAccount { home:home.clone(),worker:Mutex::new(Some(rpc)),limits:Mutex::new(None) }));
-            accounts.len()-1
-        };
+        let account=Arc::new(ProviderAccount { home:home.clone(),access:AsyncRwLock::new(()),worker:Mutex::new(Some(rpc)),limits:Mutex::new(None) });
+        self.accounts.write().unwrap().push(account.clone());
         crate::diagnostics::record("info","account_login",None,Some(&home),"Account connected");
-        self.probe(db,index).await
+        self.probe(db,&account).await
     }
 }

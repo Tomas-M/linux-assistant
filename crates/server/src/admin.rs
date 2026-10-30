@@ -13,6 +13,7 @@ pub fn router(app: App) -> Router<App> {
     let private=Router::new().route("/admin",get(||async { Html(include_str!("admin/dashboard.html").replace("{{ICONS}}",protocol::ICONS_SVG)) }))
         .route("/admin/api/accounts",get(accounts).post(add_account)).route("/admin/api/report",get(reports::report))
         .route("/admin/api/accounts/login/{id}/cancel",post(cancel_account_login)).route("/admin/api/accounts/{id}/pause",post(pause_account))
+        .route("/admin/api/accounts/{id}/delete",post(delete_account))
         .route("/admin/api/logs",get(crate::diagnostics::list))
         .route("/admin/api/users",get(reports::users)).route("/admin/api/accounts/{id}/test",post(test_account))
         .route("/admin/api/users/{id}/credits",post(credits)).route("/admin/api/users/{id}/block",post(block))
@@ -92,7 +93,7 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Respons
 
 /// Expose fresh or explicitly stale quota readings without waiting for running model requests.
 async fn accounts(State(app): State<App>) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({"accounts":app.pool.account_status(&app.db)?,"login":app.pool.login_status().await,"now":now()})))
+    Ok(Json(json!({"accounts":app.pool.account_status(&app.db)?,"login":app.pool.login_status().await,"now":now(),"pricing":app.config().pricing.usd_per_million()})))
 }
 
 #[derive(Deserialize)]
@@ -124,6 +125,12 @@ async fn pause_account(State(app):State<App>,Path(id):Path<String>,Json(input):J
     Ok(Json(json!({"ok":true})))
 }
 
+/// Delete saved credentials and detach recoverable chats, retaining their messages and usage history.
+async fn delete_account(State(app):State<App>,Path(id):Path<String>)->ApiResult<Json<Value>> {
+    app.pool.remove(&app.db,&id).await.map_err(|error|ApiError::bad(&format!("{error:#}")))?;
+    Ok(Json(json!({"ok":true})))
+}
+
 #[derive(Deserialize)]
 struct TestPrompt { prompt: String }
 
@@ -132,7 +139,7 @@ async fn test_account(State(app): State<App>, Path(id): Path<String>, Json(input
     let config=app.config();
     if input.prompt.trim().is_empty() || input.prompt.len()>2000 { return Err(ApiError::bad("Enter a prompt of 1–2000 UTF-8 bytes")); }
     tokio::spawn(async move {
-        app.pool.test_account(&config,&app.db,app.pool.index(&id)?,input.prompt).await.map(Json).map_err(|error|ApiError::busy(&error.to_string()))
+        app.pool.test_account(&config,&app.db,&id,input.prompt).await.map(Json).map_err(|error|ApiError::busy(&error.to_string()))
     }).await?
 }
 

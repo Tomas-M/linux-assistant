@@ -49,6 +49,9 @@ impl Rpc {
         Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None,usage:HashMap::new() }
     }
 
+    /// Removal waits for the account worker to exit before deleting its private home.
+    pub(super) async fn shutdown(self)->Result<()> { self.transport.shutdown().await }
+
     /// A dead transport must be recreated instead of repeatedly reusing its closed pipes.
     pub(super) fn alive(&self)->bool { self.transport.alive() }
 

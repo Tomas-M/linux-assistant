@@ -118,8 +118,19 @@ async function loadAccounts()
         if (account.paused || stale) badge='warn';
         if (account.error) badge='error';
         const title=account.email || (apiKey?'OpenAI API '+account.id.slice(0,8):account.home.split(/[\\/]/u).at(-1));
-        const quota=apiKey?'<p class="hint">API billing · no subscription quota percentage</p>':quotaMarkup(account.limits);
-        const markup='<span class="badge '+badge+'">'+escapeHtml(status)+'</span><h3>'+escapeHtml(title)+'</h3><p>'+escapeHtml(apiKey?'OpenAI API':account.plan || 'Plan unknown')+'</p>'+quota+'<small>'+count(account.active_requests)+' active turns</small><small>Last checked '+utc(account.checked_at)+'</small><small class="account-home">'+escapeHtml(account.home)+'</small>'+(account.error?'<p>'+escapeHtml(account.error)+'</p>':'')+'<button class="quiet account-access" data-pause="'+escapeHtml(account.id)+'" data-paused="'+account.paused+'">'+(account.paused?'Resume account':'Pause account')+'</button>';
+        let quota=quotaMarkup(account.limits);
+        if (apiKey)
+        {
+            const usage=account.usage;
+            quota='<p class="hint">Prepaid balance is unavailable through an API key. <a href="https://platform.openai.com/settings/organization/billing" target="_blank" rel="noopener noreferrer">OpenAI billing</a></p>';
+            if (usage.attempts)
+            {
+                const cost=usage.measured?((usage.input-usage.cached)*data.pricing.input+usage.cached*data.pricing.cached+usage.output*data.pricing.output)/1000000:null;
+                quota+='<small>Recorded here, all time · input '+count(usage.input)+' · cached '+count(usage.cached)+' · output '+count(usage.output)+'</small><small>Estimated token cost '+money(cost)+' at current configured rates · '+count(usage.measured)+' of '+count(usage.attempts)+' attempts measured</small>';
+            }
+            else quota+='<small>No API usage recorded here yet.</small>';
+        }
+        const markup='<span class="badge '+badge+'">'+escapeHtml(status)+'</span><h3>'+escapeHtml(title)+'</h3><p>'+escapeHtml(apiKey?'OpenAI API':account.plan || 'Plan unknown')+'</p>'+quota+'<small>'+count(account.active_requests)+' active turns</small><small>Last checked '+utc(account.checked_at)+'</small><small class="account-home">'+escapeHtml(account.home)+'</small>'+(account.error?'<p>'+escapeHtml(account.error)+'</p>':'')+'<div class="account-actions"><button class="quiet" data-pause="'+escapeHtml(account.id)+'" data-paused="'+account.paused+'">'+(account.paused?'Resume account':'Pause account')+'</button><button class="quiet danger" data-delete="'+escapeHtml(account.id)+'"'+(account.active_requests?' disabled title="Pause the account and wait for its active turns to finish"':'')+'><svg aria-hidden="true"><use href="#icon-remove"/></svg>'+(apiKey?'Delete API key':'Delete account')+'</button></div>';
         const statusBox=card.querySelector('.account-status');
         setMarkup(statusBox,markup);
     }
@@ -333,10 +344,17 @@ document.getElementById('account-login-cancel').addEventListener('click',async e
 });
 document.getElementById('account-cards').addEventListener('click',async event=>
 {
-    const button=event.target.closest('[data-pause]');
+    const button=event.target.closest('[data-pause],[data-delete]');
     if (!button) return;
+    const deleting=!!button.dataset.delete,id=button.dataset.delete || button.dataset.pause;
+    const account=state.accounts.find(account=>account.id===id);
+    if (deleting && !confirm('Delete saved credentials for '+(account.email || 'this '+(account.limits?.authType==='apiKey'?'API key':'ChatGPT account'))+' from this backend? Recorded usage history will be kept.')) return;
     button.disabled=true;
-    try { await api('accounts/'+button.dataset.pause+'/pause',{paused:button.dataset.paused!=='true'}); await loadAccounts(); }
+    try
+    {
+        await api('accounts/'+id+(deleting?'/delete':'/pause'),deleting?{}:{paused:button.dataset.paused!=='true'});
+        await loadAccounts();
+    }
     catch (error) { notice(error.message); }
     finally { button.disabled=false; }
 });
