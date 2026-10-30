@@ -581,3 +581,32 @@ async fn account_deletion_rejects_unmanaged_home()->Result<()> {
     assert!(outside.join("fixture.json").is_file());
     Ok(())
 }
+
+/// API keys and subscriptions both bill final usage queued after Stop's acknowledgement, exactly once.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn integration_stopped_tasks_bill_both_account_types()->Result<()> {
+    for auth in ["chatgpt","apiKey"] {
+        let directory=tempfile::tempdir()?;
+        let home=directory.path().join("held");
+        account(&home,json!({"auth_type":auth,"primary":0,"hold":true,"interrupt_usage":{"inputTokens":1000000,"cachedInputTokens":200000,"outputTokens":10000,"reasoningOutputTokens":5000,"totalTokens":1010000}}))?;
+        let config=Config { test_homes:vec![home.clone()],..Config::default() };
+        let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
+        let user=db.user("stopped-billing@example.test",None,100)?; let chat=request();
+        db.reserve(user,&chat,"stopped",&config.pricing)?;
+        let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
+        let pool=Arc::new(pool); let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
+        let (running_pool,running_db,running_config,running_chat)=(pool.clone(),db.clone(),config.clone(),chat.clone());
+        let task=tokio::spawn(async move { running_pool.answer_stream(&running_config,&running_db,user,&running_chat,None,Some(&mut receiver)).await });
+        tokio::time::timeout(Duration::from_secs(5),async {
+            while db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE turn_id IS NOT NULL",[],|row|row.get::<_,i64>(0)).unwrap()==0 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await?;
+        let (reply,ack)=tokio::sync::oneshot::channel(); sender.send(crate::turns::Control::Stop(reply)).await?; ack.await?.map_err(anyhow::Error::msg)?;
+        assert!(task.await?.err().unwrap().downcast_ref::<crate::turns::Interrupted>().is_some());
+        for _ in 0..2 { db.settle(user,&chat.request_id.to_string(),Err("Stopped by user".into()))?; }
+        assert_eq!(db.balance(user)?,-72,"{auth}");
+        assert_eq!(db.0.lock().unwrap().query_row("SELECT SUM(total_tokens) FROM usage",[],|row|row.get::<_,i64>(0))?,1010000);
+        assert!(matches!(db.reserve(user,&request(),"blocked",&config.pricing)?,crate::db::Reservation::Insufficient));
+    }
+    Ok(())
+}

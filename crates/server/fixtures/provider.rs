@@ -74,9 +74,12 @@ fn main() -> Result<()> {
         if matches!(method,"turn/steer"|"turn/interrupt") {
             let thread=request["params"]["threadId"].as_str().unwrap();
             let Some((turn,weight))=held.remove(thread) else { continue; };
-            if method=="turn/steer" {
-                let usage=json!({"inputTokens":weight,"cachedInputTokens":weight/4,"outputTokens":10,"reasoningOutputTokens":5,"totalTokens":weight+10});
+            if method=="turn/steer" || settings["interrupt_usage"].is_object() {
+                let usage=if method=="turn/interrupt" { settings["interrupt_usage"].clone() }
+                    else { json!({"inputTokens":weight,"cachedInputTokens":weight/4,"outputTokens":10,"reasoningOutputTokens":5,"totalTokens":weight+10}) };
                 println!("{}",json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{"total":usage}}}));
+            }
+            if method=="turn/steer" {
                 let text=request["params"]["input"][0]["text"].as_str().unwrap();
                 println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"type":"agentMessage","text":json!({"text":format!("Steered: {text}"),"command":null}).to_string()}}}));
             }

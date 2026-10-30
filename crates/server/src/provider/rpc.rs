@@ -149,17 +149,26 @@ impl Rpc {
         attempt.identify(&thread_id,turn_id,model.as_deref())?;
         let mut answer = String::new();
         let mut turn_started=false;
+        let mut interrupted=None;
         loop {
             let event = {
                 tokio::select! {
-                    event=self.next()=>event?,
-                    control=async { match controls.as_deref_mut() { Some(receiver)=>receiver.recv().await,None=>std::future::pending().await } }, if turn_started=> {
+                    event=self.next()=>match event {
+                        Ok(event)=>event,
+                        Err(_) if interrupted.is_some()=>return Err(crate::turns::Interrupted.into()),
+                        Err(error)=>return Err(error),
+                    },
+                    _=async { match interrupted { Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await } }=>return Err(crate::turns::Interrupted.into()),
+                    control=async { match controls.as_deref_mut() { Some(receiver)=>receiver.recv().await,None=>std::future::pending().await } }, if turn_started && interrupted.is_none()=> {
                         let Some(control)=control else { controls=None; continue; };
                         match control {
                             crate::turns::Control::Stop(reply)=> {
                                 let result=self.call("turn/interrupt",json!({"threadId":thread_id,"turnId":turn_id})).await;
+                                let accepted=result.is_ok();
                                 let _=reply.send(result.map(|_|()).map_err(|error|error.to_string()));
-                                return Err(crate::turns::Interrupted.into());
+                                if !accepted { return Err(crate::turns::Interrupted.into()); }
+                                // Drain final usage notifications after the interrupt acknowledgement before settlement.
+                                interrupted=Some(tokio::time::Instant::now()+std::time::Duration::from_secs(2));
                             }
                             crate::turns::Control::Steer(input,reply)=> {
                                 let result=async {
@@ -190,7 +199,7 @@ impl Rpc {
                 if event["method"]=="thread/tokenUsage/updated" { baseline=event["params"]["tokenUsage"]["total"].clone(); }
                 continue;
             }
-            reporter.event(&event)?;
+            if interrupted.is_none() { reporter.event(&event)?; }
             match event["method"].as_str() {
                 Some("turn/started") if event["params"]["turn"]["id"]==turn_id => { turn_started=true; }
                 Some("thread/tokenUsage/updated") if event["params"]["turnId"]==turn_id => {
@@ -207,6 +216,7 @@ impl Rpc {
                 Some("turn/completed") => {
                     let turn = &event["params"]["turn"];
                     if turn["id"].as_str().is_some_and(|id|id!=turn_id) { continue; }
+                    if interrupted.is_some() { return Err(crate::turns::Interrupted.into()); }
                     if turn["status"]!="completed" {
                         let detail=format!("Codex turn {}: reason={}; {}",turn["status"],turn["error"]["codexErrorInfo"],turn["error"]["message"].as_str().unwrap_or("No provider error message"));
                         if turn["error"]["codexErrorInfo"]=="usageLimitExceeded" { return Err(anyhow::Error::from(QuotaReached).context(detail)); }
