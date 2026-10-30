@@ -114,8 +114,14 @@ dialog { width:min(480px,calc(100% - 32px)); padding:28px; color:var(--text); ba
 dialog::backdrop { background:#14261b38; backdrop-filter:blur(3px); }
 .dialog-heading,.process-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dialog-heading h2 { margin:0; }
-.setting { display:flex; align-items:center; justify-content:space-between; gap:24px; margin:18px 0; }
-.setting small { display:block; margin-top:5px; }
+.account-balance { display:grid; gap:8px; margin:24px 0; }
+.account-balance strong { font-size:32px; line-height:1.2; color:var(--accent); }
+.purchase-history { border-top:1px solid var(--border); margin-top:24px; padding-top:20px; }
+.purchase-history h3 { font-size:16px; }
+#purchases { list-style:none; padding:0; margin:0; }
+#purchases li { display:flex; justify-content:space-between; gap:16px; padding:10px 0; border-bottom:1px solid var(--border); font-size:14px; }
+#purchases time { color:var(--muted); }
+#settings-status:empty { display:none; }
 input[type=checkbox] { accent-color:var(--accent); }
 .settings-footer { display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border); font-size:13px; }
 #process-toggle { position:fixed; right:24px; bottom:26px; z-index:3; display:flex; align-items:center; gap:10px; border-radius:12px; box-shadow:var(--shadow); font-size:14px; }

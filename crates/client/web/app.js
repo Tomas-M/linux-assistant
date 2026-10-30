@@ -6,8 +6,8 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, stopped=false, startedAt, renderFrame, scrollAfterSend=false;
-const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
+let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
+const pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
@@ -91,20 +91,26 @@ function render()
     elements['settings-open'].hidden=!state.authenticated;
     elements['credit-balance'].hidden=!state.authenticated;
     elements['process-toggle'].hidden=!state.authenticated;
-    elements.welcome.hidden=state.messages.length>0;
-    elements.commands.checked=state.settings.commands_enabled;
+    elements.welcome.hidden=!state.authenticated || state.messages.length>0;
     elements['full-access'].checked=state.full_access;
     elements['full-access'].disabled=!state.authenticated || (busy && !state.full_access);
     elements['permission-note'].textContent=state.full_access?'Commands run automatically':state.settings.commands_enabled?'You approve every command':'Local commands are off';
     elements.platform.textContent=(state.platform==='windows'?'Windows · PowerShell':'Linux · sh')+' · Local workspace';
-    elements.account.textContent=state.account?state.account.email+' · '+state.account.credits+' credits':'Sign in to your assistant account';
+    elements.account.textContent=state.account?.email || 'Sign in to your assistant account';
+    elements['settings-balance'].textContent=state.account?state.account.credits.toLocaleString():'Loading…';
+    if (elements.purchases.dataset.email!==state.account?.email)
+    {
+        elements.purchases.replaceChildren();
+        elements.purchases.dataset.email=state.account?.email || '';
+        elements['purchase-status'].textContent='';
+    }
     elements['credit-balance'].textContent=state.account?state.account.credits.toLocaleString()+' credits':'Credits…';
     const depleted=state.account && state.account.credits<=0;
     elements['credit-balance'].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
     if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
     else setIcon(elements['settings-open'],'user');
-    for (const id of ['new','commands','credits','logout','approve','deny','retry'])
+    for (const id of ['new','credits','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     for (const id of ['buy','buy-inline']) elements[id].disabled=buying || !state.account;
     for (const id of ['checkout-link','balance-checkout-link'])
@@ -423,16 +429,16 @@ elements.messages.addEventListener('click',async event=>
 // Shared snapshots restore an active conversation after refresh without posting another request.
 async function watch()
 {
-    while (!stopped)
+    while (true)
     {
         try
         {
-            const response=await fetch('/api/events',{headers:{Authorization:'Bearer '+token},signal:eventController.signal});
+            const response=await fetch('/api/events',{headers:{Authorization:'Bearer '+token}});
             if (!response.ok) throw new Error('Open the URL printed by the executable to authorize this tab.');
             if (elements.status.dataset.connection) { elements.status.textContent=''; delete elements.status.dataset.connection; }
             const reader=response.body.getReader(), decoder=new TextDecoder();
             let buffer='';
-            while (!stopped)
+            while (true)
             {
                 const result=await reader.read();
                 if (result.done) throw new Error('The local connection was interrupted.');
@@ -464,7 +470,6 @@ async function watch()
         }
         catch (error)
         {
-            if (stopped) break;
             elements.status.dataset.connection='true';
             elements.status.textContent='Reconnecting to the local assistant… '+error.message;
             await new Promise(resolve=>setTimeout(resolve,1500));
@@ -497,9 +502,40 @@ elements.theme.addEventListener('click',()=>
     setIcon(elements.theme,dark?'sun':'moon');
     elements.theme.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
 });
-elements['settings-open'].addEventListener('click',()=>elements['settings-dialog'].showModal());
+// Keep purchase history authoritative and scoped to the account that opened Settings.
+async function loadPurchases()
+{
+    const email=state.account?.email;
+    if (!email) return;
+    elements['purchase-status'].textContent='Loading purchases…';
+    elements.purchases.replaceChildren();
+    try
+    {
+        const result=await api('purchases');
+        if (state.account?.email!==email) return;
+        for (const purchase of result.purchases)
+        {
+            const row=document.createElement('li'),credits=document.createElement('strong'),time=document.createElement('time');
+            credits.textContent='+'+purchase.credits.toLocaleString()+' credits';
+            time.dateTime=new Date(purchase.paid_at*1000).toISOString();
+            time.textContent=new Date(purchase.paid_at*1000).toLocaleString();
+            row.append(credits,time); elements.purchases.append(row);
+        }
+        elements['purchase-status'].textContent=result.purchases.length?'':'No completed purchases yet.';
+    }
+    catch (error) { if (state.account?.email===email) elements['purchase-status'].textContent=error.message; }
+}
+
+// Both header controls open the same credit overview and load recent purchases.
+function openSettings()
+{
+    elements['settings-status'].textContent='';
+    elements['settings-dialog'].showModal();
+    loadPurchases();
+}
+elements['settings-open'].addEventListener('click',openSettings);
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
-elements['credit-balance'].addEventListener('click',()=>elements['settings-dialog'].showModal());
+elements['credit-balance'].addEventListener('click',openSettings);
 const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 
 // Keep the sign-in form local, including resend timing and development-only delivery hints.
@@ -578,6 +614,7 @@ function fillCode(value,index)
     if (!digits.length) { codeInputs[index].value=''; return; }
     for (let offset=0; offset<digits.length && index+offset<6; offset++) codeInputs[index+offset].value=digits[offset];
     codeInputs[Math.min(5,index+digits.length)].focus();
+    if (codeInputs.every(input=>/^[0-9]$/u.test(input.value))) elements['code-form'].requestSubmit();
 }
 codeInputs.forEach((input,index)=>
 {
@@ -591,7 +628,6 @@ codeInputs.forEach((input,index)=>
         if (event.key==='ArrowRight' && index<5) { event.preventDefault(); codeInputs[index+1].focus(); }
     });
 });
-elements.commands.addEventListener('change',()=>action(()=>api('settings',{commands_enabled:elements.commands.checked})));
 elements['full-access'].addEventListener('change',async()=>
 {
     const enabled=elements['full-access'].checked;
@@ -773,7 +809,7 @@ for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
     action(()=>api('command',{id:proposalId,approve:id==='approve'}));
 });
 for (const [id,path] of [['new','new'],['credits','account'],['logout','logout'],['retry','retry']])
-    elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='logout') elements['settings-dialog'].close();}));
+    elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='credits') await loadPurchases(); if (id==='logout') elements['settings-dialog'].close();}));
 for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',async()=>
 {
     if (buying || !state.account) return;
@@ -787,21 +823,8 @@ for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',asy
         for (const link of ['checkout-link','balance-checkout-link']) { elements[link].dataset.email=email; elements[link].href=checkout.url; elements[link].hidden=false; }
         window.open(checkout.url,'_blank','noopener,noreferrer');
     }
-    catch (error) { elements.status.textContent=error.message; }
+    catch (error) { elements.status.textContent=error.message; elements['settings-status'].textContent=error.message; }
     finally { buying=false; render(); }
-});
-elements.stop.addEventListener('click',async()=>
-{
-    try
-    {
-        await api('stop',{});
-        stopped=true;
-        eventController.abort();
-        clearInterval(processTimer);
-        clearInterval(elapsedTimer);
-        document.body.textContent=document.title+' stopped. Launch the executable to start again.';
-    }
-    catch (error) { elements.status.textContent=error.message; }
 });
 let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
 const processRows=new Map();
@@ -957,7 +980,7 @@ for (const stream of ['stdout','stderr']) elements['download-'+stream].addEventL
 
 
 // Idle or hidden tabs avoid constant polling; selected output is fetched only when its metadata changes.
-const processTimer=setInterval(()=>
+setInterval(()=>
 {
     const interval=elements['process-panel'].hidden && !view.busy?5000:1000;
     if (state?.authenticated && !document.hidden && Date.now()-lastProcessPoll>=interval) pollProcesses();
@@ -974,7 +997,7 @@ function renderConnection()
         elements[id].textContent=(seconds?'Backend unavailable. Retrying in '+seconds+'s':'Connecting to backend…')+' · attempt '+retry.attempt+' of 5';
     }
 }
-const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin(); renderConnection();},1000);
+setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin(); renderConnection();},1000);
 // Reserve the actual composer height, including queued messages and a multiline draft, below the transcript.
 new ResizeObserver(()=>
 {

@@ -170,6 +170,38 @@ async fn email_sign_in_uses_six_digits_and_consumes_the_code() -> anyhow::Result
     Ok(())
 }
 
+/// Completed purchases are private to their owner, bounded, and exclude abandoned checkout sessions.
+#[tokio::test]
+async fn purchases_are_private_and_completed() -> anyhow::Result<()> {
+    let state=application()?;
+    let paid_at=db::now();
+    for (email,token,credits) in [("buyer@example.test","purchase-owner",100),("other@example.test","purchase-other",200)] {
+        let user=state.db.user(email,None,0)?;
+        let connection=state.db.0.lock().unwrap();
+        connection.execute("INSERT INTO sessions VALUES(?1,?2,?3)",rusqlite::params![db::hash(token),user,db::now()+60])?;
+        for index in 0..8 {
+            connection.execute("INSERT INTO purchases(id,user_id,credits,paid_at) VALUES(?1,?2,?3,?4)",rusqlite::params![format!("{token}-{index}"),user,credits+index,paid_at-index])?;
+        }
+        connection.execute("INSERT INTO purchases(id,user_id,credits) VALUES(?1,?2,999)",rusqlite::params![token,user])?;
+    }
+    let app=router(state);
+    for token in [None,Some("invalid"),Some("purchase-owner"),Some("purchase-other")] {
+        let mut request=Request::builder().uri("/v1/purchases");
+        if let Some(token)=token { request=request.header(header::AUTHORIZATION,format!("Bearer {token}")); }
+        let response=app.clone().oneshot(request.body(Body::empty())?).await?;
+        let authorized=matches!(token,Some("purchase-owner"|"purchase-other"));
+        assert_eq!(response.status(),if authorized { StatusCode::OK } else { StatusCode::UNAUTHORIZED });
+        if authorized {
+            let data:Value=serde_json::from_slice(&to_bytes(response.into_body(),1024*64).await?)?;
+            let entries=data["purchases"].as_array().unwrap();
+            assert_eq!(entries.len(),5);
+            let credits=if token==Some("purchase-owner") { 100 } else { 200 };
+            for (index,entry) in entries.iter().enumerate() { assert_eq!(entry["credits"],credits+index); assert_eq!(entry.as_object().unwrap().len(),2); }
+        }
+    }
+    Ok(())
+}
+
 /// Public API CORS allows arbitrary origins without making cookie-authenticated admin routes public.
 #[tokio::test]
 async fn public_cors_keeps_account_and_admin_authentication() -> anyhow::Result<()> {

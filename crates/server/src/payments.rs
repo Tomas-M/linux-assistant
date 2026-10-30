@@ -5,6 +5,15 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use crate::{db::{now, secret}, App, ApiError, ApiResult};
 
+/// Expose only the signed-in user's five latest completed purchases, without provider identifiers.
+pub async fn purchases(State(app):State<App>,headers:HeaderMap)->ApiResult<Json<Value>> {
+    let user=app.user(&headers)?;
+    let connection=app.db.0.lock().unwrap();
+    let mut statement=connection.prepare("SELECT credits,paid_at FROM purchases WHERE user_id=?1 AND paid_at IS NOT NULL ORDER BY paid_at DESC,id DESC LIMIT 5")?;
+    let purchases=statement.query_map([user],|row|Ok(json!({"credits":row.get::<_,i64>(0)?,"paid_at":row.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Json(json!({"purchases":purchases})))
+}
+
 /// The server chooses the product and credit amount; clients cannot set either.
 pub async fn checkout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let user = app.user(&headers)?;

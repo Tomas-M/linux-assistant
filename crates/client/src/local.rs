@@ -110,7 +110,11 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
 /// Embedded assets make the browser mode independent of installed files or Node.js.
 fn router(state: Local) -> Router {
     Router::new()
-        .route("/",get(||async { Html(include_str!("../web/index.html")) }))
+        .route("/",get(|State(state):State<Local>|async move {
+            // Brand the initial document too, before scripts or account data have loaded.
+            let name=state.brand.name.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
+            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name))
+        }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
@@ -123,7 +127,7 @@ fn router(state: Local) -> Router {
         .route("/api/login",post(login)).route("/api/login/verify",post(verify_login)).route("/api/logout",post(logout))
         .route("/api/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/steer",post(steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
         .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
-        .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/stop",post(stop))
+        .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/stop",post(stop))
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
         .route("/api/processes/{id}/stop",post(process_stop))
         .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
@@ -326,13 +330,21 @@ async fn process_stop(State(state): State<Local>, axum::extract::Path(id): axum:
 }
 /// Return a backend-created payment URL without handling card information locally.
 async fn checkout(State(state): State<Local>) -> LocalResult {
+    account_request(&state,reqwest::Method::POST,"/v1/checkout").await
+}
+/// Read only this user's completed top-ups, including while a conversation owns the engine lock.
+async fn purchases(State(state): State<Local>) -> LocalResult {
+    account_request(&state,reqwest::Method::GET,"/v1/purchases").await
+}
+/// Forward account requests with durable authentication without exposing the token to the browser.
+async fn account_request(state:&Local,method:reqwest::Method,path:&str)->LocalResult {
     // Durable authentication can be read while a task holds the engine, without exposing it to the browser.
     let saved:crate::engine::Saved=storage::read(&state.session_path)?;
-    let request=crate::backend::client(60)?.post(format!("{}/v1/checkout",saved.settings.backend)).bearer_auth(saved.token.context("Sign in first")?);
+    let request=crate::backend::client(60)?.request(method,format!("{}{path}",saved.settings.backend)).bearer_auth(saved.token.context("Sign in first")?);
     let response=crate::backend::send(request,&state.live,None).await?;
     let status=response.status();
     let value:Value=response.json().await?;
-    if !status.is_success() { return Err(anyhow::anyhow!("{}",value["error"].as_str().unwrap_or("Checkout failed")).into()); }
+    if !status.is_success() { return Err(anyhow::anyhow!("{}",value["error"].as_str().unwrap_or("Account request failed")).into()); }
     Ok(Json(value))
 }
 /// Stop explicitly; closing a browser tab leaves the assistant available to the CLI.
@@ -427,7 +439,7 @@ mod tests {
         assert_eq!(recovered.stderr,record.stderr);
         Ok(())
     }
-    /// Checkout uses current private saved authentication even while a task owns the engine lock.
+    /// Account requests use current private saved authentication even while a task owns the engine lock.
     #[tokio::test]
     async fn checkout_remains_available_during_a_task()->Result<()> {
         let directory=tempfile::tempdir()?;
@@ -436,6 +448,9 @@ mod tests {
         let app=Router::new().route("/v1/checkout",post(|headers:axum::http::HeaderMap|async move {
             assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
             Json(json!({"url":"https://checkout.stripe.com/fixture"}))
+        })).route("/v1/purchases",get(|headers:axum::http::HeaderMap|async move {
+            assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
+            Json(json!({"purchases":[{"credits":100,"paid_at":123}]}))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let mut engine=Engine::open(directory.path(),&backend).await?;
@@ -445,6 +460,8 @@ mod tests {
         let _busy=local.engine.lock().await;
         let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
+        let result=purchases(State(local.clone())).await.map_err(|error|error.0)?;
+        assert_eq!(result.0["purchases"][0]["credits"],100);
         server.abort();
         Ok(())
     }
@@ -454,8 +471,12 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
+        let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
+        let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;
+        assert!(html.contains("<title>Slax 世界 &amp; &lt;AI&gt;</title>"));
+        assert!(!html.contains("{{APP_NAME}}") && !html.contains("<title>Linux Assistant</title>"));
         for (host,origin,token,status) in [
             ("127.0.0.1:1234",None,None,StatusCode::UNAUTHORIZED),
             ("evil.example",None,Some("Bearer test-token"),StatusCode::FORBIDDEN),

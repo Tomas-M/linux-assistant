@@ -102,7 +102,7 @@ fn router(app: App) -> Router {
         .route("/auth/google/{device}",get(auth::google)).route("/auth/google/callback",get(auth::callback))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop))
-        .route("/v1/checkout",post(payments::checkout)).route("/webhooks/stripe",post(payments::webhook))
+        .route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
         .route("/payment/success",get(||async { Html(auth::document("<h1>Payment submitted</h1><p>Credits appear after the payment is confirmed. Return to Linux Assistant and refresh your balance.</p>")) }))
         .route("/payment/cancel",get(||async { Html(auth::document("<h1>Checkout cancelled</h1><p>Return to Linux Assistant to continue.</p>")) }))
         .layer(DefaultBodyLimit::max(256*1024)).layer(middleware::from_fn_with_state(app.clone(),browser_security)).with_state(app)
