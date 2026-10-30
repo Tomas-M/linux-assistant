@@ -80,7 +80,7 @@ impl Engine {
     }
 
     /// Read backend errors while keeping provider credentials entirely server-side.
-    async fn response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+    pub(super) async fn response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T> {
         let status = response.status();
         let value: Value = response.json().await?;
         ensure!(status.is_success(),"{}",value["error"].as_str().unwrap_or("Backend request failed"));

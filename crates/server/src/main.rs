@@ -123,6 +123,7 @@ fn router(app: App) -> Router {
         .route("/v1/auth/email",post(auth::email)).route("/v1/auth/verify",post(auth::verify))
         .route("/v1/auth/providers",get(auth::social::providers)).route("/v1/auth/cancel",post(auth::social::cancel))
         .route("/auth/{provider}/{device}",get(auth::social::begin)).route("/auth/{provider}/callback",get(auth::social::callback))
+        .route("/auth/complete.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("auth/complete.js")) }))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop))
         .route("/v1/credit-packs",get(payments::packs)).route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
@@ -135,6 +136,7 @@ fn router(app: App) -> Router {
 async fn browser_security(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
     let config=app.config();
     let admin=request.uri().path().starts_with("/admin");
+    let callback=request.uri().path().starts_with("/auth/") && request.uri().path().ends_with("/callback");
     let public=request.uri().path().starts_with("/v1/") || request.uri().path()=="/health";
     if !public {
         if let Some(origin) = request.headers().get(header::ORIGIN) {
@@ -156,6 +158,7 @@ async fn browser_security(State(app): State<App>, request: Request<Body>, next: 
     response.headers_mut().insert("Referrer-Policy","same-origin".parse().unwrap());
     response.headers_mut().insert("X-Content-Type-Options","nosniff".parse().unwrap());
     let policy=if admin { "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
+        else if callback { "default-src 'none'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
         else { "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
     response.headers_mut().insert("Content-Security-Policy",policy.parse().unwrap());
     response

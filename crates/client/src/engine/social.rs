@@ -4,11 +4,6 @@ use protocol::{AuthProvider,PollLogin};
 pub(super) struct LoginAttempt { pub device:DeviceLogin,pub provider:Option<AuthProvider> }
 
 impl Engine {
-    /// Discover configured providers without sending OAuth credentials to the browser.
-    pub async fn auth_providers(&self)->Result<Value> {
-        Self::response(crate::backend::send(self.backend(reqwest::Method::GET,"/v1/auth/providers"),&self.live,None).await?).await
-    }
-
     /// Own the polling secret in the native process; the popup receives only an opaque device ID.
     pub async fn social_start(&mut self,provider:AuthProvider)->Result<Value> {
         ensure!(self.saved.token.is_none(),"Sign out before starting another sign-in");

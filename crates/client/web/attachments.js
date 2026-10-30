@@ -93,9 +93,9 @@ function renderAttachments()
 {
     elements['attach'].disabled=attaching || elements.prompt.disabled;
     elements['attachments'].hidden=!draftAttachments.length;
-    elements['attachment-note'].hidden=!draftAttachments.length && !attaching && !attachmentError;
+    elements['attachment-note'].hidden=!attaching && !attachmentError;
     elements['attachment-note'].classList.toggle('error',!!attachmentError);
-    elements['attachment-note'].textContent=attachmentError || (attaching?'Preparing attachments…':'Original attachments · Large inputs require confirmation before sending');
+    elements['attachment-note'].textContent=attachmentError || (attaching?'Preparing attachments…':'');
     const key=JSON.stringify(draftAttachments.map(item=>[item.name,item.kind,item.content.length]));
     if (elements.attachments.dataset.key===key) return;
     elements.attachments.dataset.key=key;

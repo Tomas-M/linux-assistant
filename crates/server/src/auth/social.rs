@@ -96,7 +96,7 @@ pub async fn callback(State(app):State<App>,Path(provider):Path<AuthProvider>,he
             message
         }
     };
-    Ok(Html(super::document(&format!("<h1>Sign-in</h1><p>{message}</p>"))))
+    Ok(Html(super::document(&format!("<h1>Sign-in</h1><p>{message}</p><script src='/auth/complete.js' defer></script>"))))
 }
 
 struct Identity { subject:String,email:Option<String>,trusted_email:bool }

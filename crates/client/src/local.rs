@@ -173,8 +173,12 @@ struct Decision { id: Uuid, approve: bool }
 /// Read the same assistant state in either interface.
 async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live.0.borrow()["state"].clone()) }
 
-/// Return only the configured provider names to the sign-in form.
-async fn auth_providers(State(state):State<Local>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.auth_providers().await?)) }
+/// Public sign-in discovery never locks the conversation or blocks account refreshes.
+async fn auth_providers(State(state):State<Local>)->LocalResult {
+    let backend=state.live.0.borrow()["state"]["settings"]["backend"].as_str().unwrap().to_owned();
+    let request=crate::backend::client(60)?.get(format!("{backend}/v1/auth/providers"));
+    Ok(Json(Engine::response(crate::backend::send(request,&state.live,None).await?).await?))
+}
 /// Create a native-owned device challenge before navigating the provider popup.
 async fn social_start(State(state):State<Local>,Json(input):Json<SocialInput>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.social_start(input.provider).await?)) }
 /// Exchange an approved challenge without exposing its secret or session token.
@@ -203,8 +207,11 @@ async fn settings(State(state): State<Local>, Json(input): Json<SettingsInput>) 
     engine.settings(input.commands_enabled)?;
     Ok(Json(engine.state()))
 }
-/// Fetch the latest backend account and balance.
-async fn account(State(state): State<Local>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.refresh_account().await?)) }
+/// Refresh when idle; an active operation will publish updated state when it completes.
+async fn account(State(state): State<Local>) -> LocalResult {
+    let Ok(mut engine)=state.engine.try_lock() else { return Ok(Json(state.live.0.borrow()["state"].clone())); };
+    Ok(Json(engine.refresh_account().await?))
+}
 /// Send a code while keeping login input inside the client.
 async fn login(State(state): State<Local>,Json(input):Json<EmailInput>) -> LocalResult { Ok(Json(serde_json::to_value(state.engine.try_lock().context("Assistant is busy")?.login(input.email).await?)?)) }
 /// Exchange the code without exposing session credentials to browser JavaScript.
@@ -480,6 +487,38 @@ mod tests {
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
         let result=purchases(State(local.clone())).await.map_err(|error|error.0)?;
         assert_eq!(result.0["purchases"][0]["credits"],100);
+        server.abort();
+        Ok(())
+    }
+
+    /// Slow startup metadata must not collide with balance refreshes or report a busy assistant.
+    #[tokio::test]
+    async fn startup_metadata_does_not_lock_the_assistant()->Result<()> {
+        let directory=tempfile::tempdir()?;
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let entered=Arc::new(Notify::new()); let release=Arc::new(Notify::new());
+        let (started,ready)=(entered.clone(),release.clone());
+        let app=Router::new().route("/v1/auth/providers",get(move|| {
+            let (started,ready)=(started.clone(),ready.clone());
+            async move { started.notify_one(); ready.notified().await; Json(json!({"providers":[],"email_enabled":true})) }
+        })).route("/v1/me",get(||async { Json(json!({"email":"fixture@example.test","credits":22,"development":true,"input_credits_per_million":200})) }));
+        let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        engine.saved.token=Some("fixture".into()); engine.settings(true)?;
+        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let metadata=local.clone();
+        let discovery=tokio::spawn(async move { auth_providers(State(metadata)).await.map_err(|error|error.0) });
+        tokio::time::timeout(Duration::from_secs(1),entered.notified()).await?;
+        let result=tokio::time::timeout(Duration::from_secs(1),account(State(local.clone()))).await?.map_err(|error|error.0)?;
+        assert_eq!(result.0["account"]["credits"],22);
+        release.notify_one();
+        assert_eq!(discovery.await??.0["email_enabled"],true);
+        let _busy=local.engine.lock().await;
+        let cached=tokio::time::timeout(Duration::from_secs(1),account(State(local.clone()))).await?.map_err(|error|error.0)?;
+        assert_eq!(cached.0["account"]["credits"],22);
+        release.notify_one();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1),auth_providers(State(local.clone()))).await?.map_err(|error|error.0)?.0["email_enabled"],true);
         server.abort();
         Ok(())
     }

@@ -60,6 +60,8 @@ async fn social_state_pkce_cancellation_and_provider_binding()->anyhow::Result<(
         assert_eq!(mismatch.status(),StatusCode::BAD_REQUEST);
         let declined=router.clone().oneshot(Request::builder().uri(&denied).header(header::COOKIE,cookie).body(Body::empty())?).await?;
         assert_eq!(declined.status(),StatusCode::OK);
+        assert!(declined.headers()["Content-Security-Policy"].to_str()?.contains("script-src 'self'"));
+        assert!(String::from_utf8(to_bytes(declined.into_body(),4096).await?.to_vec())?.contains("<script src='/auth/complete.js' defer></script>"));
         let replay=router.oneshot(Request::builder().uri(&denied).header(header::COOKIE,cookie).body(Body::empty())?).await?;
         assert_eq!(replay.status(),StatusCode::BAD_REQUEST);
         let error=crate::auth::poll(State(app.clone()),Json(PollLogin { device_id:device.device_id.clone(),poll_secret:device.poll_secret.clone() })).await.err().unwrap();
