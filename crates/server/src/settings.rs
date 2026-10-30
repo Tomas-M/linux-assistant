@@ -1,11 +1,11 @@
 use std::{ops::Deref,sync::Arc};
 use anyhow::Result;
-use axum::{extract::State,http::{header,HeaderMap},response::{Html,IntoResponse,Redirect,Response},Form,Json};
+use axum::{extract::State,http::{header,HeaderMap,StatusCode},response::{Html,IntoResponse,Redirect,Response},Form,Json};
 use hmac::{Hmac,Mac};
 use rusqlite::{params,OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json,Value};
-use crate::{config::Config,db::{secret,Db},App,ApiError,ApiResult};
+use crate::{config::{Config,FieldError},db::{secret,Db},App,ApiError,ApiResult};
 #[cfg(test)]
 mod tests;
 
@@ -106,10 +106,27 @@ pub async fn view(State(app):State<App>)->ApiResult<Json<Value>> {
 #[derive(Deserialize)]
 pub struct Save { settings:Config,clear_secrets:Vec<String>,new_password:Option<String> }
 
+impl IntoResponse for FieldError {
+    /// Let the dashboard focus the invalid setting without exposing rejected values or credentials.
+    fn into_response(self)->Response { (StatusCode::BAD_REQUEST,Json(json!({"error":self.message,"field":self.field}))).into_response() }
+}
+
 /// Save atomically and reload integrations without restarting or interrupting running AI tasks.
-pub async fn save(State(app):State<App>,Json(input):Json<Save>)->ApiResult<Response> {
+pub async fn save(State(app):State<App>,Json(value):Json<Value>)->ApiResult<Response> {
+    // Preserve field paths for type/range errors as well as semantic validation failures.
+    let input:Save=match serde_path_to_error::deserialize(value) {
+        Ok(input)=>input,
+        Err(error)=>{
+            let path=error.path().to_string().replace('[',".").replace(']',"");
+            let field=path.strip_prefix("settings.").unwrap_or(&path);
+            let message=if field.starts_with("pricing.") { "Enter a nonnegative rate with at most six decimal places" }
+                else if field=="smtp_port" { "Enter a whole number between 1 and 65535" }
+                else { "Enter a valid value for this setting" };
+            return Ok(FieldError::new(field,message).into_response());
+        }
+    };
     let password=if let Some(password)=input.new_password {
-        if password.chars().count()<16 || password.len()>1024 { return Err(ApiError::bad("Use at least 16 characters and at most 1024 bytes for the administrator password")); }
+        if password.chars().count()<16 || password.len()>1024 { return Ok(FieldError::new("new_password","Use at least 16 characters and at most 1024 bytes for the administrator password").into_response()); }
         crate::diagnostics::protect(&password);
         Some(tokio::task::spawn_blocking(move||password_hash(&password)).await?)
     } else { None };
@@ -127,7 +144,7 @@ pub async fn save(State(app):State<App>,Json(input):Json<Save>)->ApiResult<Respo
         config.database=runtime.database.clone(); config.listen=runtime.listen; config.dev=runtime.dev;
         config.admin_password_hash=password.clone().or_else(||runtime.admin_password_hash.clone());
         config.public_url=config.public_url.trim_end_matches('/').to_owned();
-        config.validate().map_err(|error|ApiError::bad(&error.to_string()))?;
+        if let Err(error)=config.validate() { return Ok(error.into_response()); }
         let next=Runtime::new(config)?;
         let mut connection=app.db.0.lock().unwrap();
         let tx=connection.transaction()?;

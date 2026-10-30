@@ -123,3 +123,35 @@ async fn settings_disabled_sign_ins_are_enforced()->Result<()> {
     assert_eq!(crate::auth::social::providers(State(app.clone())).await.0["providers"],json!(["google"]));
     Ok(())
 }
+
+/// Settings failures identify a field, preserve the saved configuration, and accept a corrected retry.
+#[tokio::test]
+async fn settings_validation_identifies_fields()->Result<()> {
+    let (app,cookie)=configured().await?;
+    let mut settings=request(&app,&cookie,None).await?.2["settings"].clone();
+    settings["smtp_username"]=json!("tomas@slax.org"); settings["smtp_password"]=json!("private-smtp-password");
+    settings["email_from"]=json!("Slax AI <tomas@slax.org>");
+    settings["credit_packs"]=json!([{"price_id":"price_small","usd":"2.99","credits":100}]);
+    let saved=serde_json::to_value(&load(&app.db)?)?;
+    for (path,value,field) in [
+        ("/email_from",json!("Slax AI"),"email_from"),
+        ("/smtp_port",json!(70000),"smtp_port"),
+        ("/smtp_password",Value::Null,"smtp_password"),
+        ("/pricing/input_credits_per_million",json!("1.1234567"),"pricing.input_credits_per_million"),
+        ("/credit_packs/0/usd",json!("2.999"),"credit_packs.0.usd"),
+        ("/public_url",json!("invalid-url"),"public_url"),
+    ] {
+        let mut invalid=settings.clone(); *invalid.pointer_mut(path).unwrap()=value;
+        let (status,_,error)=request(&app,&cookie,Some(json!({"settings":invalid,"clear_secrets":[],"new_password":null}))).await?;
+        assert_eq!(status,StatusCode::BAD_REQUEST,"{field}");
+        assert_eq!(error["field"],field);
+        assert!(error["error"].as_str().unwrap().len()>20);
+        assert!(!error.to_string().contains("private-smtp-password"));
+        assert_eq!(serde_json::to_value(&load(&app.db)?)?,saved);
+    }
+    let (status,_,error)=request(&app,&cookie,Some(json!({"settings":settings,"clear_secrets":[],"new_password":"short"}))).await?;
+    assert_eq!(status,StatusCode::BAD_REQUEST); assert_eq!(error["field"],"new_password");
+    assert_eq!(request(&app,&cookie,Some(json!({"settings":settings,"clear_secrets":[],"new_password":null}))).await?.0,StatusCode::OK);
+    assert_eq!(load(&app.db)?.email_from.as_deref(),Some("Slax AI <tomas@slax.org>"));
+    Ok(())
+}

@@ -1,5 +1,4 @@
 use std::{net::SocketAddr,path::PathBuf};
-use anyhow::{ensure,Result};
 use clap::Parser;
 use serde::{Deserialize,Serialize};
 
@@ -77,38 +76,64 @@ pub fn database_path()->PathBuf {
     else { PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_else(||".".into())).join("linux-assistant/assistant.db") }
 }
 
+#[derive(Debug)]
+pub struct FieldError { pub field:String,pub message:String }
+impl FieldError {
+    /// Keep invalid setting identities separate from safe, user-facing explanations.
+    pub fn new(field:&str,message:&str)->Self { Self { field:field.into(),message:message.into() } }
+}
+impl std::fmt::Display for FieldError {
+    /// Include the setting name in startup errors without logging its contents.
+    fn fmt(&self,formatter:&mut std::fmt::Formatter<'_>)->std::fmt::Result { write!(formatter,"{}: {}",self.field,self.message) }
+}
+impl std::error::Error for FieldError {}
+
+/// Attach the affected form field to each configuration rule.
+fn require(valid:bool,field:&str,message:&str)->Result<(),FieldError> {
+    if valid { Ok(()) } else { Err(FieldError::new(field,message)) }
+}
+
 impl Config {
     /// Optional integrations may be absent, but a partially configured integration must be corrected before saving.
-    pub fn validate(&self)->Result<()> {
-        ensure!(self.free_credits>=0 && self.free_credits<=1_000_000_000,"Invalid welcome credit amount");
-        let url=reqwest::Url::parse(&self.public_url)?;
+    pub fn validate(&self)->Result<(),FieldError> {
+        require((0..=1_000_000_000).contains(&self.free_credits),"free_credits","Enter a whole number between 0 and 1000000000")?;
+        let url=reqwest::Url::parse(&self.public_url).map_err(|_|FieldError::new("public_url","Enter a full URL, e.g. https://ai.slax.org"))?;
         let origin_only=url.query().is_none() && url.fragment().is_none() && url.path()=="/";
         let credentials_absent=url.username().is_empty() && url.password().is_none();
-        ensure!(origin_only && credentials_absent,"Public URL must be an origin without credentials");
-        ensure!(url.scheme()=="https" || (self.dev && url.scheme()=="http"),"Public URL must use HTTPS");
-        ensure!(url.host_str().is_some(),"Public URL needs a hostname");
-        ensure!(self.model.as_ref().is_none_or(|model|!model.trim().is_empty() && model.len()<=200),"Enter a model or leave it blank");
-        ensure!(self.reasoning_effort.as_deref().is_none_or(|effort|["none","minimal","low","medium","high","xhigh","max","ultra","persistent"].contains(&effort)),"Unsupported reasoning level");
+        require(origin_only && credentials_absent,"public_url","Enter only the server origin, without a path, query, fragment or credentials")?;
+        require(url.scheme()=="https" || (self.dev && url.scheme()=="http"),"public_url","Public URL must use HTTPS")?;
+        require(url.host_str().is_some(),"public_url","Public URL needs a hostname")?;
+        require(self.model.as_ref().is_none_or(|model|!model.trim().is_empty() && model.len()<=200),"model","Enter a model of at most 200 bytes, or leave it blank")?;
+        require(self.reasoning_effort.as_deref().is_none_or(|effort|["none","minimal","low","medium","high","xhigh","max","ultra","persistent"].contains(&effort)),"reasoning_effort","Choose a supported reasoning level")?;
         let hostname_valid=!self.smtp_host.is_empty() && !self.smtp_host.contains("://") && !self.smtp_host.chars().any(char::is_whitespace);
-        ensure!(hostname_valid && self.smtp_port>0,"Enter an SMTP hostname and a nonzero port");
-        for value in [&self.smtp_username,&self.smtp_password,&self.email_from,&self.google_client_id,&self.google_client_secret,&self.microsoft_client_id,&self.microsoft_client_secret,&self.github_client_id,&self.github_client_secret,&self.stripe_secret,&self.stripe_webhook_secret].into_iter().flatten() {
-            ensure!(!value.trim().is_empty() && value.len()<=8192,"Credential fields must be nonempty and at most 8192 bytes");
+        require(hostname_valid,"smtp_host","Enter an SMTP hostname without a protocol or spaces, e.g. smtp.gmail.com")?;
+        require(self.smtp_port>0,"smtp_port","Enter a port between 1 and 65535")?;
+        for (field,value) in [("smtp_username",&self.smtp_username),("smtp_password",&self.smtp_password),("email_from",&self.email_from),("google_client_id",&self.google_client_id),("google_client_secret",&self.google_client_secret),("microsoft_client_id",&self.microsoft_client_id),("microsoft_client_secret",&self.microsoft_client_secret),("github_client_id",&self.github_client_id),("github_client_secret",&self.github_client_secret),("stripe_secret",&self.stripe_secret),("stripe_webhook_secret",&self.stripe_webhook_secret)] {
+            if let Some(value)=value { require(!value.trim().is_empty() && value.len()<=8192,field,"Enter a nonempty value of at most 8192 bytes, or clear this setting")?; }
         }
-        let email_fields=[self.smtp_username.is_some(),self.smtp_password.is_some(),self.email_from.is_some()];
-        ensure!(email_fields.iter().all(|value|*value) || email_fields.iter().all(|value|!*value),"Configure SMTP username, password and sender together, or clear all three");
-        ensure!(!self.email_enabled || self.dev || self.smtp_username.is_some(),"Configure SMTP before enabling email sign-in");
-        if let Some(sender)=&self.email_from { sender.parse::<lettre::message::Mailbox>()?; }
-        for (name,enabled,id,secret) in [("Google",self.google_enabled,&self.google_client_id,&self.google_client_secret),("Microsoft",self.microsoft_enabled,&self.microsoft_client_id,&self.microsoft_client_secret),("GitHub",self.github_enabled,&self.github_client_id,&self.github_client_secret)] {
-            ensure!(!enabled || id.is_some(),"Configure {name} credentials before enabling sign-in");
-            ensure!(id.is_some()==secret.is_some(),"Configure both {name} credentials");
+        let email_fields=[("smtp_username",&self.smtp_username),("smtp_password",&self.smtp_password),("email_from",&self.email_from)];
+        if email_fields.iter().any(|(_,value)|value.is_some()) {
+            for (field,value) in email_fields { require(value.is_some(),field,"SMTP username, password and sender must all be configured together")?; }
         }
-        ensure!(self.stripe_secret.is_some()==self.stripe_webhook_secret.is_some(),"Configure both Stripe secrets");
+        require(!self.email_enabled || self.dev || self.smtp_username.is_some(),"smtp_username","Configure SMTP username, password and sender before enabling email sign-in")?;
+        if let Some(sender)=&self.email_from {
+            sender.parse::<lettre::message::Mailbox>().map_err(|_|FieldError::new("email_from","Enter an email address, optionally with a display name, e.g. Slax AI <tomas@slax.org>"))?;
+        }
+        for (key,name,enabled,id,secret) in [("google","Google",self.google_enabled,&self.google_client_id,&self.google_client_secret),("microsoft","Microsoft",self.microsoft_enabled,&self.microsoft_client_id,&self.microsoft_client_secret),("github","GitHub",self.github_enabled,&self.github_client_id,&self.github_client_secret)] {
+            require(!enabled || id.is_some(),&format!("{key}_client_id"),&format!("Enter the {name} client ID before enabling sign-in"))?;
+            let missing=if id.is_some() { "secret" } else { "id" };
+            require(id.is_some()==secret.is_some(),&format!("{key}_client_{missing}"),&format!("Configure both the {name} client ID and client secret"))?;
+        }
+        let missing=if self.stripe_secret.is_some() { "stripe_webhook_secret" } else { "stripe_secret" };
+        require(self.stripe_secret.is_some()==self.stripe_webhook_secret.is_some(),missing,"Configure both the Stripe secret API key and webhook signing secret")?;
         let mut prices=std::collections::HashSet::new();
-        for pack in &self.credit_packs {
-            ensure!(pack.price_id.starts_with("price_") && pack.price_id.len()<=200 && pack.price_id.bytes().all(|byte|byte.is_ascii_alphanumeric() || byte==b'_'),"Enter a valid Stripe Price ID");
-            ensure!(prices.insert(&pack.price_id),"Each credit pack must have a different Price ID");
-            ensure!((1..=1_000_000_000).contains(&pack.credits),"Pack credits must be between 1 and 1000000000");
-            pack.cents()?;
+        for (index,pack) in self.credit_packs.iter().enumerate() {
+            let field=format!("credit_packs.{index}");
+            let price_valid=pack.price_id.starts_with("price_") && pack.price_id.len()<=200 && pack.price_id.bytes().all(|byte|byte.is_ascii_alphanumeric() || byte==b'_');
+            require(price_valid,&format!("{field}.price_id"),"Enter a Stripe Price ID starting with price_, using only letters, digits and underscores (at most 200 bytes)")?;
+            require(prices.insert(&pack.price_id),&format!("{field}.price_id"),"Each credit pack must have a different Stripe Price ID")?;
+            require((1..=1_000_000_000).contains(&pack.credits),&format!("{field}.credits"),"Enter a whole number between 1 and 1000000000")?;
+            pack.cents().map_err(|_|FieldError::new(&format!("{field}.usd"),"Enter a positive USD amount with at most two decimal places"))?;
         }
         Ok(())
     }

@@ -112,6 +112,9 @@ details[open] summary { margin-bottom:20px; }
 #backend-settings legend { font-size:20px; font-weight:600; margin-bottom:12px; }
 .settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px; }
 .settings-grid input,.settings-grid select { width:100%; }
+#backend-settings [aria-invalid="true"] { border-color:#a73535; outline-color:#a73535; }
+#backend-settings input,#backend-settings select { scroll-margin-top:180px; }
+#backend-settings .field-error { display:block; color:#a73535; font-size:var(--small); overflow-wrap:anywhere; }
 .settings-grid .setting-switch { display:flex; align-items:center; gap:10px; margin:8px 0; }
 .settings-grid .setting-switch input { width:auto; }
 #settings code { overflow-wrap:anywhere; }

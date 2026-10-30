@@ -41,7 +41,12 @@ async function api(path,body)
     const text=await response.text();
     let data;
     try { data=JSON.parse(text); } catch { throw new Error('Request failed ('+response.status+')'); }
-    if (!response.ok) throw new Error(data.error || 'Request failed ('+response.status+')');
+    if (!response.ok)
+    {
+        const error=new Error(data.error || 'Request failed ('+response.status+')');
+        error.field=data.field;
+        throw error;
+    }
     return data;
 }
 
