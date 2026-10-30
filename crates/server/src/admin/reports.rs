@@ -30,6 +30,7 @@ pub(super) struct Filter { from: Option<i64>, to: Option<i64>, user: Option<i64>
 
 /// Aggregate measured attempts separately from the authoritative credit ledger, with bounded detail pages.
 pub(super) async fn report(State(app): State<App>, Query(filter): Query<Filter>) -> ApiResult<Json<Value>> {
+    let config=app.config();
     let to=filter.to.unwrap_or(now()+1);
     let from=filter.from.unwrap_or(to-7*86400);
     let page=filter.page.unwrap_or(0);
@@ -61,8 +62,8 @@ pub(super) async fn report(State(app): State<App>, Query(filter): Query<Filter>)
         GROUP BY account_home,checked_at/3600) ORDER BY checked_at DESC LIMIT 2000",rusqlite::params![from,to,filter.account])?;
     let coverage=rows(&conn,"SELECT MIN(started_at) AS since FROM usage",[])?;
     Ok(Json(json!({"summary":summary[0],"timeline":timeline,"accounts":accounts,"purposes":purposes,"models":models,"activity":activity,
-        "credits":credits[0],"credit_timeline":credit_timeline,"ledger":ledger,"quotas":quotas,"coverage":coverage[0],"page":page,"pricing":app.config.pricing.usd_per_million(),
-        "payments":{"stripe":app.config.stripe_secret.is_some() && !app.config.dev,"pack_credits":app.config.pack_credits,"price_id":app.config.stripe_price},"development":app.config.dev})))
+        "credits":credits[0],"credit_timeline":credit_timeline,"ledger":ledger,"quotas":quotas,"coverage":coverage[0],"page":page,"pricing":config.pricing.usd_per_million(),
+        "payments":{"stripe":config.stripe_secret.is_some() && !config.dev,"packs":config.credit_packs},"development":config.dev})))
 }
 
 #[derive(Deserialize, Default)]

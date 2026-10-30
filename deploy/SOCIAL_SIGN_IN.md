@@ -1,6 +1,6 @@
 # Google, GitHub and Microsoft user sign-in
 
-These registrations let your application's users sign in. They do not configure the operator's ChatGPT accounts or API access. Email-code sign-in continues to work independently. Each social button appears in the client only when that provider's two credentials are configured on the backend.
+These registrations let your application's users sign in. They do not configure the operator's ChatGPT accounts or API access. Email-code sign-in continues to work independently. Each social button appears only when its credentials are saved and its sign-in switch is enabled in Admin → Settings.
 
 All three providers require you, as the app operator, to register an application once. Users then only choose their account and consent. No provider credentials belong in the client executable, public website or Git repository.
 
@@ -19,7 +19,7 @@ All three providers require you, as the app operator, to register an application
    ```
 
    No localhost JavaScript origin is needed: the backend handles the authorization-code exchange.
-8. Create the client and privately save its **Client ID** and **Client secret**. They become `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the server configuration below. If the secret is shown only once, save it before closing the dialog.
+8. Create the client and privately save its **Client ID** and **Client secret**. Enter them under **Admin → Settings → Google sign-in**. If the secret is shown only once, save it before closing the dialog.
 
 Google Gmail and verified Workspace addresses can sign in directly. Other Google-account email addresses may require our email code once to establish current ownership. Later sign-ins use the linked Google identity.
 
@@ -38,7 +38,7 @@ Official reference: [Google OpenID Connect setup](https://developers.google.com/
    | Authorization callback URL | `https://ai.slax.org/auth/github/callback` |
 
 3. Leave **Enable Device Flow** off if it is offered; this integration uses browser authorization with PKCE.
-4. Click **Register application**. Copy the **Client ID**, then click **Generate a new client secret** and privately copy the secret. These become `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+4. Click **Register application**. Copy the **Client ID**, then click **Generate a new client secret** and privately copy the secret. Enter them under **Admin → Settings → GitHub sign-in**.
 
 The app requests only `user:email`, never repository access. A verified GitHub email links to the same application account as email-code sign-in. If no verified email is available, the client asks you to verify one once.
 
@@ -58,9 +58,9 @@ Microsoft has the most setup overhead: you need an accessible Microsoft Entra te
    https://ai.slax.org/auth/microsoft/callback
    ```
 
-6. Click **Register**. On the **Overview** page, privately copy **Application (client) ID** as `MICROSOFT_CLIENT_ID`. This is not the directory/tenant ID.
+6. Click **Register**. On the **Overview** page, privately copy **Application (client) ID** into the **Application (client) ID** field under **Admin → Settings → Microsoft sign-in**. This is not the directory/tenant ID.
 7. Open **Certificates & secrets → Client secrets → New client secret**. Add a description, choose an expiry you can maintain, and click **Add**.
-8. Privately copy the secret's **Value**, not its **Secret ID**, into `MICROSOFT_CLIENT_SECRET`. The value is only visible immediately after creation. Record its expiry so you can create a replacement and update the server before it expires.
+8. Privately copy the secret's **Value**, not its **Secret ID**, into **Client secret value** in that section. The value is only visible immediately after creation. Record its expiry so you can create a replacement and update the server before it expires.
 9. Under **Authentication**, keep the callback on the **Web** platform. No implicit-grant switches or public-client flow are needed. The app requests only `openid`, `profile`, and `email`; it does not need mail or file access. Some organizations restrict third-party sign-in and can require their administrator's consent.
 
 For a new Microsoft identity, the client asks for our email code once before linking it to an application account. Microsoft does not guarantee that its email claim proves email ownership. Once linked, future Microsoft sign-ins do not require that code.
@@ -69,45 +69,18 @@ Official references: [Registering a Microsoft identity application](https://lear
 
 ## Configure your backend
 
-Build and deploy the updated backend and client first. Keep the existing `ASSISTANT_PUBLIC_URL=https://ai.slax.org` and SMTP configuration. Apache's existing proxy to the backend also forwards `/auth/...`; no new virtual host is needed.
+1. Deploy the updated backend and client. Open `https://ai.slax.org/admin`. On a fresh installation, create the administrator password first.
+2. In **Settings → General**, set **Public URL** to `https://ai.slax.org`.
+3. In **Email and SMTP**, enter your SMTP host, port, username, password and sender. Enable **email sign-in** if you want it as a primary option. Social account ownership checks can still send codes when primary email sign-in is disabled.
+4. Enter each provider's client ID and secret in its Settings section. Enable its sign-in switch. The section also shows the exact callback and a short registration guide.
+5. Click **Save settings**. Changes apply immediately; no restart or environment file is needed. Reload the local client page to refresh its sign-in buttons.
 
-Run these commands on the server as root. Add the credentials from the provider portals to the existing private environment file; do not replace the other settings. Configure any subset of the providers initially.
+The public `https://ai.slax.org/v1/auth/providers` endpoint lists enabled provider names and whether primary email login is enabled. It never returns client IDs or secrets.
 
-```sh
-# Edit the existing backend configuration; secrets stay on the server.
-nano /etc/linux-assistant/server.env
-```
+Apache's existing proxy forwards `/auth/...`; no new virtual host is needed. If the provider reports a redirect mismatch, compare its registered callback with the displayed callback, including HTTPS and the provider name, with no trailing slash.
 
-Add the corresponding pairs, replacing these placeholders privately:
+Use the same verified email across providers to access the same application account and balance. Stable provider identities preserve the link if the provider email later changes. First-time Microsoft sign-in requires an email ownership check; later sign-ins use the linked identity directly.
 
-```ini
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-client-secret
-MICROSOFT_CLIENT_ID=your-microsoft-application-client-id
-MICROSOFT_CLIENT_SECRET=your-microsoft-client-secret-value
-```
+Provider windows open from the clicked sign-in button. The native client polls for completion; neither the browser nor the provider window receives an application session token. Use **Cancel sign-in** to abandon a pending attempt. Attempts expire after ten minutes and can resume after a page reload while the local client remains running.
 
-```sh
-# systemd reads this file as root; prevent other local users from reading its secrets.
-chmod 600 /etc/linux-assistant/server.env
-
-# Load the new binary and credentials. No conversation or account reset is needed.
-systemctl restart linux-assistant.service
-
-# This endpoint lists provider names only; it never returns credentials.
-curl --fail --silent --show-error https://ai.slax.org/v1/auth/providers
-```
-
-With all providers configured, the last command returns:
-
-```json
-{"providers":["google","microsoft","github"]}
-```
-
-Reload the updated local client page. Choose a sign-in button, complete sign-in in its popup, and return to the client. Allow popups for its localhost page if your browser blocks them. The native client polls for completion; the popup never receives an application session token. Use **Cancel sign-in** to abandon an attempt. A pending attempt expires after ten minutes and survives a page reload while the native client stays running.
-
-Use the same email across providers to access the same application account, balance and welcome grant. Verified identities link by provider subject, so a later provider email change does not create another account. If a first-time provider requires the email check, use an address you control and want associated with that account.
-
-If a provider reports a redirect mismatch, compare the registered callback with the exact URL above, including `https`, the provider name and `/callback`, with no trailing slash. Failures reaching the backend are visible in the password-protected admin **Diagnostics** section under `social_sign_in`; provider-side setup errors may only appear in the provider window.
+Sign-in failures reaching the backend are visible in **Admin → Diagnostics** under `social_sign_in`. Provider registration errors can appear in the provider window before the callback is reached.

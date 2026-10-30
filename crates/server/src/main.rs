@@ -4,6 +4,7 @@
 mod auth;
 mod admin;
 mod config;
+mod settings;
 mod db;
 mod diagnostics;
 mod embedded;
@@ -23,10 +24,12 @@ use fs2::FileExt;
 use protocol::{Account, ChatEvent, ChatRequest, ChatResponse, MAX_REQUEST_BYTES};
 use tokio_stream::{wrappers::WatchStream, StreamExt};
 use serde_json::{json, Value};
-use crate::{config::Config, db::{hash, Db, Reservation}};
+use crate::db::{hash, Db, Reservation};
+#[cfg(test)]
+use crate::config::Config;
 
 #[derive(Clone)]
-pub struct App { turns: Arc<turns::Active>, config: Arc<Config>, db: Arc<Db>, http: reqwest::Client, pool: Arc<provider::Pool>, mail: Option<lettre::AsyncSmtpTransport<lettre::Tokio1Executor>> }
+pub struct App { turns: Arc<turns::Active>, settings: Arc<std::sync::RwLock<Arc<settings::Runtime>>>, db: Arc<Db>, http: reqwest::Client, pool: Arc<provider::Pool> }
 pub struct ApiError(StatusCode, String);
 pub type ApiResult<T> = Result<T, ApiError>;
 
@@ -46,6 +49,16 @@ impl IntoResponse for ApiError {
 }
 
 impl App {
+    #[cfg(test)]
+    /// Isolate route tests from production accounts, databases and SMTP transports.
+    fn testing(config:Config)->anyhow::Result<Self> {
+        Ok(Self { turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime { config,mail:None }))),
+            db:Arc::new(Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new() })
+    }
+
+    /// Each request keeps a coherent settings and SMTP snapshot while admin changes affect subsequent requests.
+    fn config(&self)->Arc<settings::Runtime> { self.settings.read().unwrap().clone() }
+
     /// Authenticate every paid or account-specific operation at the backend boundary.
     fn user(&self, headers: &HeaderMap) -> ApiResult<i64> {
         let token = headers.get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()).and_then(|v|v.strip_prefix("Bearer "))
@@ -69,27 +82,36 @@ fn main() -> anyhow::Result<()> {
 /// Run one backend process per SQLite database so startup recovery is unambiguous.
 #[tokio::main]
 async fn run() -> anyhow::Result<()> {
-    let mut config = Config::parse();
-    if config.codex_version { println!("Codex App Server {}",env!("CODEX_VERSION")); return Ok(()); }
-    if let Some(home) = config.login_account { return provider::login(home).await; }
-    if config.third_party_notices {
+    let args=config::Args::parse();
+    anyhow::ensure!(args.listen.is_none_or(|address|address.ip().is_loopback()),"Development mode must bind to loopback");
+    if args.codex_version { println!("Codex App Server {}",env!("CODEX_VERSION")); return Ok(()); }
+    if args.third_party_notices {
         println!("{}\n{}",include_str!("../../../vendor/codex/LICENSE"),include_str!("../../../vendor/codex/NOTICE"));
         return Ok(());
     }
-    config.public_url = config.public_url.trim_end_matches('/').to_owned();
-    config.validate()?;
-    let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(config.database.with_extension("lockfile"))?;
+    let database=args.database.unwrap_or_else(config::database_path);
+    std::fs::create_dir_all(database.parent().unwrap())?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(database.parent().unwrap(),std::fs::Permissions::from_mode(0o700))?;
+    }
+    let lock=OpenOptions::new().create(true).truncate(false).read(true).write(true).open(database.with_extension("lockfile"))?;
     lock.try_lock_exclusive().map_err(|_|anyhow::anyhow!("Another backend is using this database"))?;
-    diagnostics::init(&config)?;
-    let db = Arc::new(Db::open(&config.database)?);
+    let db=Arc::new(Db::open(&database)?);
     db.recover()?;
-    let mail = if config.dev { None } else { Some(mail::transport(&config)?.build()) };
-    let app = App { turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),config:Arc::new(config),db,mail,
+    let mut config=settings::load(&db)?;
+    config.database=database;
+    config.dev=args.dev;
+    config.listen=args.listen;
+    let listener=tokio::net::TcpListener::bind(config.listen.unwrap_or_else(||"127.0.0.1:8787".parse().unwrap())).await?;
+    if config.dev { config.public_url=format!("http://{}",listener.local_addr()?); }
+    diagnostics::init(&config)?;
+    let pool=Arc::new(provider::Pool::new(&config)?);
+    let app=App { turns:Arc::new(Default::default()),pool,settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime::new(config)?))),db,
         http:reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build()? };
-    let listener = tokio::net::TcpListener::bind(app.config.listen).await?;
-    println!("Linux Assistant backend on {}{}",listener.local_addr()?,if app.config.dev { " (DEVELOPMENT, simulated AI)" } else { "" });
-    diagnostics::record("info","startup",None,None,&format!("Backend started; Codex {}; model {}; reasoning {}",env!("CODEX_VERSION"),app.config.model.as_deref().unwrap_or("provider default"),app.config.reasoning_effort.as_deref().unwrap_or("provider default")));
-    if app.config.admin_password.is_some() && !app.config.dev { tokio::spawn(app.pool.clone().monitor(app.db.clone())); }
+    println!("Linux Assistant backend on {}{}",listener.local_addr()?,if args.dev { " (DEVELOPMENT, simulated AI)" } else { "" });
+    diagnostics::record("info","startup",None,None,&format!("Backend started; Codex {}; configure at /admin",env!("CODEX_VERSION")));
+    if !args.dev { tokio::spawn(app.pool.clone().monitor(app.db.clone())); }
     axum::serve(listener,router(app)).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
     Ok(())
 }
@@ -103,7 +125,7 @@ fn router(app: App) -> Router {
         .route("/auth/{provider}/{device}",get(auth::social::begin)).route("/auth/{provider}/callback",get(auth::social::callback))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop))
-        .route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
+        .route("/v1/credit-packs",get(payments::packs)).route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
         .route("/payment/success",get(||async { Html(auth::document("<h1>Payment submitted</h1><p>Credits appear after the payment is confirmed. Return to Linux Assistant and refresh your balance.</p>")) }))
         .route("/payment/cancel",get(||async { Html(auth::document("<h1>Checkout cancelled</h1><p>Return to Linux Assistant to continue.</p>")) }))
         .layer(DefaultBodyLimit::max(256*1024)).layer(middleware::from_fn_with_state(app.clone(),browser_security)).with_state(app)
@@ -111,11 +133,17 @@ fn router(app: App) -> Router {
 
 /// Public bearer-token APIs allow any origin; cookie-based admin and OAuth routes stay same-origin.
 async fn browser_security(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
+    let config=app.config();
     let admin=request.uri().path().starts_with("/admin");
     let public=request.uri().path().starts_with("/v1/") || request.uri().path()=="/health";
     if !public {
         if let Some(origin) = request.headers().get(header::ORIGIN) {
-            if origin.to_str().ok() != Some(app.config.public_url.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
+            let origin=origin.to_str().unwrap_or("");
+            let allowed=if config.public_url.is_empty() {
+                // First-run setup has no configured origin yet; require the browser's origin to match the request host.
+                reqwest::Url::parse(origin).is_ok_and(|url|url.origin().ascii_serialization()==format!("{}://{}",url.scheme(),request.headers().get(header::HOST).and_then(|value|value.to_str().ok()).unwrap_or("")))
+            } else { origin==config.public_url };
+            if !allowed { return StatusCode::FORBIDDEN.into_response(); }
         }
     }
     let mut response = if public && request.method()==axum::http::Method::OPTIONS { StatusCode::NO_CONTENT.into_response() } else { next.run(request).await };
@@ -135,9 +163,10 @@ async fn browser_security(State(app): State<App>, request: Request<Body>, next: 
 
 /// Return an authoritative balance; the client never computes or deducts credits.
 async fn me(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Account>> {
+    let config=app.config();
     let user = app.user(&headers)?;
     let email = app.db.0.lock().unwrap().query_row("SELECT email FROM users WHERE id=?1",[user],|r|r.get(0))?;
-    Ok(Json(Account { email,credits:app.db.balance(user)?,development:app.config.dev,input_credits_per_million:app.config.pricing.input_credits_per_million.0 as f64/1_000_000.0 }))
+    Ok(Json(Account { email,credits:app.db.balance(user)?,development:config.dev,input_credits_per_million:config.pricing.input_credits_per_million.0 as f64/1_000_000.0 }))
 }
 
 /// Revoke the current session rather than merely forgetting its client-side copy.
@@ -150,6 +179,7 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Va
 
 /// Reserve, generate, and settle even when the HTTP caller disconnects mid-request.
 async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<ChatRequest>) -> ApiResult<Response> {
+    let config=app.config();
     let user = app.user(&headers)?;
     let bytes = serde_json::to_vec(&input)?;
     if input.messages.is_empty() || bytes.len()>protocol::MAX_UPLOAD_BYTES || protocol::display_messages(&input.messages).to_string().len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
@@ -163,7 +193,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
         return Err(ApiError::bad("Message is too long"));
     }
     let id = input.request_id.to_string();
-    let reservation = app.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&app.config.pricing)?;
+    let reservation = app.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&config.pricing)?;
     let streaming=headers.get(header::ACCEPT).is_some_and(|value|value=="text/event-stream");
     let (events,receiver)=tokio::sync::watch::channel(ChatEvent::Progress { progress:Default::default() });
     let reply: db::Completed = match reservation {
@@ -184,7 +214,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
             let task_events=events.clone();
             let task=tokio::spawn(async move {
                 let result = tokio::select! {
-                    answer=task_app.pool.answer_stream(&task_app.config,&task_app.db,user,&input,streaming.then_some(&task_events),Some(&mut control_receiver))=>answer,
+                    answer=task_app.pool.answer_stream(&config,&task_app.db,user,&input,streaming.then_some(&task_events),Some(&mut control_receiver))=>answer,
                     _=cancellation.changed()=>Err(anyhow::Error::from(turns::Interrupted)),
                 }.and_then(|answer| {
                     task_app.db.complete(user,&input,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())

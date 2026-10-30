@@ -18,10 +18,10 @@ def main():
     files=[ROOT/name for name in (
         "Cargo.toml","Cargo.lock","rust-toolchain.toml",".cargo/config.toml",
         "README.md","THIRD_PARTY_NOTICES.md","deploy/START-HERE.md",
-        "deploy/server.env.example","deploy/SOCIAL_SIGN_IN.md","deploy/linux-assistant.service","scripts/build_server.sh","scripts/install_server_update.sh",
+        "deploy/SOCIAL_SIGN_IN.md","deploy/linux-assistant.service","scripts/build_server.sh","scripts/install_server_update.sh",
         "scripts/reset_conversations.sh","scripts/reset_conversations.py")]
     files+=sorted(path for path in (ROOT/"crates").rglob("*")
-                  if path.is_file() and path.suffix in (".rs",".toml",".sql",".html",".css",".js"))
+                  if path.is_file() and path.suffix in (".rs",".toml",".sql",".html",".css",".js",".svg"))
     output=ROOT/"dist/linux-assistant-server-source.tar.gz"
     output.parent.mkdir(exist_ok=True)
     # Fresh timestamps make Cargo rebuild changed sources when a bundle replaces an older one.
@@ -33,7 +33,7 @@ def main():
             data=path.read_bytes()
             if path.suffix==".sh":
                 data=data.replace(b"\r\n",b"\n")
-            name="START-HERE.md" if path.name=="START-HERE.md" else path.relative_to(ROOT).as_posix()
+            name=path.relative_to(ROOT).as_posix()
             entry=tarfile.TarInfo("linux-assistant/"+name)
             entry.size=len(data)
             entry.mtime=timestamp

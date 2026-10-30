@@ -24,7 +24,8 @@ impl Pool {
     /// Account directories are stable identities, so reordering configuration cannot reassign chats.
     pub fn new(config: &Config) -> Result<Self> {
         let managed=config.database.parent().unwrap().join("managed-accounts");
-        let mut homes=config.codex_homes.clone();
+        let mut homes=Vec::new();
+        #[cfg(test)] homes.extend(config.test_homes.clone());
         if managed.exists() {
             let mut saved=std::fs::read_dir(&managed)?.filter_map(|entry|entry.ok()).filter(|entry|entry.file_type().is_ok_and(|kind|kind.is_dir()) && entry.path().join("auth.json").is_file()).map(|entry|entry.path()).collect::<Vec<_>>();
             saved.sort(); homes.extend(saved);
@@ -204,26 +205,7 @@ impl Limits {
     }
 }
 
-/// Authenticate one operator account using the embedded runtime without installing the Codex CLI.
-pub async fn login(home: PathBuf) -> Result<()> {
-    std::fs::create_dir_all(&home)?;
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&home,std::fs::Permissions::from_mode(0o700))?; }
-    let home = home.canonicalize()?;
-    let mut rpc = Rpc::start_unauthenticated(&std::env::current_exe()?,&home.to_string_lossy()).await?;
-    let login = rpc.call("account/login/start",serde_json::json!({"type":"chatgptDeviceCode"})).await?;
-    println!("Open {} and enter code {}.",login["verificationUrl"].as_str().context("Missing verification URL")?,
-        login["userCode"].as_str().context("Missing sign-in code")?);
-    tokio::time::timeout(Duration::from_secs(600),async {
-        loop {
-            let event = rpc.next().await?;
-            if event["method"]=="account/login/completed" {
-                ensure!(event["params"]["success"]==true,"Operator sign-in failed");
-                println!("Operator account saved in {}",home.display());
-                return Ok::<_,anyhow::Error>(());
-            }
-        }
-    }).await.context("Operator sign-in timed out")?
-}
+
 
 /// Deterministic development replies exercise local approval without consuming provider usage.
 fn demo(request: &ChatRequest) -> AssistantReply {

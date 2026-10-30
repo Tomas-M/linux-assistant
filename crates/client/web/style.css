@@ -177,7 +177,7 @@ input[type=checkbox] { accent-color:var(--accent); }
 }
 @media (prefers-reduced-motion:reduce) { *,*::after { animation:none !important; transition:none !important; } }
 
-svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+svg { width:20px; height:20px; fill:currentColor; stroke:none; }
 .icon-definitions { position:absolute; width:0; height:0; overflow:hidden; }
 #new { display:inline-flex; align-items:center; gap:8px; }
 .credit-balance { color:var(--accent); background:var(--accent-soft); border-color:transparent; font-size:16px; font-weight:600; white-space:nowrap; }
@@ -191,6 +191,10 @@ svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8;
 .auth-card .primary { width:100%; margin-top:20px; }
 .auth-actions { display:flex; align-items:center; justify-content:space-between; margin-top:16px; font-size:13px; }
 .auth-actions button { padding:6px 0; }
+.credit-packs { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin:16px 0 12px; }
+.credit-pack { padding:18px 12px; text-align:center; }
+.credit-pack strong { display:block; font-size:20px; line-height:1.2; margin-bottom:10px; }
+.credit-pack span { display:block; font-size:14px; }
 .auth-divider { display:flex; align-items:center; gap:12px; margin:24px 0 16px; color:var(--muted); font-size:13px; }
 .auth-divider::before,.auth-divider::after { content:''; flex:1; height:1px; background:var(--border); }
 .social-buttons { display:grid; gap:10px; }

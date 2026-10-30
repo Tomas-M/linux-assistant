@@ -1,8 +1,8 @@
 # Third-party source
 
-The client embeds the [Font Awesome Free paperclip icon](https://fontawesome.com/icons/paperclip?f=classic&s=solid), Copyright 2026 Fonticons, Inc., licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Its attribution is preserved in the embedded SVG source.
+The client and admin embed unmodified icons from [Font Awesome Free 7.3.1](https://github.com/FortAwesome/Font-Awesome/tree/7.3.1/svgs), Copyright 2026 Fonticons, Inc., under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The shared SVG sprite in `crates/protocol/assets/icons.svg` preserves attribution and identifies each source icon.
 
-Sign-in buttons embed Google's [official Google Identity logo](https://developers.google.com/identity/branding-guidelines), Microsoft's four-color brand mark, and GitHub's [Octicons mark-github](https://github.com/primer/octicons) (MIT). Provider marks remain the property of their respective owners and identify the corresponding sign-in service.
+Sign-in buttons retain Google's [official color logo](https://developers.google.com/identity/branding-guidelines), Microsoft's four-color mark, and GitHub's [Octicons mark-github](https://github.com/primer/octicons) (MIT). Provider marks remain the property of their respective owners.
 
 The backend embeds the Codex App Server from [openai/codex](https://github.com/openai/codex), licensed under Apache License 2.0. The exact source revision is recorded by the `vendor/codex` Git submodule; the release name is in the root Cargo manifest. Upstream files are unmodified.
 

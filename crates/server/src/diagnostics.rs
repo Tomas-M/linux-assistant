@@ -14,7 +14,7 @@ struct Log { connection:Mutex<Connection>,secrets:RwLock<Vec<String>> }
 
 /// Keep diagnostics independent of the application database, including errors while its lock is held.
 pub fn init(config:&Config)->Result<()> {
-    let secrets=[&config.admin_password,&config.smtp_password,&config.google_client_secret,&config.microsoft_client_secret,&config.github_client_secret,&config.stripe_secret,&config.stripe_webhook_secret]
+    let secrets=[&config.smtp_password,&config.google_client_secret,&config.microsoft_client_secret,&config.github_client_secret,&config.stripe_secret,&config.stripe_webhook_secret]
         .into_iter().flatten().filter(|value|!value.is_empty()).cloned().collect();
     LOG.set(Log::open(&config.database.with_extension("logs.db"),secrets)?).map_err(|_|anyhow::anyhow!("Diagnostics already initialized"))
 }

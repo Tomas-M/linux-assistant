@@ -6,9 +6,8 @@ use tokio_rustls::{TlsAcceptor, rustls::{self, pki_types::PrivatePkcs8KeyDer}};
 
 /// Configure a real-mode backend without depending on operator credentials or external services.
 fn smtp_config() -> Config {
-    Config::parse_from(["assistant-server","--public-url","https://assistant.example.test",
-        "--codex-homes","test-account","--smtp-host","127.0.0.1","--smtp-username","test-user",
-        "--smtp-password","test-password","--email-from","Průvodce 世界 <sender@example.test>"])
+    Config { public_url:"https://assistant.example.test".into(),email_enabled:true,smtp_host:"127.0.0.1".into(),smtp_username:Some("test-user".into()),
+        smtp_password:Some("test-password".into()),email_from:Some("Průvodce 世界 <sender@example.test>".into()),..Config::default() }
 }
 
 /// Reject incomplete SMTP configuration before the service starts.
@@ -34,7 +33,7 @@ fn smtp_configuration_requires_credentials_and_sender() -> anyhow::Result<()> {
     missing=config;
     missing.smtp_port=0;
     assert!(missing.validate().is_err());
-    Config::parse_from(["assistant-server","--dev"]).validate()?;
+    Config { dev:true,public_url:"http://127.0.0.1:8787".into(),email_enabled:true,..Config::default() }.validate()?;
     Ok(())
 }
 
@@ -98,13 +97,12 @@ async fn smtp_session(listener: TcpListener, tls: TlsAcceptor, reject_auth: bool
 async fn smtp_delivery_and_authentication_failure() -> anyhow::Result<()> {
     for reject_auth in [false,true] {
         let (listener,tls,certificate)=smtp_listener().await?;
-        let mut state=application()?;
+        let state=application()?;
         let mut config=smtp_config();
         config.smtp_port=listener.local_addr()?.port();
         config.validate()?;
         let trust=TlsParameters::builder(config.smtp_host.clone()).add_root_certificate(certificate).build()?;
-        state.mail=Some(crate::mail::transport(&config)?.tls(Tls::Wrapper(trust)).build());
-        state.config=Arc::new(config);
+        *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime { mail:Some(crate::mail::transport(&config)?.tls(Tls::Wrapper(trust)).build()),config });
         let server=tokio::spawn(async move {
             tokio::time::timeout(Duration::from_secs(10),smtp_session(listener,tls,reject_auth)).await?
         });
@@ -141,11 +139,10 @@ async fn smtp_delivery_and_authentication_failure() -> anyhow::Result<()> {
 #[tokio::test]
 async fn smtp_rejects_untrusted_certificate() -> anyhow::Result<()> {
     let (listener,tls,_)=smtp_listener().await?;
-    let mut state=application()?;
+    let state=application()?;
     let mut config=smtp_config();
     config.smtp_port=listener.local_addr()?.port();
-    state.mail=Some(crate::mail::transport(&config)?.build());
-    state.config=Arc::new(config);
+    *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime { mail:Some(crate::mail::transport(&config)?.build()),config });
     let server=tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(10),smtp_session(listener,tls,false)).await?
     });

@@ -11,16 +11,17 @@ mod tests;
 
 /// Advertise only providers with complete, operator-managed credentials.
 pub async fn providers(State(app):State<App>)->Json<Value> {
-    Json(json!({"providers":([AuthProvider::Google,AuthProvider::Microsoft,AuthProvider::Github].into_iter().filter(|provider|credentials(&app,*provider).is_some()).collect::<Vec<_>>())}))
+    let config=app.config();
+    Json(json!({"email_enabled":config.email_enabled,"providers":([AuthProvider::Google,AuthProvider::Microsoft,AuthProvider::Github].into_iter().filter(|provider|credentials(&config,*provider).is_some()).collect::<Vec<_>>())}))
 }
 
 /// Keep client secrets on the backend, including during device polling.
-fn credentials(app:&App,provider:AuthProvider)->Option<(&str,&str)> {
-    let config=&app.config;
+fn credentials(config:&crate::config::Config,provider:AuthProvider)->Option<(&str,&str)> {
     let (id,secret)=match provider {
-        AuthProvider::Google=>(&config.google_client_id,&config.google_client_secret),
-        AuthProvider::Microsoft=>(&config.microsoft_client_id,&config.microsoft_client_secret),
-        AuthProvider::Github=>(&config.github_client_id,&config.github_client_secret),
+        AuthProvider::Google if config.google_enabled=>(&config.google_client_id,&config.google_client_secret),
+        AuthProvider::Microsoft if config.microsoft_enabled=>(&config.microsoft_client_id,&config.microsoft_client_secret),
+        AuthProvider::Github if config.github_enabled=>(&config.github_client_id,&config.github_client_secret),
+        _=>return None,
     };
     Some((id.as_deref()?,secret.as_deref()?))
 }
@@ -37,8 +38,9 @@ pub async fn cancel(State(app):State<App>,Json(input):Json<PollLogin>)->ApiResul
 
 /// Bind the browser, provider and authorization code to the initiating device with state and PKCE.
 pub async fn begin(State(app):State<App>,Path((provider,device)):Path<(AuthProvider,String)>)->ApiResult<Response> {
+    let config=app.config();
     super::require_device(&app,&device)?;
-    let (client,_)=credentials(&app,provider).ok_or_else(||ApiError::bad("This sign-in provider is not configured"))?;
+    let (client,_)=credentials(&config,provider).ok_or_else(||ApiError::bad("This sign-in provider is not configured"))?;
     let state=secret();
     let verifier=secret();
     {
@@ -55,12 +57,12 @@ pub async fn begin(State(app):State<App>,Path((provider,device)):Path<(AuthProvi
         AuthProvider::Github=>"https://github.com/login/oauth/authorize",
     };
     let mut url=reqwest::Url::parse(endpoint)?;
-    url.query_pairs_mut().extend_pairs([("client_id",client),("redirect_uri",&format!("{}/auth/{}/callback",app.config.public_url,provider.key())),
+    url.query_pairs_mut().extend_pairs([("client_id",client),("redirect_uri",&format!("{}/auth/{}/callback",config.public_url,provider.key())),
         ("response_type","code"),("scope",if provider==AuthProvider::Github { "user:email" } else { "openid email profile" }),
         ("state",&state),("code_challenge",&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))),("code_challenge_method","S256")]);
     if provider!=AuthProvider::Github { url.query_pairs_mut().append_pair("prompt","select_account"); }
     let mut response=Redirect::to(url.as_str()).into_response();
-    let secure=if app.config.dev { "" } else { "; Secure" };
+    let secure=if config.dev { "" } else { "; Secure" };
     response.headers_mut().insert(header::SET_COOKIE,format!("assistant_oauth={state}; HttpOnly; SameSite=Lax; Path=/auth/{}; Max-Age=600{secure}",provider.key()).parse()?);
     Ok(response)
 }
@@ -101,15 +103,16 @@ struct Identity { subject:String,email:Option<String>,trusted_email:bool }
 
 /// Fetch identities from fixed provider endpoints; access tokens are discarded after this exchange.
 async fn exchange(app:&App,provider:AuthProvider,code:&str,verifier:&str)->anyhow::Result<Identity> {
+    let config=app.config();
     anyhow::ensure!(!code.is_empty(),"Provider did not return an authorization code");
-    let (client,secret)=credentials(app,provider).ok_or_else(||anyhow::anyhow!("Sign-in provider is not configured"))?;
+    let (client,secret)=credentials(&config,provider).ok_or_else(||anyhow::anyhow!("Sign-in provider is not configured"))?;
     let token_url=match provider {
         AuthProvider::Google=>"https://oauth2.googleapis.com/token",
         AuthProvider::Microsoft=>"https://login.microsoftonline.com/common/oauth2/v2.0/token",
         AuthProvider::Github=>"https://github.com/login/oauth/access_token",
     };
     let token:Value=app.http.post(token_url).header(header::ACCEPT,"application/json").form(&[("client_id",client),("client_secret",secret),
-        ("redirect_uri",&format!("{}/auth/{}/callback",app.config.public_url,provider.key())),("code",code),("code_verifier",verifier),("grant_type","authorization_code")])
+        ("redirect_uri",&format!("{}/auth/{}/callback",config.public_url,provider.key())),("code",code),("code_verifier",verifier),("grant_type","authorization_code")])
         .send().await?.error_for_status()?.json().await?;
     let access=token["access_token"].as_str().ok_or_else(||anyhow::anyhow!("Provider did not issue an access token"))?;
     let profile_url=match provider {
@@ -142,9 +145,10 @@ fn identity(provider:AuthProvider,profile:&Value,emails:&Value)->anyhow::Result<
 
 /// Link verified identities once; subsequent sign-ins use the stable subject without another email code.
 fn complete(app:&App,device:&str,provider:AuthProvider,identity:Identity)->anyhow::Result<bool> {
+    let config=app.config();
     let known=app.db.identity_user(provider,&identity.subject)?;
     let user=if known.is_some() { known } else if identity.trusted_email {
-        identity.email.as_deref().map(|email|app.db.social_user(email,provider,&identity.subject,app.config.free_credits)).transpose()?
+        identity.email.as_deref().map(|email|app.db.social_user(email,provider,&identity.subject,config.free_credits)).transpose()?
     } else { None };
     if let Some(user)=user {
         super::approve(app,device,user).map_err(|error|anyhow::anyhow!("{}",error.1))?;

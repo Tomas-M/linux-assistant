@@ -48,8 +48,8 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
 
 /// Build a fully isolated backend with deterministic development integrations.
 pub(super) fn application() -> anyhow::Result<App> {
-    let config = Config::parse_from(["assistant-server","--dev"]);
-    Ok(App { turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),config:Arc::new(config),db:Arc::new(Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new(),mail:None })
+    let config = Config { dev:true,public_url:"http://127.0.0.1:8787".into(),email_enabled:true,..Config::default() };
+    App::testing(config)
 }
 
 /// Exercise the actual HTTP routing, authentication, body parsing, and ledger together.
@@ -109,10 +109,12 @@ async fn login_and_chat_are_bound_to_user_and_request() -> anyhow::Result<()> {
 async fn signed_payment_is_credited_once() -> anyhow::Result<()> {
     use hmac::{Hmac,Mac};
     use sha2::Sha256;
-    let mut state=application()?;
-    let config=Arc::make_mut(&mut state.config);
+    let state=application()?;
+    let mut settings=state.settings.write().unwrap();
+    let config=&mut Arc::make_mut(&mut *settings).config;
     config.dev=false;
     config.stripe_webhook_secret=Some("test-secret".into());
+    drop(settings);
     let user=state.db.user("buyer@example.com",None,0)?;
     state.db.0.lock().unwrap().execute("INSERT INTO purchases(id,user_id,credits,stripe_session) VALUES('purchase',?1,100,'cs_test')",[user])?;
     let app=router(state.clone());

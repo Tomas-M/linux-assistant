@@ -6,30 +6,38 @@ use std::sync::Arc;
 /// Discovery contains only complete configurations, without client IDs or secrets.
 #[tokio::test]
 async fn social_discovery_and_configuration()->anyhow::Result<()> {
-    let mut app=crate::tests::application()?;
-    assert_eq!(providers(State(app.clone())).await.0,json!({"providers":[]}));
-    let config=Arc::make_mut(&mut app.config);
+    let app=crate::tests::application()?;
+    assert_eq!(providers(State(app.clone())).await.0,json!({"email_enabled":true,"providers":[]}));
+    {
+    let mut settings=app.settings.write().unwrap();
+    let config=&mut Arc::make_mut(&mut *settings).config;
+    config.google_enabled=true; config.microsoft_enabled=true; config.github_enabled=true;
     config.google_client_id=Some("google-id".into()); config.google_client_secret=Some("google-secret".into());
     config.microsoft_client_id=Some("microsoft-id".into()); config.microsoft_client_secret=Some("microsoft-secret".into());
     config.github_client_id=Some("github-id".into()); config.github_client_secret=Some("github-secret".into());
     config.validate()?;
+    }
     let response=crate::router(app.clone()).oneshot(Request::builder().uri("/v1/auth/providers").body(Body::empty())?).await?;
     assert_eq!(response.status(),StatusCode::OK);
     let value:Value=serde_json::from_slice(&to_bytes(response.into_body(),4096).await?)?;
-    assert_eq!(value,json!({"providers":["google","microsoft","github"]}));
-    Arc::make_mut(&mut app.config).github_client_secret=None;
-    assert!(app.config.validate().is_err());
+    assert_eq!(value,json!({"email_enabled":true,"providers":["google","microsoft","github"]}));
+    Arc::make_mut(&mut *app.settings.write().unwrap()).config.github_client_secret=None;
+    assert!(app.config().validate().is_err());
     Ok(())
 }
 
 /// Every provider uses the registered callback, browser state and PKCE; declined sign-ins reach the client.
 #[tokio::test]
 async fn social_state_pkce_cancellation_and_provider_binding()->anyhow::Result<()> {
-    let mut app=crate::tests::application()?;
-    let config=Arc::make_mut(&mut app.config);
+    let app=crate::tests::application()?;
+    {
+    let mut settings=app.settings.write().unwrap();
+    let config=&mut Arc::make_mut(&mut *settings).config;
+    config.google_enabled=true; config.microsoft_enabled=true; config.github_enabled=true;
     config.google_client_id=Some("id".into()); config.google_client_secret=Some("secret".into());
     config.microsoft_client_id=Some("id".into()); config.microsoft_client_secret=Some("secret".into());
     config.github_client_id=Some("id".into()); config.github_client_secret=Some("secret".into());
+    }
     for provider in [AuthProvider::Google,AuthProvider::Microsoft,AuthProvider::Github] {
         let device=crate::auth::start(State(app.clone())).await.map_err(|error|anyhow::anyhow!("{}",error.1))?.0;
         let router=crate::router(app.clone());
@@ -37,7 +45,7 @@ async fn social_state_pkce_cancellation_and_provider_binding()->anyhow::Result<(
         assert_eq!(response.status(),StatusCode::SEE_OTHER);
         let url=reqwest::Url::parse(response.headers()[header::LOCATION].to_str()?)?;
         let query=url.query_pairs().collect::<std::collections::HashMap<_,_>>();
-        assert_eq!(query["redirect_uri"],format!("{}/auth/{}/callback",app.config.public_url,provider.key()));
+        assert_eq!(query["redirect_uri"],format!("{}/auth/{}/callback",app.config().public_url,provider.key()));
         assert_eq!(query["code_challenge_method"],"S256");
         assert!(!query.contains_key("client_secret"));
         let state=&query["state"];

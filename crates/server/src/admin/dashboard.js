@@ -229,7 +229,7 @@ async function loadReport()
     document.getElementById('page-number').textContent='Both tables · Page '+(state.page+1);
     document.getElementById('previous').disabled=state.page===0;
     document.getElementById('next').disabled=data.activity.length<100 && data.ledger.length<100;
-    document.getElementById('payment-status').textContent=data.payments.stripe ? 'Stripe configured · '+data.payments.pack_credits+' application credits per payment · Price '+data.payments.price_id : 'Stripe is not enabled'+(data.development ? ' in development mode.' : '. Configure it on the server to create payment links.');
+    document.getElementById('payment-status').textContent=data.payments.stripe ? 'Stripe configured · '+data.payments.packs.length+' credit packs' : 'Stripe is not enabled'+(data.development ? ' in development mode.' : '. Configure it on the server to create payment links.');
 }
 
 // Refresh the user list independently of report filters and preserve open operator forms.
@@ -272,7 +272,7 @@ async function loadLogs()
         if (!row)
         {
             row=document.createElement('details'); row.className='diagnostic panel'; row.dataset.id=id;
-            row.innerHTML='<summary><svg class="log-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg><span class="badge '+({error:'error',warning:'warn'}[entry.level] || '')+'">'+escapeHtml(entry.level)+'</span><time>'+escapeHtml(utc(entry.created_at))+'</time><strong>'+escapeHtml(entry.stage)+'</strong><span class="diagnostic-preview">'+escapeHtml(entry.message.split('\n')[0])+'</span></summary><p>'+escapeHtml([entry.request_id?'Request '+entry.request_id:'',entry.account?'Account '+entry.account:''].filter(Boolean).join(' · '))+'</p><pre></pre>';
+            row.innerHTML='<summary><svg class="log-chevron" aria-hidden="true"><use href="#icon-chevron"/></svg><span class="badge '+({error:'error',warning:'warn'}[entry.level] || '')+'">'+escapeHtml(entry.level)+'</span><time>'+escapeHtml(utc(entry.created_at))+'</time><strong>'+escapeHtml(entry.stage)+'</strong><span class="diagnostic-preview">'+escapeHtml(entry.message.split('\n')[0])+'</span></summary><p>'+escapeHtml([entry.request_id?'Request '+entry.request_id:'',entry.account?'Account '+entry.account:''].filter(Boolean).join(' · '))+'</p><pre></pre>';
             row.querySelector('pre').textContent=entry.message;
         }
         if (container.children[index]!==row) container.insertBefore(row,container.children[index] || null);
@@ -378,7 +378,8 @@ document.getElementById('user-table').addEventListener('click',event=>
     document.getElementById('credit-form').reset();
     document.getElementById('user-result').textContent='';
     document.getElementById('checkout-url').hidden=true;
-    document.getElementById('create-checkout').disabled=!state.report?.payments.stripe;
+    document.getElementById('create-checkout').disabled=!state.report?.payments.stripe || !state.report.payments.packs.length;
+    document.getElementById('checkout-pack').innerHTML=(state.report?.payments.packs || []).map(pack=>'<option value="'+escapeHtml(pack.price_id)+'">'+count(pack.credits)+' credits — '+money(Number(pack.usd))+'</option>').join('');
     document.getElementById('user-dialog').showModal();
 });
 document.getElementById('credit-form').addEventListener('submit',async event=>
@@ -432,7 +433,7 @@ document.getElementById('create-checkout').addEventListener('click',async event=
     const button=event.currentTarget,user=state.selected;button.disabled=true;
     try
     {
-        const result=await api('users/'+user.id+'/checkout',{}),link=document.getElementById('checkout-url');
+        const result=await api('users/'+user.id+'/checkout',{price_id:document.getElementById('checkout-pack').value}),link=document.getElementById('checkout-url');
         if (state.selected!==user) return;
         const url=new URL(result.url);
         if (url.protocol!=='https:' || url.hostname!=='checkout.stripe.com') throw new Error('Unexpected payment URL');

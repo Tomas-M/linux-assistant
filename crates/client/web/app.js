@@ -3,7 +3,7 @@ const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(ele
 let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
 const pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
-let socialLogin, enabledProviders=[];
+let socialLogin, enabledProviders=[], emailEnabled=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
@@ -108,7 +108,8 @@ function render()
     else setIcon(elements['settings-open'],'user');
     for (const id of ['new','credits','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
-    for (const id of ['buy','buy-inline']) elements[id].disabled=buying || !state.account;
+    elements['buy-inline'].disabled=buying || !state.account;
+    for (const button of elements['credit-packs'].querySelectorAll('button')) button.disabled=buying || !state.account || elements['credit-packs'].dataset.development==='true';
     renderConnection();
     renderComposer();
     renderLogin();
@@ -520,12 +521,39 @@ async function loadPurchases()
     catch (error) { if (state.account?.email===email) elements['purchase-status'].textContent=error.message; }
 }
 
+// Fetch purchase choices whenever Settings opens so administrator changes appear without restarting the client.
+async function loadCreditPacks()
+{
+    const email=state.account?.email;
+    if (!email) return;
+    elements['credit-packs'].replaceChildren();
+    elements['credit-packs-status'].textContent='Loading credit packs…';
+    try
+    {
+        const result=await api('credit-packs');
+        if (state.account?.email!==email) return;
+        elements['credit-packs'].dataset.development=String(result.development);
+        for (const pack of result.packs)
+        {
+            const button=document.createElement('button'),credits=document.createElement('strong'),price=document.createElement('span');
+            button.type='button'; button.className='credit-pack'; button.dataset.priceId=pack.price_id;
+            credits.textContent=pack.credits.toLocaleString()+' credits';
+            price.textContent=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(Number(pack.usd))+' USD';
+            button.append(credits,price); elements['credit-packs'].append(button);
+        }
+        elements['credit-packs-status'].textContent=result.development?'Purchases are disabled in development mode.':result.packs.length?'Choose a pack to open checkout.':'No credit packs are currently available.';
+        render();
+    }
+    catch (error) { if (state.account?.email===email) elements['credit-packs-status'].textContent=error.message; }
+}
+
 // Both header controls open the same credit overview and load recent purchases.
 function openSettings()
 {
     elements['settings-status'].textContent='';
     elements['settings-dialog'].showModal();
     loadPurchases();
+    loadCreditPacks();
 }
 elements['settings-open'].addEventListener('click',openSettings);
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
@@ -537,7 +565,10 @@ function renderLogin()
 {
     const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));
     const waiting=!!socialLogin && !socialLogin.verification;
-    for (const id of ['email','login','verify','change-email']) elements[id].disabled=loginBusy || waiting;
+    const emailAllowed=emailEnabled || !!socialLogin?.verification;
+    elements['email-sign-in'].hidden=!emailAllowed;
+    elements['auth-divider'].hidden=!emailAllowed;
+    for (const id of ['email','login','verify','change-email']) elements[id].disabled=loginBusy || waiting || !emailAllowed;
     elements['code-digits'].disabled=loginBusy;
     elements.resend.disabled=loginBusy || remaining>0;
     elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
@@ -897,10 +928,12 @@ for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
     action(()=>api('command',{id:proposalId,approve:id==='approve'}));
 });
 for (const [id,path] of [['new','new'],['credits','account'],['logout','logout'],['retry','retry']])
-    elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='credits') await loadPurchases(); if (id==='logout') elements['settings-dialog'].close();}));
-for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',async()=>
+    elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='credits') { await loadPurchases(); await loadCreditPacks(); } if (id==='logout') elements['settings-dialog'].close();}));
+elements['buy-inline'].addEventListener('click',openSettings);
+elements['credit-packs'].addEventListener('click',async event=>
 {
-    if (buying || !state.account) return;
+    const pack=event.target.closest('[data-price-id]');
+    if (!pack || buying || !state.account) return;
     // Open during the click so waiting for the backend does not trigger popup blocking.
     const checkoutWindow=window.open('about:blank','_blank');
     if (checkoutWindow)
@@ -914,7 +947,7 @@ for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',asy
     render();
     try
     {
-        const checkout=await api('checkout',{});
+        const checkout=await api('checkout',{price_id:pack.dataset.priceId});
         if (state.account?.email!==email) { checkoutWindow?.close(); return; }
         const url=new URL(checkout.url);
         if (url.protocol!=='https:' || url.hostname!=='checkout.stripe.com') throw new Error('Unexpected payment URL');
@@ -1119,4 +1152,4 @@ api('state').then(async current=>
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
     }
 }).catch(error=>{elements.status.textContent=error.message;});
-api('login/providers').then(result=>{enabledProviders=result.providers; renderLogin();}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message+' You can still use email.';});
+api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});

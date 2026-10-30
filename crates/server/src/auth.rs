@@ -43,6 +43,7 @@ pub async fn poll(State(app): State<App>, Json(input): Json<PollLogin>) -> ApiRe
 
 /// Deliver six random digits, limiting sends across all devices for the same email.
 pub async fn email(State(app): State<App>, Json(input): Json<EmailLogin>) -> ApiResult<Json<EmailChallenge>> {
+    let config=app.config();
     require_login(&app,&input.device_id,&input.poll_secret)?;
     let email = input.email.trim().to_lowercase();
     if email.len() > 254 || !email.contains('@') || email.chars().any(char::is_whitespace) { return Err(ApiError::bad("Enter a valid email")); }
@@ -65,12 +66,13 @@ pub async fn email(State(app): State<App>, Json(input): Json<EmailLogin>) -> Api
         expires_at=tx.query_row("SELECT expires_at FROM devices WHERE id=?1",[&input.device_id],|r|r.get(0))?;
         tx.commit()?;
     }
-    if !app.config.dev { crate::mail::send_code(&app,recipient,&code).await?; }
-    Ok(Json(EmailChallenge { expires_at,development_code:app.config.dev.then_some(code) }))
+    if !config.dev { crate::mail::send_code(&app,recipient,&code).await?; }
+    Ok(Json(EmailChallenge { expires_at,development_code:config.dev.then_some(code) }))
 }
 
 /// Consume verification attempts before comparison and issue the session inside the client flow.
 pub async fn verify(State(app): State<App>, Json(input): Json<VerifyEmail>) -> ApiResult<Json<LoginResult>> {
+    let config=app.config();
     require_login(&app,&input.device_id,&input.poll_secret)?;
     let code:String=input.code.chars().filter(|c|!c.is_whitespace()).collect();
     let email = {
@@ -86,8 +88,8 @@ pub async fn verify(State(app): State<App>, Json(input): Json<VerifyEmail>) -> A
     let identity:Option<(String,String)>=app.db.0.lock().unwrap().query_row("SELECT provider,subject FROM social_signins WHERE device_id=?1 AND subject IS NOT NULL",[&input.device_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let user=if let Some((provider,subject))=identity {
         let provider:AuthProvider=serde_json::from_value(serde_json::json!(provider))?;
-        app.db.social_user(&email,provider,&subject,app.config.free_credits)?
-    } else { app.db.user(&email,None,app.config.free_credits)? };
+        app.db.social_user(&email,provider,&subject,config.free_credits)?
+    } else { app.db.user(&email,None,config.free_credits)? };
     approve(&app,&input.device_id,user)?;
     poll(State(app),Json(PollLogin { device_id:input.device_id,poll_secret:input.poll_secret })).await
 }
@@ -95,6 +97,11 @@ pub async fn verify(State(app): State<App>, Json(input): Json<VerifyEmail>) -> A
 /// Email operations require the initiating client's secret as well as its device ID.
 fn require_login(app:&App,id:&str,secret:&str)->ApiResult<()> {
     require_device(app,id)?;
+    // Disabling email as a primary login still allows ownership checks for a bound social identity.
+    if !app.config().email_enabled {
+        let social:bool=app.db.0.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM social_signins WHERE device_id=?1 AND subject IS NOT NULL AND error IS NULL)",[id],|row|row.get(0))?;
+        if !social { return Err(ApiError::bad("Email sign-in is disabled")); }
+    }
     let valid:bool=app.db.0.lock().unwrap().query_row("SELECT poll_hash=?1 FROM devices WHERE id=?2",params![hash(secret),id],|r|r.get(0))?;
     if !valid { return Err(ApiError::bad("Invalid sign-in")); }
     Ok(())

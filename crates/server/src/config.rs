@@ -1,96 +1,115 @@
-use std::{net::SocketAddr, path::PathBuf};
-use anyhow::{ensure, Result};
+use std::{net::SocketAddr,path::PathBuf};
+use anyhow::{ensure,Result};
 use clap::Parser;
+use serde::{Deserialize,Serialize};
 
-#[derive(Clone, Parser)]
-#[command(about = "Linux Assistant account, credit, and AI backend")]
+#[derive(Parser)]
+#[command(about="Linux Assistant backend; configure at /admin")]
+pub struct Args {
+    #[arg(long,help="Local-only simulated AI and email")]
+    pub dev:bool,
+    #[arg(long,requires="dev",help="Development database override")]
+    pub database:Option<PathBuf>,
+    #[arg(long,requires="dev",help="Development listener override")]
+    pub listen:Option<SocketAddr>,
+    #[arg(long,hide=true)]
+    pub provider_worker:bool,
+    #[arg(long)]
+    pub third_party_notices:bool,
+    #[arg(long)]
+    pub codex_version:bool,
+}
+
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    #[arg(long, env = "ASSISTANT_LISTEN", default_value = "127.0.0.1:8787")]
-    pub listen: SocketAddr,
-    #[arg(long, env = "ASSISTANT_PUBLIC_URL", default_value = "http://127.0.0.1:8787")]
-    pub public_url: String,
-    #[arg(long, env = "ASSISTANT_DATABASE", default_value = "assistant.db")]
-    pub database: PathBuf,
-    #[arg(long, help = "Local-only fake AI and email sign-in; never enables real payments")]
-    pub dev: bool,
-    #[arg(long, env = "ASSISTANT_FREE_CREDITS", default_value_t = 100)]
-    pub free_credits: i64,
-    #[command(flatten)]
-    pub pricing: crate::billing::Pricing,
-    #[arg(long, env = "ASSISTANT_ADMIN_PASSWORD", hide_env_values = true)]
-    pub admin_password: Option<String>,
-    #[arg(long, hide = true)]
-    pub provider_worker: bool,
-    #[arg(long, value_name = "DIRECTORY", help = "Sign one operator account into an isolated directory, then exit")]
-    pub login_account: Option<PathBuf>,
-    #[arg(long, help = "Print the embedded Codex license and notices, then exit")]
-    pub third_party_notices: bool,
-    #[arg(long, help = "Print the source-linked Codex App Server version, then exit")]
-    pub codex_version: bool,
-    #[arg(long, env = "ASSISTANT_CODEX_HOMES", value_delimiter = ',')]
-    pub codex_homes: Vec<PathBuf>,
-    #[arg(long, env = "ASSISTANT_MODEL")]
-    pub model: Option<String>,
-    #[arg(long, env = "ASSISTANT_REASONING_EFFORT", value_parser = ["none","minimal","low","medium","high","xhigh","max","ultra","persistent"],
-        help = "Reasoning level for every AI turn; choose a level supported by the selected model")]
-    pub reasoning_effort: Option<String>,
-    #[arg(long, env = "GOOGLE_CLIENT_ID")]
-    pub google_client_id: Option<String>,
-    #[arg(long, env = "GOOGLE_CLIENT_SECRET", hide_env_values = true)]
-    pub google_client_secret: Option<String>,
-    #[arg(long,env="MICROSOFT_CLIENT_ID")]
+    #[serde(skip)]
+    pub listen:Option<SocketAddr>,
+    #[serde(skip)]
+    pub database:PathBuf,
+    #[serde(skip)]
+    pub dev:bool,
+    #[serde(skip)]
+    pub admin_password_hash:Option<String>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub test_homes:Vec<PathBuf>,
+    pub public_url:String,
+    pub email_enabled:bool,
+    pub google_enabled:bool,
+    pub microsoft_enabled:bool,
+    pub github_enabled:bool,
+    pub free_credits:i64,
+    pub pricing:crate::billing::Pricing,
+    pub model:Option<String>,
+    pub reasoning_effort:Option<String>,
+    pub google_client_id:Option<String>,
+    pub google_client_secret:Option<String>,
     pub microsoft_client_id:Option<String>,
-    #[arg(long,env="MICROSOFT_CLIENT_SECRET",hide_env_values=true)]
     pub microsoft_client_secret:Option<String>,
-    #[arg(long,env="GITHUB_CLIENT_ID")]
     pub github_client_id:Option<String>,
-    #[arg(long,env="GITHUB_CLIENT_SECRET",hide_env_values=true)]
     pub github_client_secret:Option<String>,
-    #[arg(long, env = "ASSISTANT_SMTP_HOST", default_value = "smtp.gmail.com", help = "SMTP hostname without a URL scheme; connections use implicit TLS")]
-    pub smtp_host: String,
-    #[arg(long, env = "ASSISTANT_SMTP_PORT", default_value_t = 465)]
-    pub smtp_port: u16,
-    #[arg(long, env = "ASSISTANT_SMTP_USERNAME")]
-    pub smtp_username: Option<String>,
-    #[arg(long, env = "ASSISTANT_SMTP_PASSWORD", hide_env_values = true)]
-    pub smtp_password: Option<String>,
-    #[arg(long, env = "ASSISTANT_EMAIL_FROM")]
-    pub email_from: Option<lettre::message::Mailbox>,
-    #[arg(long, env = "STRIPE_SECRET_KEY", hide_env_values = true)]
-    pub stripe_secret: Option<String>,
-    #[arg(long, env = "STRIPE_WEBHOOK_SECRET", hide_env_values = true)]
-    pub stripe_webhook_secret: Option<String>,
-    #[arg(long, env = "STRIPE_PRICE_ID")]
-    pub stripe_price: Option<String>,
-    #[arg(long, env = "ASSISTANT_PACK_CREDITS", default_value_t = 100)]
-    pub pack_credits: i64,
+    pub smtp_host:String,
+    pub smtp_port:u16,
+    pub smtp_username:Option<String>,
+    pub smtp_password:Option<String>,
+    pub email_from:Option<String>,
+    pub stripe_secret:Option<String>,
+    pub stripe_webhook_secret:Option<String>,
+    pub credit_packs:Vec<protocol::CreditPack>,
+}
+
+impl Default for Config {
+    /// Fresh deployments start with no credentials and use only the browser setup flow.
+    fn default()->Self {
+        Self { listen:None,database:database_path(),dev:false,admin_password_hash:None,
+            #[cfg(test)] test_homes:vec![],public_url:String::new(),email_enabled:false,google_enabled:false,microsoft_enabled:false,github_enabled:false,free_credits:100,
+            pricing:crate::billing::Pricing { input_credits_per_million:crate::billing::Rate(200_000_000),cached_input_credits_per_million:crate::billing::Rate(10_000_000),output_credits_per_million:crate::billing::Rate(1_000_000_000) },
+            model:None,reasoning_effort:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
+            github_client_id:None,github_client_secret:None,smtp_host:"smtp.gmail.com".into(),smtp_port:465,smtp_username:None,smtp_password:None,email_from:None,
+            stripe_secret:None,stripe_webhook_secret:None,credit_packs:vec![] }
+    }
+}
+
+/// Production Linux deployments always keep application state in this private directory.
+pub fn database_path()->PathBuf {
+    if cfg!(target_os="linux") { PathBuf::from("/var/lib/linux-assistant/assistant.db") }
+    else { PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_else(||".".into())).join("linux-assistant/assistant.db") }
 }
 
 impl Config {
-    /// Reject development exposure and incomplete provider configuration at startup.
-    pub fn validate(&self) -> Result<()> {
-        ensure!(self.free_credits >= 0 && self.pack_credits > 0, "Invalid credit amounts");
-        ensure!(self.admin_password.as_ref().is_none_or(|value|value.len()>=16), "Admin password must contain at least 16 bytes");
-        let url = reqwest::Url::parse(&self.public_url)?;
-        ensure!(url.query().is_none() && url.fragment().is_none() && url.path() == "/", "Public URL must be an origin");
-        if self.dev {
-            ensure!(self.listen.ip().is_loopback(), "Development mode must bind to loopback");
-            ensure!(matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")), "Development URL must be localhost");
-        } else {
-            ensure!(url.scheme() == "https", "Production public URL must use HTTPS (reverse proxy)");
-            ensure!(!self.codex_homes.is_empty() || self.admin_password.is_some(), "Configure an admin password to add accounts, or dedicated Codex account homes");
-            ensure!(!self.smtp_host.trim().is_empty() && !self.smtp_host.contains("://"), "Set ASSISTANT_SMTP_HOST to a hostname without ssl:// or smtps://");
-            ensure!(self.smtp_port>0, "SMTP port must be nonzero");
-            ensure!(self.smtp_username.as_ref().is_some_and(|value|!value.trim().is_empty()), "Configure ASSISTANT_SMTP_USERNAME");
-            ensure!(self.smtp_password.as_ref().is_some_and(|value|!value.trim().is_empty()), "Configure ASSISTANT_SMTP_PASSWORD");
-            ensure!(self.email_from.is_some(), "Configure ASSISTANT_EMAIL_FROM");
+    /// Optional integrations may be absent, but a partially configured integration must be corrected before saving.
+    pub fn validate(&self)->Result<()> {
+        ensure!(self.free_credits>=0 && self.free_credits<=1_000_000_000,"Invalid welcome credit amount");
+        let url=reqwest::Url::parse(&self.public_url)?;
+        let origin_only=url.query().is_none() && url.fragment().is_none() && url.path()=="/";
+        let credentials_absent=url.username().is_empty() && url.password().is_none();
+        ensure!(origin_only && credentials_absent,"Public URL must be an origin without credentials");
+        ensure!(url.scheme()=="https" || (self.dev && url.scheme()=="http"),"Public URL must use HTTPS");
+        ensure!(url.host_str().is_some(),"Public URL needs a hostname");
+        ensure!(self.model.as_ref().is_none_or(|model|!model.trim().is_empty() && model.len()<=200),"Enter a model or leave it blank");
+        ensure!(self.reasoning_effort.as_deref().is_none_or(|effort|["none","minimal","low","medium","high","xhigh","max","ultra","persistent"].contains(&effort)),"Unsupported reasoning level");
+        let hostname_valid=!self.smtp_host.is_empty() && !self.smtp_host.contains("://") && !self.smtp_host.chars().any(char::is_whitespace);
+        ensure!(hostname_valid && self.smtp_port>0,"Enter an SMTP hostname and a nonzero port");
+        for value in [&self.smtp_username,&self.smtp_password,&self.email_from,&self.google_client_id,&self.google_client_secret,&self.microsoft_client_id,&self.microsoft_client_secret,&self.github_client_id,&self.github_client_secret,&self.stripe_secret,&self.stripe_webhook_secret].into_iter().flatten() {
+            ensure!(!value.trim().is_empty() && value.len()<=8192,"Credential fields must be nonempty and at most 8192 bytes");
         }
-        for (name,id,secret) in [("Google",&self.google_client_id,&self.google_client_secret),("Microsoft",&self.microsoft_client_id,&self.microsoft_client_secret),("GitHub",&self.github_client_id,&self.github_client_secret)] {
+        let email_fields=[self.smtp_username.is_some(),self.smtp_password.is_some(),self.email_from.is_some()];
+        ensure!(email_fields.iter().all(|value|*value) || email_fields.iter().all(|value|!*value),"Configure SMTP username, password and sender together, or clear all three");
+        ensure!(!self.email_enabled || self.dev || self.smtp_username.is_some(),"Configure SMTP before enabling email sign-in");
+        if let Some(sender)=&self.email_from { sender.parse::<lettre::message::Mailbox>()?; }
+        for (name,enabled,id,secret) in [("Google",self.google_enabled,&self.google_client_id,&self.google_client_secret),("Microsoft",self.microsoft_enabled,&self.microsoft_client_id,&self.microsoft_client_secret),("GitHub",self.github_enabled,&self.github_client_id,&self.github_client_secret)] {
+            ensure!(!enabled || id.is_some(),"Configure {name} credentials before enabling sign-in");
             ensure!(id.is_some()==secret.is_some(),"Configure both {name} credentials");
-            ensure!(id.as_ref().is_none_or(|value|!value.trim().is_empty()) && secret.as_ref().is_none_or(|value|!value.trim().is_empty()),"{name} credentials must not be empty");
         }
-        let payment_fields = [self.stripe_secret.is_some(), self.stripe_webhook_secret.is_some(), self.stripe_price.is_some()];
-        ensure!(payment_fields.iter().all(|v| *v) || payment_fields.iter().all(|v| !*v), "Configure all three Stripe settings");
+        ensure!(self.stripe_secret.is_some()==self.stripe_webhook_secret.is_some(),"Configure both Stripe secrets");
+        let mut prices=std::collections::HashSet::new();
+        for pack in &self.credit_packs {
+            ensure!(pack.price_id.starts_with("price_") && pack.price_id.len()<=200 && pack.price_id.bytes().all(|byte|byte.is_ascii_alphanumeric() || byte==b'_'),"Enter a valid Stripe Price ID");
+            ensure!(prices.insert(&pack.price_id),"Each credit pack must have a different Price ID");
+            ensure!((1..=1_000_000_000).contains(&pack.credits),"Pack credits must be between 1 and 1000000000");
+            pack.cents()?;
+        }
         Ok(())
     }
 }

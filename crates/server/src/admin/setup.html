@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Set up backend · Linux Assistant</title>
+    <link rel="stylesheet" href="/admin/dashboard.css">
+</head>
+<body class="login">
+    <main class="login-card">
+        <span class="eyebrow">LINUX ASSISTANT / FIRST RUN</span>
+        <h1>Set up your backend</h1>
+        <p>Create an administrator password before configuring accounts, email and payments.</p>
+        <p role="alert">{{ERROR}}</p>
+        <form action="/admin/setup" method="post">
+            <label for="password">Administrator password</label>
+            <input id="password" name="password" type="password" minlength="16" maxlength="1024" autocomplete="new-password" required autofocus>
+            <label for="confirmation">Repeat password</label>
+            <input id="confirmation" name="confirmation" type="password" minlength="16" maxlength="1024" autocomplete="new-password" required>
+            <button type="submit">Create administrator</button>
+        </form>
+        <small>At least 16 characters. After setup, this dashboard requires sign-in.</small>
+    </main>
+</body>
+</html>

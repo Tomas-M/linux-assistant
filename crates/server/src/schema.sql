@@ -1,5 +1,6 @@
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS backend_settings(id INTEGER PRIMARY KEY CHECK(id=1),settings TEXT NOT NULL,password_hash TEXT);
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, google_sub TEXT UNIQUE);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, user_id INTEGER REFERENCES users(id), email TEXT, code_hash TEXT, attempts INTEGER NOT NULL DEFAULT 0, sent_at INTEGER);

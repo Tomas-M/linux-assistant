@@ -7,7 +7,6 @@ Wants=network-online.target
 User=linux-assistant
 Group=linux-assistant
 WorkingDirectory=/var/lib/linux-assistant
-EnvironmentFile=/etc/linux-assistant/server.env
 ExecStart=/usr/local/bin/assistant-server
 Restart=on-failure
 RestartSec=5

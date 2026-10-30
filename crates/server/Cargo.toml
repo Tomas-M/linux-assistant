@@ -22,6 +22,7 @@ codex-config.workspace = true
 codex-utils-cli.workspace = true
 rusqlite = { version = "0.39", features = ["bundled"] }
 hmac = "0.12"
+pbkdf2 = { version = "0.12.2", default-features = false }
 hex = "0.4"
 base64 = "0.22"
 regex = "1"

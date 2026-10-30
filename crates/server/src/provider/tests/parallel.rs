@@ -6,9 +6,9 @@ use std::sync::Arc;
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn same_account_conversations_are_isolated()->Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]);
-    config.codex_homes.push(directory.path().join("shared"));
-    account(&config.codex_homes[0],json!({"primary":10,"hold":true}))?;
+    let mut config=Config::default();
+    config.test_homes.push(directory.path().join("shared"));
+    account(&config.test_homes[0],json!({"primary":10,"hold":true}))?;
     let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
     let user=db.user("two-computers@example.test",None,20)?;
     let other=db.user("other@example.test",None,20)?;
@@ -54,7 +54,7 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     assert_eq!(db.steering(user,chats[0].request_id)?.len(),1);
     assert!(db.steering(user,chats[1].request_id)?.is_empty());
     assert!(db.steering(other,chats[2].request_id)?.is_empty());
-    let events=std::fs::read_to_string(config.codex_homes[0].join("events.jsonl"))?;
+    let events=std::fs::read_to_string(config.test_homes[0].join("events.jsonl"))?;
     assert_eq!(events.lines().filter(|line|line.contains("\"method\":\"initialize\"")).count(),1);
     assert_eq!(events.lines().filter(|line|line.contains("account/rateLimits/read")).count(),2);
     let input:Value=events.lines().map(|line|serde_json::from_str::<Value>(line).unwrap()).find(|event|event["method"]=="turn/start" && event["params"]["input"][0]["text"].as_str().unwrap().contains("Conversation 0")).unwrap();

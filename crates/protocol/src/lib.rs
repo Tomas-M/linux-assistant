@@ -1,3 +1,4 @@
+pub const ICONS_SVG:&str=include_str!("../assets/icons.svg");
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -98,6 +99,24 @@ impl AuthProvider {
 
 #[derive(Clone,Deserialize,Serialize)]
 pub struct EmailVerification { pub provider:AuthProvider, pub email:Option<String> }
+
+#[derive(Clone,Debug,Deserialize,Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreditPack { pub price_id:String,pub usd:String,pub credits:i64 }
+impl CreditPack {
+    /// Convert a configured USD price to cents exactly, without floating-point rounding.
+    pub fn cents(&self)->anyhow::Result<i64> {
+        let (whole,fraction)=self.usd.split_once('.').unwrap_or((&self.usd,""));
+        anyhow::ensure!(!whole.is_empty() && whole.bytes().all(|byte|byte.is_ascii_digit()),"USD price must be a positive decimal");
+        anyhow::ensure!(fraction.len()<=2 && fraction.bytes().all(|byte|byte.is_ascii_digit()),"USD price supports at most two decimal places");
+        let cents=whole.parse::<i64>()?.checked_mul(100).and_then(|value|value.checked_add(format!("{fraction:0<2}").parse::<i64>().ok()?));
+        Ok(cents.filter(|value|*value>0).ok_or_else(||anyhow::anyhow!("USD price is zero or too large"))?)
+    }
+}
+
+#[derive(Deserialize,Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckoutRequest { pub price_id:String }
 
 #[derive(Deserialize, Serialize)]
 pub struct EmailLogin { pub device_id: String, pub poll_secret: String, pub email: String }

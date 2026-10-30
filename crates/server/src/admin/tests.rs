@@ -1,15 +1,15 @@
 use super::*;
 use axum::body::to_bytes;
-use clap::Parser;
+
 use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Build a private test dashboard with no real accounts, mail, or payment credentials.
 fn application() -> anyhow::Result<App> {
     crate::diagnostics::init_test();
-    let mut config=crate::config::Config::parse_from(["assistant-server","--dev"]);
-    config.admin_password=Some("local-test-password-only".into());
-    Ok(App { turns:Arc::new(Default::default()),pool:Arc::new(crate::provider::Pool::new(&config)?),config:Arc::new(config),db:Arc::new(crate::db::Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new(),mail:None })
+    let mut config=crate::config::Config { dev:true,public_url:"http://127.0.0.1:8787".into(),email_enabled:true,..crate::config::Config::default() };
+    config.admin_password_hash=Some(crate::settings::password_hash("local-test-password-only"));
+    App::testing(config)
 }
 
 /// Exercise real login cookies, rather than bypassing the dashboard authorization layer.
@@ -35,7 +35,7 @@ async fn request(router: &Router, path: &str, cookie: &str, body: Option<Value>)
 /// Admin authentication is separate, cookies rotate with the password, and CSRF cannot mutate users.
 #[tokio::test]
 async fn authentication_and_browser_boundaries() -> anyhow::Result<()> {
-    let mut state=application()?;
+    let state=application()?;
     let app=crate::router(state.clone());
     assert_eq!(request(&app,"/admin/api/users","",None).await?.0,StatusCode::UNAUTHORIZED);
     assert_eq!(request(&app,"/admin/api/logs","",None).await?.0,StatusCode::UNAUTHORIZED);
@@ -67,14 +67,14 @@ async fn authentication_and_browser_boundaries() -> anyhow::Result<()> {
     let response=app.clone().oneshot(Request::builder().method("POST").uri(format!("/admin/api/users/{user}/block")).header(header::COOKIE,&cookie)
         .header(header::CONTENT_TYPE,"application/json").header("X-Admin-Request","1").header(header::ORIGIN,"https://attacker.example").body(Body::from("{\"blocked\":true}"))?).await?;
     assert_eq!(response.status(),StatusCode::FORBIDDEN);
-    Arc::make_mut(&mut state.config).admin_password=Some("changed-test-password".into());
+    Arc::make_mut(&mut *state.settings.write().unwrap()).config.admin_password_hash=Some(crate::settings::password_hash("changed-test-password"));
     assert_eq!(request(&crate::router(state.clone()),"/admin/api/logs",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
     assert_eq!(request(&crate::router(state.clone()),"/admin/api/users",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
-    assert_eq!(request(&app,"/admin/api/logout",&cookie,Some(json!({}))).await?.0,StatusCode::OK);
+    assert_eq!(request(&app,"/admin/api/logout",&cookie,Some(json!({}))).await?.0,StatusCode::UNAUTHORIZED);
     assert_eq!(request(&app,"/admin/api/users",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
-    Arc::make_mut(&mut state.config).admin_password=None;
-    assert_eq!(request(&crate::router(state.clone()),"/admin/api/logs",&cookie,None).await?.0,StatusCode::NOT_FOUND);
-    assert_eq!(request(&crate::router(state),"/admin/api/users",&cookie,None).await?.0,StatusCode::NOT_FOUND);
+    Arc::make_mut(&mut *state.settings.write().unwrap()).config.admin_password_hash=None;
+    assert_eq!(request(&crate::router(state.clone()),"/admin/api/logs",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
+    assert_eq!(request(&crate::router(state),"/admin/api/users",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
     Ok(())
 }
 

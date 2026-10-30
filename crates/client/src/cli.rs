@@ -74,7 +74,15 @@ async fn handle(connection: &Connection, line: &str, state: &Value) -> Result<Op
         }
         "/credits" => connection.post("/api/account",json!({})).await?,
         "/buy" => {
-            let checkout=connection.post("/api/checkout",json!({})).await?;
+            let catalog=connection.get("/api/credit-packs").await?;
+            let packs=catalog["packs"].as_array().unwrap();
+            anyhow::ensure!(!packs.is_empty(),"No credit packs are currently available");
+            for (index,pack) in packs.iter().enumerate() { println!("{}. {} credits - ${} USD",index+1,pack["credits"],pack["usd"].as_str().unwrap()); }
+            let Some(choice)=read_line("Choose a pack number (blank to cancel): ")? else { return Ok(None); };
+            if choice.trim().is_empty() { return Ok(None); }
+            let index=choice.trim().parse::<usize>()?.checked_sub(1).ok_or_else(||anyhow::anyhow!("Invalid pack number"))?;
+            let pack=packs.get(index).ok_or_else(||anyhow::anyhow!("Invalid pack number"))?;
+            let checkout=connection.post("/api/checkout",json!({"price_id":pack["price_id"]})).await?;
             let url=checkout["url"].as_str().unwrap();
             println!("Buy credits: {url}");
             let _=webbrowser::open(url);

@@ -1,6 +1,6 @@
 mod parallel;
 use super::*;
-use clap::Parser;
+
 use protocol::Message;
 use serde_json::json;
 use uuid::Uuid;
@@ -52,7 +52,7 @@ fn ranks_by_bottleneck_and_rejects_unknown_quota() -> Result<()> {
 async fn integration_admin_account_controls()->Result<()> {
     crate::diagnostics::init_test();
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]); config.database=directory.path().join("test.db");
+    let mut config=Config::default(); config.database=directory.path().join("test.db");
     let db=Arc::new(Db::open(&config.database)?);
     let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into(); let pool=Arc::new(pool);
     let pending=pool.clone().add(db.clone(),None).await?;
@@ -91,9 +91,9 @@ async fn integration_admin_account_controls()->Result<()> {
 async fn integration_diagnostics_preserve_causes()->Result<()> {
     crate::diagnostics::init_test();
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]);
-    config.codex_homes.push(directory.path().join("diagnostic-account"));
-    let home=&config.codex_homes[0];
+    let mut config=Config::default();
+    config.test_homes.push(directory.path().join("diagnostic-account"));
+    let home=&config.test_homes[0];
     account(home,json!({"primary":23,"rpc_error_method":"account/rateLimits/read","error_message":"HTTP 401: authentication expired; Bearer PRIVATE_TOKEN"}))?;
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let mut pool=Pool::new(&config)?;
@@ -123,9 +123,9 @@ async fn integration_diagnostics_preserve_causes()->Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_streams_before_completion() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]);
-    config.codex_homes.push(directory.path().join("stream"));
-    account(&config.codex_homes[0],json!({"primary":0,"stream":true}))?;
+    let mut config=Config::default();
+    config.test_homes.push(directory.path().join("stream"));
+    account(&config.test_homes[0],json!({"primary":0,"stream":true}))?;
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let user=db.user("stream@example.test",None,10)?;
     let mut pool=Pool::new(&config)?;
@@ -177,11 +177,11 @@ fn demo_uses_client_platform() {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_persistent_account_affinity() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let mut config = Config::parse_from(["assistant-server"]);
+    let mut config = Config::default();
     for (name,primary,secondary) in [("a",70,10),("b",10,80),("c",40,40)] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":primary,"secondary":secondary}))?;
-        config.codex_homes.push(home);
+        config.test_homes.push(home);
     }
     let db_path=directory.path().join("test.db");
     let db=Db::open(&db_path)?;
@@ -192,11 +192,11 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     let mut chat=request();
     let first=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(first.account_home.as_deref(),Some(pool.accounts()[2].home.as_str()));
-    account(&config.codex_homes[2],json!({"primary":90,"secondary":90}))?;
+    account(&config.test_homes[2],json!({"primary":90,"secondary":90}))?;
     pool.accounts()[2].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let second=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(first.thread_id,second.thread_id);
-    let events=std::fs::read_to_string(config.codex_homes[2].join("events.jsonl"))?;
+    let events=std::fs::read_to_string(config.test_homes[2].join("events.jsonl"))?;
     let turns: Vec<Value>=events.lines().map(serde_json::from_str).collect::<std::result::Result<_,_>>()?;
     let last=turns.iter().rev().find(|e|e["method"]=="turn/start").unwrap();
     assert_eq!(last["params"]["environments"],json!([]));
@@ -210,14 +210,14 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     assert_ne!(isolated.account_home,first.account_home);
     drop(pool);
     drop(db);
-    config.codex_homes.reverse();
+    config.test_homes.reverse();
     let db=Db::open(&db_path)?;
     let mut pool=Pool::new(&config)?;
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let resumed=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(resumed.thread_id,first.thread_id);
     assert_eq!(resumed.account_home,first.account_home);
-    account(&config.codex_homes[0],json!({"primary":100,"secondary":90}))?;
+    account(&config.test_homes[0],json!({"primary":100,"secondary":90}))?;
     // Selection refreshes the provider only after the five-minute quota cache expires.
     pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let moved=turn(&pool,&config,&db,user,&mut chat).await?;
@@ -237,11 +237,11 @@ async fn integration_persistent_account_affinity() -> Result<()> {
 async fn integration_mid_turn_limit_and_errors() -> Result<()> {
     for error in ["usageLimitExceeded","unexpectedServerError"] {
         let directory=tempfile::tempdir()?;
-        let mut config=Config::parse_from(["assistant-server"]);
+        let mut config=Config::default();
         for (name,used) in [("first",0),("second",50)] {
             let home=directory.path().join(name);
             account(&home,json!({"primary":used}))?;
-            config.codex_homes.push(home);
+            config.test_homes.push(home);
         }
         let db=Db::open(std::path::Path::new(":memory:"))?;
         let user=db.user("test@example.test",None,10)?;
@@ -249,7 +249,7 @@ async fn integration_mid_turn_limit_and_errors() -> Result<()> {
         pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
         let mut chat=request();
         let initial=turn(&pool,&config,&db,user,&mut chat).await?;
-        account(&config.codex_homes[0],json!({"primary":0,"turn_error":error}))?;
+        account(&config.test_homes[0],json!({"primary":0,"turn_error":error}))?;
         let result=pool.answer(&config,&db,user,&chat).await;
         if error=="usageLimitExceeded" {
             let next=result?;
@@ -270,11 +270,11 @@ async fn integration_mid_turn_limit_and_errors() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_accounts_run_in_parallel() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]);
+    let mut config=Config::default();
     for name in ["a","b"] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":0,"barrier":directory.path().to_string_lossy()}))?;
-        config.codex_homes.push(home);
+        config.test_homes.push(home);
     }
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let user=db.user("parallel@example.test",None,10)?;
@@ -322,7 +322,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
         "config":provider,"environments":[],"ephemeral":false,"sandbox":"read-only","approvalPolicy":"never"}))).await??;
     let id=thread["thread"]["id"].as_str().unwrap();
     let mut chat=request();
-    let settings=Config::parse_from(["assistant-server","--reasoning-effort","high"]);
+    let settings=Config { reasoning_effort:Some("high".into()),..Config::default() };
     // New threads are not resumable until their first turn has created a rollout.
     rpc.call("turn/start",json!({"threadId":id,"environments":[],"input":[{"type":"text","text":"Hello"}],"outputSchema":protocol::reply_schema()})).await?;
     let reply=tokio::time::timeout(Duration::from_secs(40),async {
@@ -389,11 +389,11 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_usage_and_admin_tests() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server","--reasoning-effort","medium"]);
+    let mut config=Config { reasoning_effort:Some("medium".into()),..Config::default() };
     for name in ["first","second"] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":10}))?;
-        config.codex_homes.push(home);
+        config.test_homes.push(home);
     }
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let user=db.user("usage@example.test",None,10)?;
@@ -402,33 +402,33 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     let mut chat=request();
     turn(&pool,&config,&db,user,&mut chat).await?;
     turn(&pool,&config,&db,user,&mut chat).await?;
-    let events=std::fs::read_to_string(config.codex_homes[0].join("events.jsonl"))?;
+    let events=std::fs::read_to_string(config.test_homes[0].join("events.jsonl"))?;
     assert_eq!(events.lines().filter(|line|line.contains("account/rateLimits/read")).count(),1);
     assert_eq!(db.0.lock().unwrap().query_row("SELECT SUM(total_tokens) FROM usage",[],|r|r.get::<_,i64>(0))?,220);
     let result=pool.test_account(&config,&db,1,"Say OK".into()).await?;
     assert!(result["text"].as_str().unwrap().contains("second"));
-    let events=std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?;
+    let events=std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?;
     let test:Value=serde_json::from_str(events.lines().find(|line|line.contains("\"method\":\"turn/start\"")).unwrap())?;
     assert_eq!(test["params"]["effort"],"medium");
     assert_eq!(db.balance(user)?,8);
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE user_id IS NULL AND purpose='admin_test' AND total_tokens=110",[],|r|r.get::<_,i64>(0))?,1);
-    account(&config.codex_homes[0],json!({"primary":10,"turn_error":"usageLimitExceeded"}))?;
+    account(&config.test_homes[0],json!({"primary":10,"turn_error":"usageLimitExceeded"}))?;
     assert!(pool.test_account(&config,&db,0,"Say OK".into()).await.is_err());
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE error IS NOT NULL AND total_tokens=110",[],|r|r.get::<_,i64>(0))?,1);
-    account(&config.codex_homes[0],json!({"primary":10,"missing_usage":true}))?;
+    account(&config.test_homes[0],json!({"primary":10,"missing_usage":true}))?;
     pool.test_account(&config,&db,0,"Say OK".into()).await?;
     assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE total_tokens IS NULL AND finished_at IS NOT NULL",[],|r|r.get::<_,i64>(0))?,1);
     // Read-only dashboard refreshes reuse stored readings instead of asking ChatGPT again.
     pool.probe(&db,1).await?;
-    let before=std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?;
+    let before=std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?;
     assert_eq!(pool.account_status(&db)?[1]["email"],"fixture@example.test");
     pool.account_status(&db)?;
-    assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
+    assert_eq!(before,std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?);
     let account=pool.accounts()[1].clone();
     let _busy=account.worker.lock().await;
     pool.probe(&db,1).await?;
     assert_eq!(pool.account_status(&db)?[1]["busy"],false);
-    assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
+    assert_eq!(before,std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?);
     Ok(())
 }
 
@@ -437,11 +437,11 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::parse_from(["assistant-server"]);
+    let mut config=Config::default();
     for (name,used) in [("a",0),("b",50)] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":used}))?;
-        config.codex_homes.push(home);
+        config.test_homes.push(home);
     }
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let user=db.user("checkpoint@example.test",None,30)?;
@@ -456,11 +456,11 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     assert!(serde_json::to_vec(&saved.messages)?.len()>96_000);
     assert!(saved.checkpoint.contains("IMPORTANT_GOAL") && saved.checkpoint_at>0);
     assert!(serde_json::to_vec(&saved.messages[saved.checkpoint_at..])?.len()<64_000);
-    account(&config.codex_homes[0],json!({"primary":100}))?;
+    account(&config.test_homes[0],json!({"primary":100}))?;
     pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let moved=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(moved.account_home.as_deref(),Some(pool.accounts()[1].home.as_str()));
-    let events=std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?;
+    let events=std::fs::read_to_string(config.test_homes[1].join("events.jsonl"))?;
     let event:Value=serde_json::from_str(events.lines().find(|line|line.contains("\"method\":\"turn/start\"")).unwrap())?;
     let input=event["params"]["input"][0]["text"].as_str().unwrap();
     assert!(input.len()<80_000 && input.contains("Fixture recovery summary"));
@@ -474,9 +474,9 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
 async fn integration_provider_controls() -> Result<()> {
     for stop in [false,true] {
         let directory=tempfile::tempdir()?;
-        let mut config=Config::parse_from(["assistant-server"]);
-        config.codex_homes.push(directory.path().join("held"));
-        account(&config.codex_homes[0],json!({"primary":0,"hold":true,"fragment":true}))?;
+        let mut config=Config::default();
+        config.test_homes.push(directory.path().join("held"));
+        account(&config.test_homes[0],json!({"primary":0,"hold":true,"fragment":true}))?;
         let db=Db::open(std::path::Path::new(":memory:"))?;
         let user=db.user("controls@example.test",None,5)?;
         let chat=request();
@@ -486,7 +486,7 @@ async fn integration_provider_controls() -> Result<()> {
         let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
         let controller=async {
             // Interrupt a read halfway through a multibyte JSONL event, as a real stream can arrive.
-            while !config.codex_homes[0].join("fragment-ready").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            while !config.test_homes[0].join("fragment-ready").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
             tokio::time::sleep(Duration::from_millis(50)).await;
             // Reject controls whose balance changed after admission, before forwarding anything to Codex.
             if !stop {

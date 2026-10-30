@@ -14,12 +14,13 @@ pub fn transport(config: &Config) -> Result<AsyncSmtpTransportBuilder> {
 
 /// Deliver the sign-in code with a bound on the entire SMTP exchange.
 pub async fn send_code(app: &App, recipient: Address, code: &str) -> Result<()> {
-    let message=Message::builder().from(app.config.email_from.clone().unwrap())
+    let config=app.config();
+    let message=Message::builder().from(config.email_from.as_ref().ok_or_else(||anyhow::anyhow!("Configure SMTP in admin Settings"))?.parse()?)
         .to(Mailbox::new(None,recipient)).subject("Your Linux Assistant sign-in code")
         .multipart(MultiPart::alternative()
             .singlepart(SinglePart::plain(format!("Sign in to Linux Assistant\n\nEnter this code in your assistant:\n\n{code}\n\nThis code expires in 10 minutes and can only be used once.\nIf you did not request it, you can ignore this email.\n\nThe Linux Assistant team")))
             .singlepart(SinglePart::html(code_html(code))))?;
-    tokio::time::timeout(Duration::from_secs(30),app.mail.as_ref().unwrap().send(message)).await??;
+    tokio::time::timeout(Duration::from_secs(30),config.mail.as_ref().ok_or_else(||anyhow::anyhow!("Email sign-in is not configured in admin Settings"))?.send(message)).await??;
     Ok(())
 }
 

@@ -205,7 +205,7 @@ pub enum Reservation { New, Cached(String), Failed(String), Pending, Insufficien
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+
 
     /// Start an independent task using the production request contract.
     fn request()->ChatRequest {
@@ -222,7 +222,7 @@ mod tests {
         let db=Db::open(&path)?;
         let user=db.user("restart@example.test",None,3)?;
         let mut request=request();
-        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        let pricing=crate::config::Config::default().pricing;
         db.reserve(user,&request,"first",&pricing)?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         db.complete(user,&request,&AssistantReply { text:"Hi".into(),command:None },Some("account-a"),Some("thread-a"),None)?;
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn ledger_is_idempotent() -> Result<()> {
         let db=Db::open(Path::new(":memory:"))?;
-        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        let pricing=crate::config::Config::default().pricing;
         let user=db.user("person@example.com",None,2)?;
         assert_eq!(db.user("person@example.com",None,100)?,user);
         let a=request();

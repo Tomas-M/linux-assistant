@@ -1,5 +1,5 @@
 use anyhow::{ensure, Result};
-use clap::Args;
+use serde::{Deserialize,Serialize};
 use rusqlite::{params, Connection, OptionalExtension};
 use protocol::{ChatRequest, Role};
 use crate::db::now;
@@ -7,17 +7,15 @@ use crate::db::now;
 const SCALE: i64=1_000_000;
 const DENOMINATOR: i128=1_000_000_000_000;
 
-#[derive(Clone, Debug, Args)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Pricing {
-    #[arg(long, env="ASSISTANT_INPUT_CREDITS_PER_MILLION", default_value="200")]
     pub input_credits_per_million: Rate,
-    #[arg(long, env="ASSISTANT_CACHED_INPUT_CREDITS_PER_MILLION", default_value="10")]
     pub cached_input_credits_per_million: Rate,
-    #[arg(long, env="ASSISTANT_OUTPUT_CREDITS_PER_MILLION", default_value="1000")]
     pub output_credits_per_million: Rate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(try_from="String",into="String")]
 pub struct Rate(pub i64);
 
 impl std::str::FromStr for Rate {
@@ -30,6 +28,16 @@ impl std::str::FromStr for Rate {
         let units=whole.parse::<i64>()?.checked_mul(SCALE).and_then(|whole|whole.checked_add(format!("{fraction:0<6}").parse::<i64>().ok()?));
         Ok(Self(units.ok_or_else(||anyhow::anyhow!("Rate is too large"))?))
     }
+}
+
+impl TryFrom<String> for Rate {
+    type Error=anyhow::Error;
+    /// Deserialize human-readable decimal rates without exposing internal fixed-point units.
+    fn try_from(value:String)->Result<Self> { value.parse() }
+}
+impl From<Rate> for String {
+    /// Retain all six supported decimal places when settings are saved and reloaded.
+    fn from(rate:Rate)->String { format!("{}.{:06}",rate.0/SCALE,rate.0%SCALE).trim_end_matches('0').trim_end_matches('.').to_owned() }
 }
 
 impl Pricing {
@@ -105,7 +113,7 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+
     use protocol::{AssistantReply, CommandProposal, Message, Platform};
     use uuid::Uuid;
     use crate::db::{Db,Reservation};
@@ -149,7 +157,7 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let path=directory.path().join("billing.db");
         let db=Db::open(&path)?;
-        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        let pricing=crate::config::Config::default().pricing;
         let user=db.user("chain@example.test",None,1)?;
         let mut input=request();
         let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { files:None, command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }) };
@@ -163,7 +171,7 @@ mod tests {
         drop(db);
         let db=Db::open(&path)?;
         db.recover()?;
-        let changed=crate::config::Config::parse_from(["server","--input-credits-per-million","1000"]).pricing;
+        let changed=crate::config::Config { pricing:Pricing { input_credits_per_million:Rate(1_000_000_000),..crate::config::Config::default().pricing },..crate::config::Config::default() }.pricing;
         let mut stale=request();
         stale.conversation_id=input.conversation_id;
         assert!(matches!(db.reserve(user,&stale,"stale",&changed)?,Reservation::Stale));
@@ -195,7 +203,7 @@ mod tests {
     #[test]
     fn failures_and_recovery_preserve_auditable_usage()->Result<()> {
         let db=Db::open(std::path::Path::new(":memory:"))?;
-        let pricing=crate::config::Config::parse_from(["server"]).pricing;
+        let pricing=crate::config::Config::default().pricing;
         let user=db.user("failure@example.test",None,10)?;
         let input=request();
         db.reserve(user,&input,"failed",&pricing)?;
@@ -229,7 +237,7 @@ mod tests {
     #[test]
     fn admission_is_user_scoped_and_requires_positive_balance()->Result<()> {
         let db=Db::open(std::path::Path::new(":memory:"))?;
-        let config=crate::config::Config::parse_from(["server"]);
+        let config=crate::config::Config::default();
         assert_eq!(config.free_credits,100);
         let user=db.user("parallel@example.test",None,1)?;
         let zero=db.user("zero@example.test",None,0)?;

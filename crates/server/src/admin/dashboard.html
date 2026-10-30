@@ -6,18 +6,20 @@
     <title>Operations · Linux Assistant</title>
     <link rel="stylesheet" href="/admin/dashboard.css">
     <script src="/admin/dashboard.js" defer></script>
+    <script src="/admin/settings.js" defer></script>
 </head>
 <body>
+    {{ICONS}}
     <header class="topbar">
         <a class="brand" href="/admin">LA<span>Linux Assistant <small>Operations</small></span></a>
-        <nav aria-label="Dashboard sections"><a href="#accounts">Accounts</a><a href="#diagnostics">Diagnostics</a><a href="#usage">Usage</a><a href="#users">Users</a><a href="#payments">Payments</a></nav>
+        <nav aria-label="Dashboard sections"><a href="#accounts">Accounts</a><a href="#diagnostics">Diagnostics</a><a href="#usage">Usage</a><a href="#users">Users</a><a href="#payments">Payments</a><a href="#settings">Settings</a></nav>
         <button id="logout" class="quiet">Sign out</button>
     </header>
     <main>
         <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1>Operations overview</h1></div><span id="connection" role="status">Connecting…</span></div>
         <div id="notice" role="status" hidden></div>
         <section id="accounts">
-            <div class="section-heading"><div><h2>AI accounts</h2><p>ChatGPT quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a7 7 0 0 1 12-3l3 3M4 16l3 3a7 7 0 0 0 12-3"/></svg>Refresh display</button></div>
+            <div class="section-heading"><div><h2>AI accounts</h2><p>ChatGPT quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg aria-hidden="true"><use href="#icon-refresh"/></svg>Refresh display</button></div>
             <details class="panel"><summary>Add account</summary>
                 <div class="account-add">
                     <div><h3>ChatGPT account</h3><p>Sign in using a link and device code. Credentials are saved on this backend.</p><button id="account-connect" type="button">Sign in with ChatGPT</button></div>
@@ -77,15 +79,29 @@
         <section id="payments" class="panel">
             <h2>Payments</h2><p id="payment-status"></p>
             <p>Open a user’s controls and choose <strong>Create payment link</strong>. Share the resulting Stripe Checkout URL yourself. A verified paid webhook adds the configured credit pack exactly once.</p>
-            <p>Configure <code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_ID</code> and <code>ASSISTANT_PACK_CREDITS</code> in <code>/etc/linux-assistant/server.env</code>, then restart the service.</p>
+            <p>Configure Stripe and the credit pack in <a href="#settings">Settings</a>. Changes apply when saved.</p>
             <p>Stripe webhook: <code>/webhooks/stripe</code> · Snapshot events: <code>checkout.session.completed</code>, <code>checkout.session.async_payment_succeeded</code>.</p>
             <p>PayPal is not integrated. For a payment received elsewhere, verify it in your payment provider, then add credits manually with its transaction reference as the reason. Refunds and disputes require a manual credit adjustment.</p>
         </section>
+        <section id="settings">
+            <div class="section-heading"><div><h2>Backend settings</h2><p>Saved in the server database. Changes apply immediately to new requests; active AI requests keep their settings.</p></div></div>
+            <form id="backend-settings" class="panel">
+                <div id="settings-fields"></div>
+                <fieldset><legend>Credit packs</legend><p class="hint">One button per row, in this order. Enter the matching one-time USD Price from Stripe. The USD amount is displayed to users; Stripe charges the selected Price ID.</p>
+                    <div id="pack-rows"></div><button id="add-pack" type="button" class="quiet">Add credit pack</button>
+                </fieldset>
+                <fieldset><legend>Administrator password</legend><p class="hint">Leave blank to keep your current password. Changing it signs out other admin sessions.</p>
+                    <div class="settings-grid"><label>New password<input id="new-password" type="password" minlength="16" maxlength="1024" autocomplete="new-password"></label><label>Repeat password<input id="confirm-password" type="password" minlength="16" maxlength="1024" autocomplete="new-password"></label></div>
+                </fieldset>
+                <button id="save-settings" type="submit">Save settings</button><p id="settings-result" role="status" aria-live="polite"></p>
+            </form>
+        </section>
     </main>
     <dialog id="user-dialog" aria-labelledby="selected-email">
-        <button id="close-user" class="quiet close" aria-label="Close user controls"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+        <button id="close-user" class="quiet close" aria-label="Close user controls"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
         <h2 id="selected-email"></h2><p id="selected-user"></p>
         <form id="credit-form"><label>Credit adjustment (positive or negative)<input id="credit-delta" type="number" min="-1000000000" max="1000000000" step="1" required></label><label>Reason / payment reference<input id="credit-note" maxlength="500" required></label><button>Apply adjustment</button></form>
+        <label>Credit pack<select id="checkout-pack"></select></label>
         <div class="actions"><button id="create-checkout">Create payment link</button><button id="block-user" class="quiet"></button><button id="revoke-user" class="quiet">Revoke sessions</button><button id="filter-user" class="quiet">View usage</button></div>
         <p id="user-result" role="status"></p>
         <a id="checkout-url" target="_blank" rel="noopener noreferrer" hidden></a>
