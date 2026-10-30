@@ -115,15 +115,17 @@
         <form method="dialog" class="button-row"><button value="cancel">Cancel</button><button value="send" class="primary">Send anyway</button></form>
     </dialog>
     <dialog id="settings-dialog" aria-labelledby="settings-title">
-        <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
-        <p id="account" class="muted"></p>
-        <div class="account-balance"><span class="muted">Available credits</span><strong id="settings-balance">Loading…</strong></div>
-        <h3>Buy credits</h3>
-        <div id="credit-packs" class="credit-packs"></div><p id="credit-packs-status" class="muted" role="status"></p>
-        <div class="button-row"><button id="credits">Refresh balance</button></div>
-        <p id="settings-status" role="status" aria-live="polite"></p>
-        <section class="purchase-history" aria-label="Recent credit purchases"><h3>Recent purchases</h3><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></section>
-        <div class="settings-footer"><button id="logout" class="quiet">Sign out</button></div>
+        <div class="settings-scroll">
+            <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings" autofocus><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+            <p id="account" class="muted"></p>
+            <div class="account-balance"><span class="muted">Available credits</span><strong id="settings-balance">Loading…</strong></div>
+            <h3>Buy credits</h3>
+            <div id="credit-packs" class="credit-packs"></div><p id="credit-packs-status" class="muted" role="status"></p>
+            <div class="button-row"><button id="credits">Refresh balance</button></div>
+            <p id="settings-status" role="status" aria-live="polite"></p>
+            <section class="purchase-history" aria-label="Recent credit purchases"><h3>Recent purchases</h3><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></section>
+            <div class="settings-footer"><button id="logout" class="quiet">Sign out</button></div>
+        </div>
     </dialog>
     <aside id="process-panel" aria-label="Task manager" hidden>
         <header class="process-heading"><div><span class="eyebrow">ON YOUR COMPUTER</span><h2>Task manager</h2></div><button id="process-close" class="icon-button" aria-label="Close task manager"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
