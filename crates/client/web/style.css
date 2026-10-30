@@ -80,6 +80,7 @@ main { max-width:850px; margin:auto; padding:40px 28px calc(var(--composer-heigh
 @media (prefers-reduced-motion:reduce) { .working { animation:none; background:none; color:var(--muted); } .streaming > :last-child::after { animation:none; } }
 .streaming > :last-child::after { content:""; display:inline-block; height:1em; width:3px; background:var(--accent); margin-left:3px; vertical-align:middle; animation:pulse 1s infinite; }
 @keyframes pulse { 50% { opacity:.35; } }
+#scroll-bottom { position:fixed; left:50%; bottom:calc(var(--composer-height) + 12px); transform:translateX(-50%); z-index:3; display:grid; place-items:center; width:40px; height:40px; padding:0; border-radius:50%; box-shadow:var(--shadow); }
 .composer-wrap { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:min(850px,100%); padding:26px 28px 26px; background:linear-gradient(transparent,var(--bg) 15%); z-index:2; }
 .composer { border:1px solid var(--border); box-shadow:0 4px 25px #152b2010; border-radius:20px; background:var(--bg); padding:16px 18px 14px; }
 .composer:focus-within { border-color:var(--muted); }

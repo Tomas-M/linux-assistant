@@ -1,6 +1,6 @@
 'use strict';
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
+let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 let queueKey='', summaryKey='', steeringKey='';
 let socialLogin, enabledProviders=[], emailEnabled=false;
@@ -188,6 +188,7 @@ function render()
     }
     if (view.error) { elements.status.textContent=view.error; elements.status.dataset.taskError='true'; }
     else if (elements.status.dataset.taskError) { elements.status.textContent=''; delete elements.status.dataset.taskError; }
+    renderScrollButton();
 }
 
 // Adjacent command events share a stable disclosure; conversation text starts a new group.
@@ -385,6 +386,28 @@ elements.messages.addEventListener('click',async event=>
     }
 });
 
+// Show a way back to the latest output whenever the reader is away from the end.
+function renderScrollButton()
+{
+    elements['scroll-bottom'].hidden=!state?.authenticated || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
+}
+
+// Explicit jumps and submitted prompts resume following subsequent streamed updates.
+function scrollToEnd()
+{
+    followOutput=true;
+    window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+    renderScrollButton();
+}
+
+window.addEventListener('scroll',()=>
+{
+    followOutput=document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
+    renderScrollButton();
+},{passive:true});
+elements['scroll-bottom'].addEventListener('click',scrollToEnd);
+window.addEventListener('resize',()=>{if (followOutput) scrollToEnd(); else renderScrollButton();});
+
 // Shared snapshots restore an active conversation after refresh without posting another request.
 async function watch()
 {
@@ -409,7 +432,6 @@ async function watch()
                     buffer=buffer.slice(end+2);
                     const data=frame.split('\n').filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n');
                     if (!data) continue;
-                    const follow=window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-100;
                     const next=JSON.parse(data);
                     startedAt=next.busy?next.runs.at(-1)?.started_at:null;
                     view=next;
@@ -420,8 +442,7 @@ async function watch()
                     {
                         renderFrame=null;
                         render();
-                        if (follow || scrollAfterSend) window.scrollTo({top:document.documentElement.scrollHeight});
-                        scrollAfterSend=false;
+                        if (followOutput) scrollToEnd();
                     });
                 }
 
@@ -810,13 +831,10 @@ async function submitPrompt(steer=false)
     elements.prompt.style.height='auto';
     elements.status.textContent='';
     renderComposer();
-    // Follow the submitted prompt even when its first snapshot shares an already scheduled render.
-    scrollAfterSend=true;
-    window.scrollTo({top:document.documentElement.scrollHeight});
+    scrollToEnd();
     try { await api(steering?'steer':'chat',{id,text,attachments:attachments.length?attachments.map(({kind,name,content})=>({kind,name,content})):null}); }
     catch (error)
     {
-        scrollAfterSend=false;
         pendingIds.delete(id);
         elements.status.textContent=error.message;
         const accepted=state.messages.slice(submittedAt).some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
@@ -1096,9 +1114,9 @@ setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-s
 // Reserve the actual composer height, including queued messages and a multiline draft, below the transcript.
 new ResizeObserver(()=>
 {
-    const follow=window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-100;
     document.documentElement.style.setProperty('--composer-height',elements['composer-wrap'].offsetHeight+'px');
-    if (follow && state?.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
+    if (followOutput && state?.messages.length) scrollToEnd();
+    else renderScrollButton();
 }).observe(elements['composer-wrap']);
 watch();
 api('state').then(async current=>
