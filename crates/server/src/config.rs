@@ -42,6 +42,7 @@ pub struct Config {
     pub pricing:crate::billing::Pricing,
     pub model:Option<String>,
     pub reasoning_effort:Option<String>,
+    pub assistant_context:Option<String>,
     pub google_client_id:Option<String>,
     pub google_client_secret:Option<String>,
     pub microsoft_client_id:Option<String>,
@@ -64,7 +65,7 @@ impl Default for Config {
         Self { listen:None,database:database_path(),dev:false,admin_password_hash:None,
             #[cfg(test)] test_homes:vec![],public_url:String::new(),email_enabled:false,google_enabled:false,microsoft_enabled:false,github_enabled:false,free_credits:100,
             pricing:crate::billing::Pricing { input_credits_per_million:crate::billing::Rate(200_000_000),cached_input_credits_per_million:crate::billing::Rate(10_000_000),output_credits_per_million:crate::billing::Rate(1_000_000_000) },
-            model:None,reasoning_effort:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
+            model:None,reasoning_effort:None,assistant_context:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
             github_client_id:None,github_client_secret:None,smtp_host:"smtp.gmail.com".into(),smtp_port:465,smtp_username:None,smtp_password:None,email_from:None,
             stripe_secret:None,stripe_webhook_secret:None,credit_packs:vec![] }
     }

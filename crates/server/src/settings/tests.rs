@@ -57,19 +57,22 @@ async fn settings_hot_reload_secrets_and_restart()->Result<()> {
     let old=app.config();
     let mut settings=request(&app,&cookie,None).await?.2["settings"].clone();
     settings["model"]=json!("operator-model"); settings["free_credits"]=json!(42);
+    settings["assistant_context"]=json!("Slax <context> & instructions\n世界");
     settings["google_client_id"]=json!("fixture-google"); settings["google_client_secret"]=json!("private-google-secret"); settings["google_enabled"]=json!(true);
     settings["pricing"]["input_credits_per_million"]=json!("123.456789");
     settings["credit_packs"]=json!([{"price_id":"price_small","usd":"2.99","credits":100},{"price_id":"price_medium","usd":"5.49","credits":200},{"price_id":"price_large","usd":"9.99","credits":500}]);
     assert_eq!(request(&app,&cookie,Some(json!({"settings":settings,"clear_secrets":[],"new_password":null}))).await?.0,StatusCode::OK);
     assert_eq!(app.config().model.as_deref(),Some("operator-model"));
-    assert!(old.model.is_none());
+    assert!(old.model.is_none()); assert!(old.assistant_context.is_none());
     let restored=load(&app.db)?;
     assert_eq!(restored.free_credits,42);
+    assert_eq!(restored.assistant_context.as_deref(),Some("Slax <context> & instructions\n世界"));
     assert_eq!(restored.pricing.input_credits_per_million.0,123_456_789);
     assert_eq!(restored.credit_packs.len(),3);
     assert_eq!(restored.credit_packs[0].cents()?,299);
     assert_eq!(restored.google_client_secret.as_deref(),Some("private-google-secret"));
     let public=request(&app,&cookie,None).await?.2;
+    assert_eq!(public["settings"]["assistant_context"],settings["assistant_context"]);
     assert!(public["settings"]["google_client_secret"].is_null());
     assert!(public["saved_secrets"].as_array().unwrap().contains(&json!("google_client_secret")));
     assert!(!public.to_string().contains("private-google-secret"));
@@ -80,6 +83,9 @@ async fn settings_hot_reload_secrets_and_restart()->Result<()> {
     settings["google_enabled"]=json!(false); settings["google_client_id"]=Value::Null;
     assert_eq!(request(&app,&cookie,Some(json!({"settings":settings,"clear_secrets":["google_client_secret"],"new_password":null}))).await?.0,StatusCode::OK);
     assert!(load(&app.db)?.google_client_secret.is_none());
+    settings["assistant_context"]=Value::Null;
+    assert_eq!(request(&app,&cookie,Some(json!({"settings":settings,"clear_secrets":[],"new_password":null}))).await?.0,StatusCode::OK);
+    assert!(load(&app.db)?.assistant_context.is_none());
     Ok(())
 }
 

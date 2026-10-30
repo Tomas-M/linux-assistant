@@ -178,6 +178,7 @@ fn demo_uses_client_platform() {
 async fn integration_persistent_account_affinity() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let mut config = Config::default();
+    config.assistant_context=Some("INITIAL_CONTEXT 世界".into());
     for (name,primary,secondary) in [("a",70,10),("b",10,80),("c",40,40)] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":primary,"secondary":secondary}))?;
@@ -198,6 +199,9 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     assert_eq!(first.thread_id,second.thread_id);
     let events=std::fs::read_to_string(config.test_homes[2].join("events.jsonl"))?;
     let turns: Vec<Value>=events.lines().map(serde_json::from_str).collect::<std::result::Result<_,_>>()?;
+    for event in turns.iter().filter(|event|["thread/start","thread/resume"].contains(&event["method"].as_str().unwrap_or_default())) {
+        assert_eq!(event["params"]["baseInstructions"].as_str().unwrap().matches("INITIAL_CONTEXT 世界").count(),1);
+    }
     let last=turns.iter().rev().find(|e|e["method"]=="turn/start").unwrap();
     assert_eq!(last["params"]["environments"],json!([]));
     assert!(last["params"]["effort"].is_null());
@@ -211,12 +215,16 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     drop(pool);
     drop(db);
     config.test_homes.reverse();
+    config.assistant_context=Some("UPDATED_CONTEXT 世界".into());
     let db=Db::open(&db_path)?;
     let mut pool=Pool::new(&config)?;
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let resumed=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(resumed.thread_id,first.thread_id);
     assert_eq!(resumed.account_home,first.account_home);
+    let events=std::fs::read_to_string(std::path::Path::new(resumed.account_home.as_ref().unwrap()).join("events.jsonl"))?;
+    let resumed:Value=serde_json::from_str(events.lines().rev().find(|line|line.contains("\"method\":\"thread/resume\"")).unwrap())?;
+    assert!(resumed["params"]["baseInstructions"].as_str().unwrap().contains("UPDATED_CONTEXT 世界"));
     account(&config.test_homes[0],json!({"primary":100,"secondary":90}))?;
     // Selection refreshes the provider only after the five-minute quota cache expires.
     pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
@@ -225,6 +233,8 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     assert_ne!(moved.thread_id,first.thread_id);
     let events=std::fs::read_to_string(std::path::Path::new(moved.account_home.as_ref().unwrap()).join("events.jsonl"))?;
     let last: Value=serde_json::from_str(events.lines().rev().find(|line|line.contains("\"method\":\"turn/start\"")).unwrap())?;
+    let started:Value=serde_json::from_str(events.lines().rev().find(|line|line.contains("\"method\":\"thread/start\"")).unwrap())?;
+    assert!(started["params"]["baseInstructions"].as_str().unwrap().contains("UPDATED_CONTEXT 世界"));
     let input: Value=serde_json::from_str(last["params"]["input"][0]["text"].as_str().unwrap())?;
     assert_eq!(input["messages"].as_array().unwrap().len(),1);
     assert!(!input["recovery"]["messages"].as_array().unwrap().is_empty());
@@ -322,7 +332,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
         "config":provider,"environments":[],"ephemeral":false,"sandbox":"read-only","approvalPolicy":"never"}))).await??;
     let id=thread["thread"]["id"].as_str().unwrap();
     let mut chat=request();
-    let settings=Config { reasoning_effort:Some("high".into()),..Config::default() };
+    let settings=Config { reasoning_effort:Some("high".into()),assistant_context:Some("SLAX_CONTEXT 世界".into()),..Config::default() };
     // New threads are not resumable until their first turn has created a rollout.
     rpc.call("turn/start",json!({"threadId":id,"environments":[],"input":[{"type":"text","text":"Hello"}],"outputSchema":protocol::reply_schema()})).await?;
     let reply=tokio::time::timeout(Duration::from_secs(40),async {
@@ -343,7 +353,9 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     rpc.call("thread/unsubscribe",json!({"threadId":id})).await?;
     drop(rpc);
     let mut rpc=Rpc::start_unauthenticated(&executable,&directory.path().to_string_lossy()).await?;
-    rpc.call("thread/resume",json!({"threadId":id,"modelProvider":"fixture","config":provider,"excludeTurns":true})).await?;
+    // The fixture preloads its custom provider; loaded threads ignore later base-instruction overrides.
+    rpc.call("thread/resume",json!({"threadId":id,"modelProvider":"fixture","config":provider,"excludeTurns":true,
+        "baseInstructions":settings.assistant_context})).await?;
     let image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
     chat.messages=vec![Message { attachments:Some(vec![protocol::Attachment::Image { name:"screen.png".into(),content:image.into() },protocol::Attachment::Text { name:"日志.txt".into(),content:"ATTACHED_TEXT 世界".into() }]),role:Role::User,text:"Continue".into() }];
     let db=Db::open(std::path::Path::new(":memory:"))?;
@@ -361,6 +373,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     assert_eq!(reply.text,"Embedded reply");
     assert_eq!(returned,id);
     assert_eq!(checkpoint.as_deref(),Some("Embedded recovery checkpoint"));
+    assert!(requests.lock().unwrap().last().unwrap()["input"].as_array().unwrap().iter().any(|item|item["role"]=="developer" && item["content"].to_string().contains("SLAX_CONTEXT 世界")));
     assert_eq!(requests.lock().unwrap().last().unwrap()["reasoning"]["effort"],"high");
     assert!(requests.lock().unwrap().iter().any(|request|request["input"].as_array().unwrap().iter().any(|item|item["content"].as_array().is_some_and(|content|content.iter().any(|part|part["type"]=="input_image" && part["image_url"]==image)))));
     assert!(requests.lock().unwrap().iter().any(|request|request.to_string().contains("ATTACHED_TEXT")));
@@ -374,6 +387,10 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
             if event["method"]=="error" { anyhow::bail!("Compaction failed: {event}"); }
         }
     }).await??;
+    // The next real provider request must retain the context after native compaction.
+    let (reply,_,_)=rpc.answer(&settings,&chat,Some(id),&Value::Null,false,None,None,&attempt,&mut progress::Reporter::new(None,1)).await?;
+    assert_eq!(reply.text,"Embedded reply");
+    assert!(requests.lock().unwrap().last().unwrap()["input"].as_array().unwrap().iter().any(|item|item["role"]=="developer" && item["content"].to_string().contains("SLAX_CONTEXT 世界")));
     let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
     let (ack,result)=tokio::sync::oneshot::channel();
     sender.send(crate::turns::Control::Stop(ack)).await?;

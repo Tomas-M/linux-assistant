@@ -116,6 +116,11 @@ impl Rpc {
         if attempt.purpose=="admin_test" {
             instructions="Answer the operator's test prompt briefly in the requested language. You have no tools or computer access. Return JSON matching the schema with command:null and text of at most 4000 UTF-8 bytes.".into();
         }
+        // Keep operator context in base instructions, independently of compacted history and recovery summaries.
+        if let Some(context)=config.assistant_context.as_deref().map(str::trim).filter(|value|!value.is_empty()) {
+            instructions.push_str("\n\nAssistant context supplied by the operator:\n");
+            instructions.push_str(context);
+        }
         let mut schema=protocol::reply_schema();
         if checkpoint {
             schema["required"].as_array_mut().unwrap().push(json!("checkpoint"));

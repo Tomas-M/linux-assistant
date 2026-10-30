@@ -58,7 +58,7 @@ mod tests {
     fn fixture()->Result<(tempfile::TempDir,App,String)> {
         let directory=tempfile::tempdir()?;
         let config=Config { database:directory.path().join("assistant.db"),dev:true,public_url:"http://assistant.example.test".into(),
-            smtp_username:Some("fixture@example.test".into()),smtp_password:Some("private-smtp-secret".into()),email_from:Some("Fixture <fixture@example.test>".into()),
+            assistant_context:Some("Slax product context 世界".into()),smtp_username:Some("fixture@example.test".into()),smtp_password:Some("private-smtp-secret".into()),email_from:Some("Fixture <fixture@example.test>".into()),
             admin_password_hash:Some(password_hash("unchanged-admin-password")),..Config::default() };
         for auth in [json!({"OPENAI_API_KEY":"private-api-key"}),json!({"tokens":{"access_token":"private-access","refresh_token":"private-refresh","id_token":"private-id"}})] {
             let home=directory.path().join("managed-accounts").join(uuid::Uuid::new_v4().to_string());
@@ -91,16 +91,18 @@ mod tests {
         let (status,headers,backup)=transfer(&app,&cookie,None).await?;
         assert_eq!(status,StatusCode::OK); assert!(headers[header::CONTENT_DISPOSITION].to_str()?.starts_with("attachment;"));
         assert_eq!(backup["settings"]["smtp_password"],"private-smtp-secret");
+        assert_eq!(backup["settings"]["assistant_context"],"Slax product context 世界");
         assert_eq!(backup["accounts"].as_array().unwrap().len(),2);
         assert!(!backup.to_string().contains("admin_password")); assert!(!backup.to_string().contains(hash.as_deref().unwrap()));
         let user=app.db.user("preserved@example.test",None,107)?;
         app.db.0.lock().unwrap().execute("INSERT INTO conversations(user_id,id,account_home,thread_id,checkpoint) VALUES(?1,'conversation',?2,'thread','Keep this summary')",params![user,account["home"].as_str().unwrap()])?;
         app.pool.remove(&app.db,account["id"].as_str().unwrap()).await?;
-        let mut changed=app.config().config.clone(); changed.free_credits=999; changed.stripe_secret=Some("new-secret".into()); changed.stripe_webhook_secret=Some("new-webhook".into());
+        let mut changed=app.config().config.clone(); changed.free_credits=999; changed.assistant_context=None; changed.stripe_secret=Some("new-secret".into()); changed.stripe_webhook_secret=Some("new-webhook".into());
         crate::settings::save(State(app.clone()),Json(json!({"settings":changed,"clear_secrets":[],"new_password":null}))).await.map_err(|error|anyhow::anyhow!("{}",error.1))?;
         let (status,_,result)=transfer(&app,&cookie,Some(backup.clone())).await?;
         assert_eq!(status,StatusCode::OK,"{result}");
         assert_eq!(app.config().free_credits,100); assert!(app.config().stripe_secret.is_none());
+        assert_eq!(load(&app.db)?.assistant_context.as_deref(),Some("Slax product context 世界"));
         assert_eq!(app.config().admin_password_hash,hash); assert_eq!(load(&app.db)?.admin_password_hash,hash);
         assert_eq!(app.db.balance(user)?,107);
         assert_eq!(app.db.0.lock().unwrap().query_row("SELECT checkpoint FROM conversations WHERE user_id=?1",[user],|row|row.get::<_,String>(0))?,"Keep this summary");
