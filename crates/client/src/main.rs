@@ -55,11 +55,11 @@ async fn main() -> Result<()> {
     }
     let connection = local::connect(&directory,&args,&brand).await?;
     if args.desktop {
-        webbrowser::open(&format!("{}/#{}",connection.url,connection.secret))?;
+        webbrowser::open(&connection.url)?;
         return Ok(());
     }
     if args.cli { return cli::run(connection).await; }
-    println!("{}/#{}",connection.url,connection.secret);
+    println!("{}",connection.url);
     Ok(())
 }
 

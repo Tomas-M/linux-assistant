@@ -1,5 +1,5 @@
 'use strict';
-let draftAttachments=[], attaching=false;
+let draftAttachments=[], attaching=false, attachmentError='';
 
 // FileReader preserves the original encoded bytes without re-encoding the image.
 function imageData(file)
@@ -11,30 +11,34 @@ function imageData(file)
 }
 
 // Decode only local image data, including a draft restored from the durable queue.
-async function imageBitmap(content)
+async function imageDimensions(content)
 {
-    const [header,encoded]=content.split(',');
-    const bytes=Uint8Array.from(atob(encoded),character=>character.charCodeAt(0));
-    return createImageBitmap(new Blob([bytes],{type:header.slice(5,-7)}));
+    const image=new Image(); image.src=content;
+    await image.decode();
+    return {width:image.naturalWidth,height:image.naturalHeight};
 }
 
 // Preserve original bytes and dimensions for picker, drop, and clipboard input.
 async function addAttachments(files)
 {
     if (attaching || elements.prompt.disabled) return;
-    attaching=true; renderComposer();
+    attaching=true; attachmentError=''; renderComposer();
     try
     {
         const added=[];
         for (const file of files)
         {
             if (new TextEncoder().encode(file.name).length>255 || /[\u0000-\u001f\u007f]/u.test(file.name)) throw new Error('The attachment filename is too long or contains control characters.');
-            const mime=file.type || ({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp'}[file.name.split('.').at(-1).toLowerCase()] || '');
-            if (/^image\/(png|jpeg|webp)$/u.test(mime))
+            // Linux desktop MIME mappings can label valid JPEGs as binary data; inspect their bytes.
+            const header=Array.from(new Uint8Array(await file.slice(0,12).arrayBuffer()),byte=>byte.toString(16).padStart(2,'0')).join('');
+            let mime='';
+            if (header.startsWith('ffd8ff')) mime='image/jpeg';
+            else if (header.startsWith('89504e470d0a1a0a')) mime='image/png';
+            else if (header.startsWith('52494646') && header.slice(16,24)==='57454250') mime='image/webp';
+            if (mime)
             {
-                const bitmap=await createImageBitmap(file);
-                try { added.push({kind:'image',name:file.name,content:await imageData(new Blob([file],{type:mime})),width:bitmap.width,height:bitmap.height}); }
-                finally { bitmap.close(); }
+                const content=await imageData(new Blob([file],{type:mime}));
+                added.push({kind:'image',name:file.name,content,...await imageDimensions(content)});
             }
             else
             {
@@ -47,7 +51,7 @@ async function addAttachments(files)
         }
         draftAttachments.push(...added); steerId=null; elements.status.textContent='';
     }
-    catch (error) { elements.status.textContent=error.message; }
+    catch (error) { attachmentError=error.name==='NotReadableError'?'The browser could not read the selected file. Check read permissions for the user running the browser.':error.message; }
     finally { attaching=false; elements['attachment-input'].value=''; renderComposer(); }
 }
 
@@ -62,7 +66,7 @@ async function confirmInputCost(text,attachments)
         {
             if (!file.width || !file.height)
             {
-                const bitmap=await imageBitmap(file.content); file.width=bitmap.width; file.height=bitmap.height; bitmap.close();
+                Object.assign(file,await imageDimensions(file.content));
             }
             tokens+=Math.ceil(file.width/32)*Math.ceil(file.height/32)*1.2;
         }
@@ -88,8 +92,9 @@ function renderAttachments()
 {
     elements['attach'].disabled=attaching || elements.prompt.disabled;
     elements['attachments'].hidden=!draftAttachments.length;
-    elements['attachment-note'].hidden=!draftAttachments.length && !attaching;
-    elements['attachment-note'].textContent=attaching?'Preparing attachments…':'Original attachments · Large inputs require confirmation before sending';
+    elements['attachment-note'].hidden=!draftAttachments.length && !attaching && !attachmentError;
+    elements['attachment-note'].classList.toggle('error',!!attachmentError);
+    elements['attachment-note'].textContent=attachmentError || (attaching?'Preparing attachments…':'Original attachments · Large inputs require confirmation before sending');
     const key=JSON.stringify(draftAttachments.map(item=>[item.name,item.kind,item.content.length]));
     if (elements.attachments.dataset.key===key) return;
     elements.attachments.dataset.key=key;

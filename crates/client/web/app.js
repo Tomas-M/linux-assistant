@@ -1,10 +1,4 @@
 'use strict';
-const token=location.hash.slice(1) || sessionStorage.getItem('assistant-token');
-if (location.hash)
-{
-    sessionStorage.setItem('assistant-token',token);
-    history.replaceState(null,'',location.pathname+location.search);
-}
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
 let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
 const pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
@@ -24,7 +18,7 @@ elements.theme.setAttribute('aria-label',document.documentElement.dataset.theme=
 // Keep every operation on the authenticated loopback origin.
 async function api(path,body)
 {
-    const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+    const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
     if (response.status===413) throw new Error('This request exceeds the HTTP transport size limit (64 MiB). Nothing was sent to the AI.');
     const value=await response.json();
     if (!response.ok) throw new Error(value.error || 'Request failed');
@@ -433,8 +427,8 @@ async function watch()
     {
         try
         {
-            const response=await fetch('/api/events',{headers:{Authorization:'Bearer '+token}});
-            if (!response.ok) throw new Error('Open the URL printed by the executable to authorize this tab.');
+            const response=await fetch('/api/events');
+            if (!response.ok) throw new Error('The local assistant rejected the connection.');
             if (elements.status.dataset.connection) { elements.status.textContent=''; delete elements.status.dataset.connection; }
             const reader=response.body.getReader(), decoder=new TextDecoder();
             let buffer='';

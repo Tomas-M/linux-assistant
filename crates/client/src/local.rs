@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{engine::Engine, processes::Processes, storage};
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Connection { pub url: String, pub secret: String }
+pub struct Connection { pub url: String }
 #[derive(Clone)]
 struct Local { brand:Arc<crate::config::Brand>, session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
 struct LocalError(anyhow::Error);
@@ -25,18 +25,18 @@ impl IntoResponse for LocalError {
 }
 
 impl Connection {
-    /// Attach the local capability token only to the exact loopback origin.
+    /// Send requests only to the exact loopback origin.
     pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
         self.request(reqwest::Method::POST,path,Some(body)).await
     }
     /// Read shared daemon state from terminal clients.
     pub async fn get(&self, path: &str) -> Result<Value> { self.request(reqwest::Method::GET,path,None).await }
-    /// Refuse tampered discovery URLs before sending the local capability token.
+    /// Refuse discovery files that point outside the local computer.
     async fn request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
         let url = reqwest::Url::parse(&self.url)?;
         anyhow::ensure!(url.scheme()=="http" && url.host_str()==Some("127.0.0.1") && url.username().is_empty() && url.password().is_none(),"Invalid local daemon address");
         let mut request = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?
-            .request(method,format!("{}{path}",self.url)).bearer_auth(&self.secret);
+            .request(method,format!("{}{path}",self.url));
         // Approved commands can run indefinitely while the terminal waits for their result.
         if !matches!(path,"/api/command"|"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(1800)); }
         if let Some(body) = body { request = request.json(&body); }
@@ -90,7 +90,7 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     if lock.try_lock_exclusive().is_err() { return Ok(()); }
     let engine = Engine::open(&directory,backend).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let connection = Connection { url:format!("http://{}",listener.local_addr()?),secret:format!("{}{}",Uuid::new_v4().simple(),Uuid::new_v4().simple()) };
+    let connection = Connection { url:format!("http://{}",listener.local_addr()?) };
     storage::write(&directory.join("daemon.json"),&connection)?;
     engine.live.0.send_modify(|view|view["brand"]=brand.metadata());
     let processes=engine.processes.clone();
@@ -133,22 +133,19 @@ fn router(state: Local) -> Router {
         .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
 }
 
-/// Block DNS rebinding, cross-origin requests, and unauthenticated local API callers.
+/// Keep the local API accessible to local users while rejecting unrelated websites and DNS rebinding.
 async fn security(State(state): State<Local>, request: Request<Body>, next: Next) -> Response {
     let host = state.connection.url.strip_prefix("http://").unwrap();
     if request.headers().get(header::HOST).and_then(|v|v.to_str().ok()) != Some(host) { return StatusCode::FORBIDDEN.into_response(); }
     if let Some(origin) = request.headers().get(header::ORIGIN) {
         if origin.to_str().ok()!=Some(state.connection.url.as_str()) { return StatusCode::FORBIDDEN.into_response(); }
     }
-    if request.uri().path().starts_with("/api/") {
-        let expected = format!("Bearer {}",state.connection.secret);
-        if request.headers().get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()) != Some(expected.as_str()) {
-            return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Open the assistant from its executable to authorize this tab"}))).into_response();
-        }
+    if request.uri().path().starts_with("/api/") && request.headers().get("sec-fetch-site").is_some_and(|site|site!="same-origin" && site!="none") {
+        return StatusCode::FORBIDDEN.into_response();
     }
     let mut response = next.run(request).await;
     for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
-        ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
+        ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
         response.headers_mut().insert(axum::http::HeaderName::from_static(key),value.parse().unwrap());
     }
     response
@@ -377,8 +374,8 @@ mod tests {
         let live=engine.live.clone();
         let processes=engine.processes.clone();
         let app=router(Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
-            connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) });
-        let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json")
+            connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) });
+        let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("content-type","application/json")
             .body(Body::from(json!({"text":"Write a marker","cwd":directory.path()}).to_string()))?;
         let caller=tokio::spawn(app.clone().oneshot(request));
         tokio::time::timeout(Duration::from_secs(10),async {
@@ -386,7 +383,7 @@ mod tests {
         }).await?;
         caller.abort();
         for (method,path,body) in [("POST","/api/access","{\"enabled\":false}"),("GET","/api/state",""),("GET","/api/events","")] {
-            let request=Request::builder().method(method).uri(path).header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json").body(Body::from(body))?;
+            let request=Request::builder().method(method).uri(path).header("host","127.0.0.1:1234").header("content-type","application/json").body(Body::from(body))?;
             assert_eq!(tokio::time::timeout(Duration::from_secs(1),app.clone().oneshot(request)).await??.status(),StatusCode::OK);
         }
         tokio::time::timeout(Duration::from_secs(10),async {
@@ -411,7 +408,7 @@ mod tests {
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -426,7 +423,7 @@ mod tests {
             }
         }).await?;
         for (method,path) in [("GET","/api/processes".into()),("GET",format!("/api/processes/{id}")),("POST",format!("/api/processes/{id}/stop"))] {
-            let request=Request::builder().method(method).uri(path).header(header::HOST,"127.0.0.1:1234").header(header::AUTHORIZATION,"Bearer test-token").body(Body::empty())?;
+            let request=Request::builder().method(method).uri(path).header(header::HOST,"127.0.0.1:1234").body(Body::empty())?;
             let response=tokio::time::timeout(Duration::from_secs(1),app.clone().oneshot(request)).await??;
             assert_eq!(response.status(),StatusCode::OK);
         }
@@ -456,7 +453,7 @@ mod tests {
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("checkout-fixture".into());
         engine.settings(false)?;
-        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let _busy=local.engine.lock().await;
         let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
@@ -466,26 +463,27 @@ mod tests {
         Ok(())
     }
 
-    /// Possession of a token cannot bypass the Host and Origin checks.
+    /// Plain URLs work without tokens; branding is immediate and unrelated websites remain blocked.
     #[tokio::test]
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;
         assert!(html.contains("<title>Slax 世界 &amp; &lt;AI&gt;</title>"));
         assert!(!html.contains("{{APP_NAME}}") && !html.contains("<title>Linux Assistant</title>"));
-        for (host,origin,token,status) in [
-            ("127.0.0.1:1234",None,None,StatusCode::UNAUTHORIZED),
-            ("evil.example",None,Some("Bearer test-token"),StatusCode::FORBIDDEN),
-            ("127.0.0.1:1234",Some("https://evil.example"),Some("Bearer test-token"),StatusCode::FORBIDDEN),
-            ("127.0.0.1:1234",None,Some("Bearer test-token"),StatusCode::OK),
+        for (host,origin,site,status) in [
+            ("127.0.0.1:1234",None,None,StatusCode::OK),
+            ("evil.example",None,None,StatusCode::FORBIDDEN),
+            ("127.0.0.1:1234",Some("https://evil.example"),None,StatusCode::FORBIDDEN),
+            ("127.0.0.1:1234",None,Some("cross-site"),StatusCode::FORBIDDEN),
+            ("127.0.0.1:1234",None,Some("same-origin"),StatusCode::OK),
         ] {
             let mut request = Request::builder().uri("/api/state").header(header::HOST,host);
             if let Some(origin) = origin { request = request.header(header::ORIGIN,origin); }
-            if let Some(token) = token { request = request.header(header::AUTHORIZATION,token); }
+            if let Some(site) = site { request = request.header("sec-fetch-site",site); }
             assert_eq!(app.clone().oneshot(request.body(Body::empty())?).await?.status(),status);
         }
         Ok(())

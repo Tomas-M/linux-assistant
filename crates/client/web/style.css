@@ -87,6 +87,7 @@ textarea::placeholder { color:var(--muted); }
 .attachment button { display:flex; border:0; background:none; padding:2px; flex-shrink:0; }
 .attachment svg { width:14px; height:14px; }
 .attachment-note { font-size:13px; color:var(--muted); margin:8px 0 0; }
+.attachment-note.error { color:var(--warning); }
 .sent-attachment { margin:8px 6px 0 0; overflow-wrap:anywhere; }
 .composer.dragging { outline:2px dashed var(--accent); outline-offset:4px; background:var(--accent-soft); }
 .action-item { margin:3px 0; min-width:0; }

@@ -113,10 +113,10 @@ fn display(state: &Value, show_text: bool) {
 
 /// Observe the same live snapshots as the browser while a durable local operation runs.
 async fn live_post(connection: &Connection, path: &str, body: Value) -> Result<Value> {
-    // Validate discovery before attaching the capability to a second connection.
+    // Validate discovery before opening a second local connection.
     connection.get("/api/health").await?;
     let mut events=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?
-        .get(format!("{}/api/events",connection.url)).bearer_auth(&connection.secret).send().await?.error_for_status()?;
+        .get(format!("{}/api/events",connection.url)).send().await?.error_for_status()?;
     let operation=connection.post(path,body);
     tokio::pin!(operation);
     let mut decoder=crate::stream::Decoder::local();
