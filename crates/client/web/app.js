@@ -595,7 +595,12 @@ elements['code-form'].addEventListener('submit',async event=>
         elements.prompt.focus();
     }
     catch (error) { elements['auth-status'].textContent=error.message; }
-    finally { loginBusy=false; renderLogin(); }
+    finally
+    {
+        loginBusy=false; renderLogin();
+        // Disabling the fieldset during verification drops focus; restore it after a failed attempt.
+        if (!elements['code-form'].hidden) { codeInputs.at(-1).focus(); codeInputs.at(-1).select(); }
+    }
 });
 
 // Accept a full pasted/autofilled code in any cell, or advance one digit at a time.
