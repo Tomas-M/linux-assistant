@@ -5,7 +5,7 @@ use crate::local::Connection;
 
 /// Run the terminal frontend against exactly the same daemon as browser mode.
 pub async fn run(connection: Connection) -> Result<()> {
-    println!("Linux Assistant — /help for commands, /quit to leave the prompt");
+    println!("{} — /help for commands, /quit to leave the prompt",safe(connection.get("/api/branding").await?["name"].as_str().unwrap()));
     let mut state = connection.get("/api/state").await?;
     println!("Local shell: {}",state["shell"].as_str().unwrap());
     if state["authenticated"]==true {

@@ -18,7 +18,7 @@ async fn read(output:&mut BufReader<ChildStdout>,line:&mut Vec<u8>)->Result<Valu
         let chunk=output.fill_buf().await?;
         ensure!(!chunk.is_empty(),"Embedded Codex stopped unexpectedly");
         let count=chunk.iter().position(|b|*b==b'\n').map_or(chunk.len(),|i|i+1);
-        ensure!(line.len()+count<=2_000_000,"Provider event exceeds size limit");
+        ensure!(line.len()+count<=protocol::MAX_UPLOAD_BYTES+2_000_000,"Provider event exceeds size limit");
         let complete=chunk[count-1]==b'\n';
         line.extend_from_slice(&chunk[..count]);
         output.consume(count);

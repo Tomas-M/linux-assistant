@@ -47,7 +47,7 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     assert!(stopped.err().unwrap().downcast_ref::<crate::turns::Interrupted>().is_some());
     assert!(!tasks[0].is_finished());
     let (reply,ack)=tokio::sync::oneshot::channel();
-    controls[0].send(crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"Only the first conversation 世界".into() },reply)).await?;
+    controls[0].send(crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"Only the first conversation 世界".into() },reply)).await?;
     ack.await?.map_err(anyhow::Error::msg)?;
     let answer=tokio::time::timeout(Duration::from_secs(5),tasks.pop().unwrap()).await???;
     assert_eq!(answer.reply.text,"Steered: Only the first conversation 世界");

@@ -114,7 +114,7 @@ mod tests {
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
         ChatRequest { task_id:id,request_id:id,conversation_id:Uuid::new_v4(),base:0,platform:Platform::Linux,
-            messages:vec![Message { role:Role::User,text:"Inspect my computer".into() }],commands_enabled:true,cwd:"/tmp".into() }
+            messages:vec![Message { attachments:None, role:Role::User,text:"Inspect my computer".into() }],commands_enabled:true,cwd:"/tmp".into() }
     }
 
     /// Feed actual usage notifications twice to verify that duplicate snapshots cannot double-charge.
@@ -152,7 +152,7 @@ mod tests {
         let pricing=crate::config::Config::parse_from(["server"]).pricing;
         let user=db.user("chain@example.test",None,1)?;
         let mut input=request();
-        let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }) };
+        let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { files:None, command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }) };
         assert!(matches!(db.reserve(user,&input,"one",&pricing)?,Reservation::New));
         assert_eq!(db.balance(user)?,1);
         measured(&db,user,&input,6000,0,0)?;
@@ -169,7 +169,7 @@ mod tests {
         assert!(matches!(db.reserve(user,&stale,"stale",&changed)?,Reservation::Stale));
         input.request_id=Uuid::new_v4();
         assert!(db.reserve(user,&input,"not-a-tool",&changed).is_err());
-        input.messages=vec![Message { role:Role::Tool,text:"Linux".into() }];
+        input.messages=vec![Message { attachments:None, role:Role::Tool,text:"Linux".into() }];
         assert!(matches!(db.reserve(user,&input,"two",&changed)?,Reservation::New));
         measured(&db,user,&input,3000,0,0)?;
         input.base=db.complete(user,&input,&command,None,None,None)?.revision;
@@ -244,7 +244,7 @@ mod tests {
         assert!(matches!(db.reserve(zero,&request(),"zero",&config.pricing)?,Reservation::Insufficient));
         let mut stolen=first;
         stolen.request_id=Uuid::new_v4();
-        stolen.messages=vec![Message { role:Role::Tool,text:"fake output".into() }];
+        stolen.messages=vec![Message { attachments:None, role:Role::Tool,text:"fake output".into() }];
         assert!(db.reserve(zero,&stolen,"stolen",&config.pricing).is_err());
         Ok(())
     }

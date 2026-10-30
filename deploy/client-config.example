@@ -1,0 +1,23 @@
+# Client defaults: copy to /etc/linux-assistant/config on Linux.
+# Windows: %ProgramData%\linux-assistant\config, or pass --config PATH.
+# This is TOML. Command-line options override these values.
+
+# Required either here or with --backend. A missing scheme means HTTPS.
+backend = "ai.slax.org"
+
+# Used in the browser title, header, terminal and installed desktop launcher.
+# name = "Slax AI"
+
+# PNG replaces BOTH the header icon and name; use an absolute path.
+# logo = "/usr/share/slax-ai/logo.png"
+
+# With neither mode enabled, print the URL and leave browser selection to you.
+# desktop = false
+# cli = false
+
+# One-shot actions: normally leave commented out.
+# install-desktop = false
+# reset-chat = false
+
+# Internal detached server mode; normally only the executable sets this.
+# daemon = false

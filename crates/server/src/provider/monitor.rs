@@ -75,7 +75,7 @@ impl Pool {
         let account=self.accounts.get(index).context("Unknown account")?;
 
         let request=protocol::ChatRequest { task_id:uuid::Uuid::new_v4(),base:0,request_id:uuid::Uuid::new_v4(),conversation_id:uuid::Uuid::new_v4(),
-            platform:Platform::Linux,messages:vec![protocol::Message { role:Role::User,text:prompt }],commands_enabled:false,cwd:"/".into() };
+            platform:Platform::Linux,messages:vec![protocol::Message { attachments:None, role:Role::User,text:prompt }],commands_enabled:false,cwd:"/".into() };
         let mut attempt=crate::usage::Attempt::start(db,None,&request,&account.home,"admin_test")?;
         let result=tokio::time::timeout(Duration::from_secs(180),async {
             let mut rpc=self.rpc(index).await?;

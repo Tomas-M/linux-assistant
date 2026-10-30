@@ -37,7 +37,7 @@ mod tests {
     async fn stopped_preview_survives_refresh_and_next_task()->Result<()> {
         let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        engine.saved.messages.push(Message { role:Role::User,text:"Check the logs".into() });
+        engine.saved.messages.push(Message { attachments:None, role:Role::User,text:"Check the logs".into() });
         engine.begin_activity(0);
         engine.live.activity("Checking logs…",Some(protocol::Progress { text:"Partial response 世界".into(),summaries:vec![protocol::ProgressText { id:"summary".into(),text:"Looking for repeated failures.".into() }],..Default::default() }));
         engine.controls.stopped.store(true,Ordering::SeqCst);

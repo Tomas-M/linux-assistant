@@ -3,6 +3,9 @@ use uuid::Uuid;
 
 pub const MAX_REQUEST_BYTES: usize = 96_000;
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
+pub const MAX_UPLOAD_BYTES: usize = 64*1024*1024;
+mod attachments;
+pub use attachments::{Attachment,validate_input,provider_input,display_messages,recovery_messages};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -20,7 +23,7 @@ impl Platform {
 pub enum Role { User, Assistant, Tool }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct Message { pub role: Role, pub text: String }
+pub struct Message { pub role: Role, pub text: String, pub attachments: Option<Vec<Attachment>> }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatRequest {
@@ -36,17 +39,17 @@ pub struct ChatRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CommandProposal { pub command: String, pub cwd: String, pub reason: String }
+pub struct CommandProposal { pub command: String, pub cwd: String, pub reason: String, pub files: Option<Vec<String>> }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantReply { pub text: String, pub command: Option<CommandProposal> }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ChatResponse { pub reply: AssistantReply, pub credits: i64, pub revision: usize, pub steering: Vec<Steering> }
+pub struct ChatResponse { pub reply: AssistantReply, pub credits: i64, pub revision: usize, pub steering: Vec<Steering>, pub progress:Option<Progress> }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct Steering { pub id: Uuid, pub text: String }
+pub struct Steering { pub id: Uuid, pub text: String, pub attachments: Option<Vec<Attachment>> }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Progress {
@@ -54,6 +57,7 @@ pub struct Progress {
     pub activity: Option<String>,
     pub summaries: Vec<ProgressText>,
     pub text: String,
+    pub compacted: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -65,11 +69,11 @@ pub struct ProgressText { pub id: String, pub text: String }
 pub enum ChatEvent {
     Progress { progress: Progress },
     Complete { response: ChatResponse },
-    Error { message: String, settled: bool, credits: Option<i64>, steering: Vec<Steering> },
+    Error { message: String, settled: bool, credits: Option<i64>, steering: Vec<Steering>, progress:Option<Progress> },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Account { pub email: String, pub credits: i64, pub development: bool }
+pub struct Account { pub email: String, pub credits: i64, pub development: bool, pub input_credits_per_million:f64 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DeviceLogin {
@@ -100,8 +104,9 @@ pub fn reply_schema() -> serde_json::Value {
         "properties":{
             "text":{"type":"string"},
             "command":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,
-                "required":["command","cwd","reason"],"properties":{
-                    "command":{"type":"string"},"cwd":{"type":"string"},"reason":{"type":"string"}
+                "required":["command","cwd","reason","files"],"properties":{
+                    "command":{"type":"string"},"cwd":{"type":"string"},"reason":{"type":"string"},
+                    "files":{"type":"array","items":{"type":"string"},"description":"Explicit paths this command may create, edit or delete; empty for read-only commands. No globs or directories."}
                 }}]}
         }
     })

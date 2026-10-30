@@ -9,7 +9,7 @@ use uuid::Uuid;
 fn request() -> ChatRequest {
     let id=Uuid::new_v4();
     ChatRequest { task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:Platform::Linux,
-        messages:vec![Message { role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
+        messages:vec![Message { attachments:None, role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
 }
 
 /// Persist a provider success exactly as the production HTTP handler does.
@@ -19,7 +19,7 @@ async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut Ch
     let completed=db.complete(user,request,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())?;
     request.base=completed.revision;
     request.messages.clear();
-    request.messages.push(Message { role:Role::User,text:"Continue".into() });
+    request.messages.push(Message { attachments:None, role:Role::User,text:"Continue".into() });
     request.request_id = Uuid::new_v4();
     request.task_id=request.request_id;
     Ok(answer)
@@ -272,14 +272,15 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     drop(rpc);
     let mut rpc=Rpc::start_unauthenticated(&executable,&directory.path().to_string_lossy()).await?;
     rpc.call("thread/resume",json!({"threadId":id,"modelProvider":"fixture","config":provider,"excludeTurns":true})).await?;
-    chat.messages=vec![Message { role:Role::User,text:"Continue".into() }];
+    let image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    chat.messages=vec![Message { attachments:Some(vec![protocol::Attachment::Image { name:"screen.png".into(),content:image.into() },protocol::Attachment::Text { name:"日志.txt".into(),content:"ATTACHED_TEXT 世界".into() }]),role:Role::User,text:"Continue".into() }];
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let mut attempt=crate::usage::Attempt::start(&db,None,&chat,"embedded-fixture","admin_test")?;
     let user=db.user("native-steer@example.test",None,5)?;
     db.reserve(user,&chat,"native",&settings.pricing)?;
     let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
     let (ack,result)=tokio::sync::oneshot::channel();
-    sender.send(crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"NATIVE_STEER 世界".into() },ack)).await?;
+    sender.send(crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"NATIVE_STEER 世界".into() },ack)).await?;
     let (reply,returned,checkpoint)=tokio::time::timeout(Duration::from_secs(40),rpc.answer(&settings,&chat,Some(id),&Value::Null,true,Some(user),Some(&mut receiver),&attempt,&mut progress::Reporter::new(None,1))).await??;
     assert!(result.await?.is_ok());
     assert_eq!(db.steering(user,chat.request_id)?.len(),1);
@@ -289,6 +290,8 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     assert_eq!(returned,id);
     assert_eq!(checkpoint.as_deref(),Some("Embedded recovery checkpoint"));
     assert_eq!(requests.lock().unwrap().last().unwrap()["reasoning"]["effort"],"high");
+    assert!(requests.lock().unwrap().iter().any(|request|request["input"].as_array().unwrap().iter().any(|item|item["content"].as_array().is_some_and(|content|content.iter().any(|part|part["type"]=="input_image" && part["image_url"]==image)))));
+    assert!(requests.lock().unwrap().iter().any(|request|request.to_string().contains("ATTACHED_TEXT")));
     rpc.call("thread/compact/start",json!({"threadId":id})).await?;
     tokio::time::timeout(Duration::from_secs(40),async {
         let mut compacted=false;
@@ -373,7 +376,7 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let mut chat=request();
     for _ in 0..16 {
-        chat.messages=vec![Message { role:Role::User,text:format!("IMPORTANT_GOAL {}", "世界".repeat(2000)) }];
+        chat.messages=vec![Message { attachments:None, role:Role::User,text:format!("IMPORTANT_GOAL {}", "世界".repeat(2000)) }];
         turn(&pool,&config,&db,user,&mut chat).await?;
     }
     let saved=db.conversation(user,chat.conversation_id)?;
@@ -417,14 +420,14 @@ async fn integration_provider_controls() -> Result<()> {
                 for balance in [0,-1] {
                     db.0.lock().unwrap().execute("UPDATE ledger SET delta=?1 WHERE user_id=?2",rusqlite::params![balance,user]).unwrap();
                     let (reply,ack)=tokio::sync::oneshot::channel();
-                    sender.send(crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"Must not reach Codex".into() },reply)).await.unwrap();
+                    sender.send(crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"Must not reach Codex".into() },reply)).await.unwrap();
                     assert!(ack.await.unwrap().unwrap_err().contains("Add credits to steer"));
                     assert!(db.steering(user,chat.request_id).unwrap().is_empty());
                 }
                 db.0.lock().unwrap().execute("UPDATE ledger SET delta=5 WHERE user_id=?1",[user]).unwrap();
             }
             let (reply,ack)=tokio::sync::oneshot::channel();
-            let control=if stop { crate::turns::Control::Stop(reply) } else { crate::turns::Control::Steer(protocol::Steering { id:Uuid::new_v4(),text:"Switch to 世界".into() },reply) };
+            let control=if stop { crate::turns::Control::Stop(reply) } else { crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"Switch to 世界".into() },reply) };
             sender.send(control).await.unwrap();
             assert!(ack.await.unwrap().is_ok());
         };

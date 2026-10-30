@@ -25,6 +25,12 @@ impl Reporter {
         match event["method"].as_str() {
             Some("item/started"|"item/completed") if params["item"]["type"]=="contextCompaction" => {
                 self.snapshot.activity=(event["method"]=="item/started").then(||"Compacting context…".into());
+                if event["method"]=="item/completed" {
+                    if let Some(id)=params["item"]["id"].as_str() {
+                        let compacted=self.snapshot.compacted.get_or_insert_with(Vec::new);
+                        if !compacted.iter().any(|old|old==id) { compacted.push(id.into()); }
+                    }
+                }
             }
             Some("item/started") if params["item"]["type"]=="agentMessage" => {
                 self.item=params["item"]["id"].as_str().unwrap_or_default().into();
@@ -115,6 +121,18 @@ fn text_prefix(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fast completion retains each compaction exactly once in the latest progress snapshot.
+    #[test]
+    fn retains_completed_compaction()->Result<()> {
+        let mut reporter=Reporter::new(None,1);
+        reporter.event(&serde_json::json!({"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}))?;
+        assert_eq!(reporter.snapshot.activity.as_deref(),Some("Compacting context…"));
+        for _ in 0..2 { reporter.event(&serde_json::json!({"method":"item/completed","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}))?; }
+        assert!(reporter.snapshot.activity.is_none());
+        assert_eq!(reporter.snapshot.compacted.unwrap(),vec!["compact-1"]);
+        Ok(())
+    }
 
     /// Every transport split must preserve readable Unicode without exposing nested command text.
     #[test]

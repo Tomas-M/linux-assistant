@@ -11,7 +11,7 @@ use crate::{engine::Engine, processes::Processes, storage};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection { pub url: String, pub secret: String }
 #[derive(Clone)]
-struct Local { session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
+struct Local { brand:Arc<crate::config::Brand>, session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
 struct LocalError(anyhow::Error);
 type LocalResult = std::result::Result<Json<Value>,LocalError>;
 
@@ -49,11 +49,13 @@ impl Connection {
 }
 
 /// Reuse a live daemon, or detach this executable and wait for its private discovery file.
-pub async fn connect(directory: &Path, backend:&str) -> Result<Connection> {
+pub async fn connect(directory: &Path, args:&crate::Args, brand:&crate::config::Brand) -> Result<Connection> {
+    let backend=args.backend.as_str();
     let path = directory.join("daemon.json");
     if let Ok(connection) = storage::read::<Connection>(&path) {
         if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
             anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client is already running for a different backend; stop it before changing servers");
+            anyhow::ensure!(connection.get("/api/branding").await?==brand.metadata(),"A client is already running with different branding; stop it before changing the name or logo");
             return Ok(connection);
         }
     }
@@ -63,17 +65,18 @@ pub async fn connect(directory: &Path, backend:&str) -> Result<Connection> {
         use std::process::Stdio;
         let log=OpenOptions::new().create(true).append(true).mode(0o600).open(directory.join("daemon.log"))?;
         let mut command=std::process::Command::new(std::env::current_exe()?);
-        command.args(["--daemon","--backend",backend]).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        command.args(args.daemon_args()).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
         unsafe { command.pre_exec(|| { if libc::setsid()==-1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
         command.spawn()?;
     }
     #[cfg(windows)]
-    crate::windows_launcher::spawn(backend)?;
+    crate::windows_launcher::spawn(&args.daemon_args())?;
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(connection) = storage::read::<Connection>(&path) {
             if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
                 anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client started for a different backend; stop it before changing servers");
+                anyhow::ensure!(connection.get("/api/branding").await?==brand.metadata(),"A client started with different branding; stop it before changing the name or logo");
                 return Ok(connection);
             }
         }
@@ -82,15 +85,16 @@ pub async fn connect(directory: &Path, backend:&str) -> Result<Connection> {
 }
 
 /// Bind loopback only and hold an exclusive lock for this entire daemon lifetime.
-pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
+pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) -> Result<()> {
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
     if lock.try_lock_exclusive().is_err() { return Ok(()); }
     let engine = Engine::open(&directory,backend).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let connection = Connection { url:format!("http://{}",listener.local_addr()?),secret:format!("{}{}",Uuid::new_v4().simple(),Uuid::new_v4().simple()) };
     storage::write(&directory.join("daemon.json"),&connection)?;
+    engine.live.0.send_modify(|view|view["brand"]=brand.metadata());
     let processes=engine.processes.clone();
-    let state = Local { session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let state = Local { brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
     tokio::select! {
         result=axum::serve(listener,router(state)).into_future() => result?,
@@ -107,14 +111,17 @@ pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
 fn router(state: Local) -> Router {
     Router::new()
         .route("/",get(||async { Html(include_str!("../web/index.html")) }))
+        .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
+        .route("/logo.png",get(|State(state):State<Local>|async move { match &state.brand.logo { Some(bytes)=>([(header::CONTENT_TYPE,"image/png")],bytes.clone()).into_response(),None=>StatusCode::NOT_FOUND.into_response() } }))
+        .route("/api/branding",get(|State(state):State<Local>|async move { Json(state.brand.metadata()) }))
         .route("/api/health",get(||async { Json(json!({"ok":true})) }))
         .route("/api/events",get(events)).route("/api/access",post(access))
         .route("/api/state",get(state_view)).route("/api/account",post(account))
         .route("/api/settings",post(settings))
         .route("/api/login",post(login)).route("/api/login/verify",post(verify_login)).route("/api/logout",post(logout))
-        .route("/api/chat",post(chat)).route("/api/steer",post(steer)).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
+        .route("/api/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/steer",post(steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
         .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
         .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/stop",post(stop))
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
@@ -132,7 +139,7 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
     if request.uri().path().starts_with("/api/") {
         let expected = format!("Bearer {}",state.connection.secret);
         if request.headers().get(header::AUTHORIZATION).and_then(|v|v.to_str().ok()) != Some(expected.as_str()) {
-            return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Open Linux Assistant from its executable to authorize this tab"}))).into_response();
+            return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Open the assistant from its executable to authorize this tab"}))).into_response();
         }
     }
     let mut response = next.run(request).await;
@@ -150,7 +157,7 @@ struct EmailInput { email: String }
 #[derive(Deserialize)]
 struct CodeInput { code: String }
 #[derive(Deserialize)]
-struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid> }
+struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid>, attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Deserialize)]
 struct Decision { id: Uuid, approve: bool }
 
@@ -193,7 +200,7 @@ async fn logout(State(state): State<Local>) -> LocalResult {
 /// Accept only text and a working directory, never client-supplied tool definitions.
 async fn chat(State(state): State<Local>, Json(input): Json<ChatInput>) -> LocalResult {
     let cwd = match input.cwd { Some(path) => path,None => dirs::home_dir().context("Home directory not found")?.to_string_lossy().into_owned() };
-    state.controls.enqueue(crate::controls::Queued { id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
+    state.controls.enqueue(crate::controls::Queued { attachments:input.attachments, id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
     if state.live.0.borrow()["busy"]==true || !state.live.0.borrow()["state"]["pending"].is_null() { return Ok(Json(state.live.0.borrow()["state"].clone())); }
     run(state,Operation::Next).await
 }
@@ -221,7 +228,7 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
     state.live.0.send_modify(|view| {
         if view["busy"]==true {
             let inputs=view["steering"].as_array_mut().unwrap();
-            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) { inputs.push(json!(input)); }
+            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) { inputs.push(protocol::display_messages(&[input])[0].clone()); }
         }
     });
 }
@@ -343,10 +350,10 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
         let provider=Router::new().route("/v1/chat",post(|Json(request):Json<protocol::ChatRequest>|async move {
-            let proposal=protocol::CommandProposal { cwd:request.cwd,reason:"Write one marker".into(),
+            let proposal=protocol::CommandProposal { files:None, cwd:request.cwd,reason:"Write one marker".into(),
                 command:if cfg!(windows) { "Add-Content -Encoding UTF8 -LiteralPath 'runs.txt' -Value 'once'; Start-Sleep -Milliseconds 700" }
                     else { "printf 'once\\n' >> runs.txt; sleep 0.7" }.into() };
-            let response=protocol::ChatResponse { reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
+            let response=protocol::ChatResponse { progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });
@@ -357,7 +364,7 @@ mod tests {
         engine.full_access.store(true,std::sync::atomic::Ordering::SeqCst);
         let live=engine.live.clone();
         let processes=engine.processes.clone();
-        let app=router(Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
+        let app=router(Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
             connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) });
         let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json")
             .body(Body::from(json!({"text":"Write a marker","cwd":directory.path()}).to_string()))?;
@@ -392,10 +399,10 @@ mod tests {
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
-        let proposal=protocol::CommandProposal { reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
+        let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
             command:if cfg!(windows) { "[Console]::Out.WriteLine('live 世界'); [Console]::Error.WriteLine('problem'); Start-Sleep 20" } else { "printf 'live 世界\\n'; printf 'problem\\n' >&2; sleep 20" }.into() };
         let runner=processes.clone();
         let task=tokio::spawn(async move { runner.run(id,&proposal).await });
@@ -434,7 +441,7 @@ mod tests {
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("checkout-fixture".into());
         engine.settings(false)?;
-        let local=Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let _busy=local.engine.lock().await;
         let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
@@ -447,7 +454,7 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         for (host,origin,token,status) in [
             ("127.0.0.1:1234",None,None,StatusCode::UNAUTHORIZED),

@@ -7,7 +7,7 @@ use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::{OpenProc
 async fn captures_unicode_quotes_directory_and_exit() -> Result<()> {
     let dir = tempfile::Builder::new().prefix("assistant Žluťoučký 世界 ").tempdir()?;
     std::fs::write(dir.path().join("日本語 ' file.txt"),"Příliš žluťoučký 世界")?;
-    let result = run(&CommandProposal { 
+    let result = run(&CommandProposal { files:None,
         command:"Get-Content -Encoding UTF8 -LiteralPath \"日本語 ' file.txt\"; Write-Output 'quote \" and $literal'; [Console]::Error.WriteLine('problem'); exit 7".into(),
         cwd:dir.path().to_string_lossy().into_owned(),reason:"test".into(),
     }).await?;
@@ -21,7 +21,7 @@ async fn captures_unicode_quotes_directory_and_exit() -> Result<()> {
 async fn reports_cmdlet_and_native_failures() -> Result<()> {
     let dir = tempfile::tempdir()?;
     for (script,code) in [("Write-Error 'failed'; Write-Output 'must not run'","1"),("& $env:ComSpec /d /c 'exit 9'","9")] {
-        let result = run(&CommandProposal {  command:script.into(),cwd:dir.path().to_string_lossy().into_owned(),reason:"test".into() }).await?;
+        let result = run(&CommandProposal { files:None,  command:script.into(),cwd:dir.path().to_string_lossy().into_owned(),reason:"test".into() }).await?;
         assert!(result.contains(&format!("Exit status: exit code: {code}")) && !result.contains("\nstdout:\nmust not run"),"{result}");
     }
     Ok(())
@@ -31,7 +31,7 @@ async fn reports_cmdlet_and_native_failures() -> Result<()> {
 #[tokio::test]
 async fn bounds_both_output_streams() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let result = run(&CommandProposal {  command:"[Console]::Out.Write(('界'*200000)); [Console]::Error.Write(('é'*200000))".into(),
+    let result = run(&CommandProposal { files:None,  command:"[Console]::Out.Write(('界'*200000)); [Console]::Error.Write(('é'*200000))".into(),
         cwd:dir.path().to_string_lossy().into_owned(),reason:"test".into() }).await?;
     assert_eq!(result.matches("[output truncated]").count(),2);
     assert!(result.len()<49_000);
@@ -59,7 +59,7 @@ async fn descendant(dir: &std::path::Path) -> Result<OwnedHandle> {
 async fn kills_process_tree_on_stop_and_cancellation() -> Result<()> {
     for abort in [false,true] {
         let dir = tempfile::tempdir()?;
-        let proposal = CommandProposal { 
+        let proposal = CommandProposal { files:None,
             command:"$child = Start-Process -FilePath \"$PSHOME\\powershell.exe\" -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep 60' -WindowStyle Hidden -PassThru; [IO.File]::WriteAllText((Join-Path $PWD 'child.pid'),[string]$child.Id); Start-Sleep 60".into(),
             cwd:dir.path().to_string_lossy().into_owned(),reason:"test".into(),
         };
@@ -89,7 +89,7 @@ async fn kills_process_tree_on_stop_and_cancellation() -> Result<()> {
 async fn rejects_invalid_working_directories() -> Result<()> {
     let dir = tempfile::tempdir()?;
     for cwd in ["relative".into(),dir.path().join("missing").to_string_lossy().into_owned()] {
-        assert!(run(&CommandProposal {  command:"Write-Output 'unexpected'".into(),cwd,reason:"test".into() }).await.is_err());
+        assert!(run(&CommandProposal { files:None,  command:"Write-Output 'unexpected'".into(),cwd,reason:"test".into() }).await.is_err());
     }
     Ok(())
 }

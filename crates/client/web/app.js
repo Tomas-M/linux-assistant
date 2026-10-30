@@ -25,6 +25,7 @@ elements.theme.setAttribute('aria-label',document.documentElement.dataset.theme=
 async function api(path,body)
 {
     const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+    if (response.status===413) throw new Error('This request exceeds the HTTP transport size limit (64 MiB). Nothing was sent to the AI.');
     const value=await response.json();
     if (!response.ok) throw new Error(value.error || 'Request failed');
     return value;
@@ -71,6 +72,19 @@ function render()
 {
     if (!state) return;
     busy=view.busy || acting;
+    if (view.brand)
+    {
+        document.title=view.brand.name;
+        elements['brand-name'].textContent=view.brand.name;
+        elements.brand.setAttribute('aria-label',view.brand.name+' home');
+        elements['brand-logo'].hidden=!view.brand.logo;
+        elements['brand-mark'].hidden=!!view.brand.logo;
+        elements['brand-name'].hidden=!!view.brand.logo;
+        if (view.brand.logo && elements['brand-logo'].dataset.hash!==view.brand.logo)
+        {
+            elements['brand-logo'].src='/logo.png'; elements['brand-logo'].alt=view.brand.name; elements['brand-logo'].dataset.hash=view.brand.logo;
+        }
+    }
     document.body.classList.toggle('signed-out',!state.authenticated);
     elements.setup.hidden=state.authenticated;
     elements['composer-wrap'].hidden=!state.authenticated;
@@ -139,7 +153,7 @@ function render()
             renderCommandGroup(messageRows[index],index,end,commands);
             return;
         }
-        const progress=progressByMessage.get(index) || [], key=JSON.stringify(progress);
+        const progress=progressByMessage.get(index) || [], key=JSON.stringify([progress,message.attachments]);
         if (previous?.text===message.text && previous.role===message.role && previous.progress===key) return;
         const group=document.createElement('div');
         if (previous) previous.element.replaceWith(group);
@@ -166,6 +180,7 @@ function render()
         if (message.role==='assistant') renderAnswer(text,message.text);
         else text.textContent=message.text;
         article.append(text);
+        for (const file of message.attachments || []) { const chip=document.createElement('span'); chip.className='attachment sent-attachment'; chip.textContent=file.name; article.append(chip); }
         group.append(article);
         if (message.role==='user')
         {
@@ -182,6 +197,7 @@ function render()
         }
     });
     renderCompletions();
+    renderCompactions();
     const activity=view.activity;
     const groupedCommand=activity?.progress===null && state.messages.at(-1)?.role==='tool';
     elements.activity.hidden=!activity || !view.busy || groupedCommand;
@@ -233,25 +249,87 @@ function renderCommandGroup(row,start,end,commands)
     const activity=active && view.activity?.progress===null?view.activity.label:'';
     row.activity.hidden=!activity;
     row.activity.textContent=activity;
-    const key=JSON.stringify([state.messages.slice(start,end),grouped]);
-    if (row.commandKey===key) return;
-    row.commandKey=key;
-    row.body.replaceChildren();
+    const changed=grouped.flatMap(command=>command.changes || []);
+    if (changed.length) row.label.textContent=active?'Editing files, running commands…':'Edited files, ran commands';
+    row.details.querySelector('summary use').setAttribute('href',changed.length?'#icon-edit':'#icon-terminal');
+    if (!row.actions) row.actions=new Map();
+    const present=new Set();
+    row.actionPosition=0;
     for (let index=start;index<end;index++)
     {
-        const command=commands.get(index), output=document.createElement('pre');
+        const command=commands.get(index);
         const result=command && index+1<end && !commands.has(index+1)?state.messages[++index].text:'';
-        output.textContent=command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):state.messages[index].text;
-        row.body.append(output);
         if (command)
         {
-            const button=document.createElement('button');
-            button.className='quiet';
-            button.dataset.process=command.id;
-            button.textContent='Open in task manager';
-            row.body.append(button);
+            for (const change of command.changes || [])
+            {
+                const key=command.id+':'+change.path;
+                present.add(key);
+                updateAction(row,key,'edit',change.kind+' '+change.path,change.diff,null,change);
+            }
+        }
+        const key=command?.id || 'output:'+index;
+        present.add(key);
+        updateAction(row,key,'terminal',command?(result?'Ran ':'Running ')+command.command:'Command result',
+            command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):state.messages[index].text,command?.id);
+    }
+    for (const [key,item] of row.actions) if (!present.has(key)) { item.element.remove(); row.actions.delete(key); }
+}
+
+// Keep each nested action open and stable while its result or verified diff arrives.
+function updateAction(row,key,icon,label,output,process,change)
+{
+    let item=row.actions.get(key);
+    if (!item)
+    {
+        const element=document.createElement('details'), summary=document.createElement('summary'), pre=document.createElement('pre');
+        element.className='action-item';
+        summary.innerHTML='<svg aria-hidden="true"><use href="#icon-'+icon+'"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
+        element.append(summary,pre);
+        if (process)
+        {
+            const button=document.createElement('button'); button.className='quiet'; button.dataset.process=process; button.textContent='Open in task manager'; element.append(button);
+        }
+        item={element,summary,pre}; row.actions.set(key,item); row.body.append(element);
+    }
+    const position=row.body.children[row.actionPosition++];
+    if (position!==item.element) row.body.insertBefore(item.element,position || null);
+    item.summary.querySelector('span').textContent=label;
+    item.summary.title=label;
+    if (item.pre.textContent!==output) item.pre.textContent=output;
+    if (change && change.added!==null && !item.count)
+    {
+        item.count=document.createElement('small'); item.count.className='diff-count';
+        const added=document.createElement('span'), removed=document.createElement('span');
+        added.className='added'; added.textContent='+'+change.added;
+        removed.className='removed'; removed.textContent=' −'+change.removed;
+        item.count.append(added,removed); item.summary.insertBefore(item.count,item.summary.lastChild);
+    }
+}
+
+// Completed compactions remain visible even when generation is stopped before an answer arrives.
+const compactionRows=new Map();
+function renderCompactions()
+{
+    const present=new Set();
+    for (const step of view.steps)
+    {
+        for (const id of step.compacted || [])
+        {
+            present.add(id);
+            let element=compactionRows.get(id);
+            if (!element)
+            {
+                element=document.createElement('div'); element.className='compaction-note';
+                element.innerHTML='<svg aria-hidden="true"><use href="#icon-compact"/></svg><span>Context automatically compacted</span>';
+                compactionRows.set(id,element);
+            }
+            const anchor=messageRows[step.after-1]?.element;
+            if (anchor) { if (anchor.nextSibling!==element) anchor.after(element); }
+            else if (elements.messages.firstChild!==element) elements.messages.prepend(element);
         }
     }
+    for (const [id,element] of compactionRows) if (!present.has(id)) { element.remove(); compactionRows.delete(id); }
 }
 
 // Completed tasks keep their own timestamp and interrupted text, even when the next queued task starts.
@@ -532,18 +610,20 @@ function renderComposer()
     if (!state) return;
     elements.prompt.disabled=!state.authenticated || queueAction;
     const queue=view.queue || [], held=queue.find(input=>input.editing);
-    if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value)
+    if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value && !draftAttachments.length)
     {
         editingId=held.id;
-        elements.prompt.value=held.text;
+        queueAction=true;
+        api('queue/'+held.id+'/edit',{editing:true}).then(input=>{ elements.prompt.value=input.text; draftAttachments=input.attachments || []; }).catch(error=>{ elements.status.textContent=error.message; }).finally(()=>{ queueAction=false; renderComposer(); });
     }
     if (editingId && !queue.some(input=>input.id===editingId)) editingId=null;
     elements['editing-message'].hidden=!editingId;
     elements['cancel-edit'].disabled=queueAction;
-    const text=elements.prompt.value.trim(), stop=view.busy && !text, queueing=view.busy || !!state.pending || !!editingId;
+    const text=elements.prompt.value.trim(), hasInput=!!text || !!draftAttachments.length, stop=view.busy && !hasInput, queueing=view.busy || !!state.pending || !!editingId;
     setIcon(elements.send,stop?'stop':'send');
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
-    elements.send.disabled=!state.authenticated || queueAction || (!view.busy && state.retry_available) || (!stop && !text);
+    elements.send.disabled=!state.authenticated || queueAction || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
+    renderAttachments();
     const steering=JSON.stringify(view.steering || []);
     if (steering!==steeringKey)
     {
@@ -552,7 +632,7 @@ function renderComposer()
         for (const input of view.steering || [])
         {
             const message=document.createElement('p');
-            message.textContent='You · '+input.text;
+            message.textContent='You · '+[input.text,...(input.attachments || []).map(file=>file.name)].filter(Boolean).join(' · ');
             elements['steering-messages'].append(message);
         }
     }
@@ -567,8 +647,8 @@ function renderComposer()
     for (const input of queue.filter(input=>!input.editing))
     {
         const row=document.createElement('div'), text=document.createElement('span');
-        text.textContent=input.text;
-        text.title=input.text;
+        text.textContent=[input.text,...(input.attachments || []).map(file=>file.name)].filter(Boolean).join(' · ');
+        text.title=text.textContent;
         row.append(text);
         for (const [action,label] of [['steer','Steer'],['edit','Edit queued message'],['remove','Delete queued message']])
         {
@@ -590,43 +670,69 @@ function renderComposer()
 // Clear each submitted draft immediately so another message can be queued during generation.
 async function submitPrompt(steer=false)
 {
-    const text=elements.prompt.value;
-    if (!text.trim())
+    const text=elements.prompt.value, attachments=draftAttachments;
+    if (!text.trim() && !attachments.length)
     {
         if (view.busy) try { await api('interrupt',{}); } catch (error) { elements.status.textContent=error.message; }
         return;
     }
-    if (elements.send.disabled) return;
+    if (elements.send.disabled || elements['input-cost-dialog'].open) return;
+    try { if (!await confirmInputCost(text,attachments)) return; }
+    catch (error) { elements.status.textContent=error.message; return; }
     if (steer && view.busy && state.account?.credits<=0) { elements.status.textContent='Add credits to steer the conversation.'; return; }
     if (steer && view.busy && !view.can_steer) { elements.status.textContent='No AI turn is accepting steering. Press Enter to queue this message.'; return; }
-    const steering=steer && view.busy, draftId=editingId;
+    const steering=steer && view.busy, draftId=editingId, submittedAt=state.messages.length;
     const id=draftId || (steering?(steerId || crypto.randomUUID()):crypto.randomUUID());
     pendingIds.add(id);
     editingId=null;
     steerId=null;
     elements.prompt.value='';
+    draftAttachments=[];
     elements.prompt.style.height='auto';
     elements.status.textContent='';
     renderComposer();
     // Follow the submitted prompt even when its first snapshot shares an already scheduled render.
     scrollAfterSend=true;
     window.scrollTo({top:document.documentElement.scrollHeight});
-    try { await api(steering?'steer':'chat',{id,text}); }
+    try { await api(steering?'steer':'chat',{id,text,attachments:attachments.length?attachments.map(({kind,name,content})=>({kind,name,content})):null}); }
     catch (error)
     {
         scrollAfterSend=false;
         pendingIds.delete(id);
         elements.status.textContent=error.message;
-        const accepted=state.messages.some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
-        if (!elements.prompt.value && !editingId && !accepted)
+        const accepted=state.messages.slice(submittedAt).some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
+        if (!elements.prompt.value && !draftAttachments.length && !editingId && !accepted)
         {
             elements.prompt.value=text;
+            draftAttachments=attachments;
             editingId=draftId;
             if (steering) steerId=id;
         }
     }
     finally { if (!(view.queue || []).some(input=>input.id===id && input.editing)) pendingIds.delete(id); renderComposer(); }
 }
+elements.prompt.addEventListener('paste',event=>
+{
+    const files=[...event.clipboardData.files];
+    if (!files.length) return;
+    event.preventDefault(); addAttachments(files);
+});
+elements.attach.addEventListener('click',()=>elements['attachment-input'].click());
+elements['attachment-input'].addEventListener('change',event=>addAttachments([...event.target.files]));
+elements.attachments.addEventListener('click',event=>
+{
+    const button=event.target.closest('[data-attachment]');
+    if (!button || attaching) return;
+    draftAttachments.splice(Number(button.dataset.attachment),1); steerId=null; renderComposer();
+});
+for (const type of ['dragenter','dragover','dragleave','drop']) elements['chat-form'].addEventListener(type,event=>
+{
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    elements['chat-form'].classList.toggle('dragging',type==='dragenter' || type==='dragover');
+    if (type==='drop') addAttachments([...event.dataTransfer.files]);
+});
+for (const type of ['dragover','drop']) window.addEventListener(type,event=>{ if (event.dataTransfer.types.includes('Files')) event.preventDefault(); });
 elements['chat-form'].addEventListener('submit',event=>{event.preventDefault(); submitPrompt();});
 elements.prompt.addEventListener('keydown',event=>
 {
@@ -638,13 +744,13 @@ elements['queued-messages'].addEventListener('click',async event=>
     const button=event.target.closest('[data-action]');
     if (!button || queueAction || button.disabled) return;
     const {id,action}=button.dataset;
-    if (action==='edit' && (elements.prompt.value || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
+    if (action==='edit' && (elements.prompt.value || draftAttachments.length || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
     queueAction=true;
     renderComposer();
     try
     {
         const result=await api('queue/'+id+'/'+action,action==='edit'?{editing:true}:{});
-        if (action==='edit') { editingId=id; elements.prompt.value=result.text; }
+        if (action==='edit') { editingId=id; elements.prompt.value=result.text; draftAttachments=result.attachments || []; }
     }
     catch (error) { elements.status.textContent=error.message; }
     finally { queueAction=false; renderComposer(); if (action==='edit' && editingId===id) elements.prompt.focus(); }
@@ -656,7 +762,7 @@ elements['cancel-edit'].addEventListener('click',async()=>
     pendingIds.add(id);
     queueAction=true;
     renderComposer();
-    try { await api('queue/'+id+'/edit',{editing:false}); editingId=null; elements.prompt.value=''; }
+    try { await api('queue/'+id+'/edit',{editing:false}); editingId=null; elements.prompt.value=''; draftAttachments=[]; }
     catch (error) { pendingIds.delete(id); elements.status.textContent=error.message; }
     finally { queueAction=false; renderComposer(); }
 });
@@ -693,7 +799,7 @@ elements.stop.addEventListener('click',async()=>
         eventController.abort();
         clearInterval(processTimer);
         clearInterval(elapsedTimer);
-        document.body.textContent='Linux Assistant stopped. Launch the executable to start again.';
+        document.body.textContent=document.title+' stopped. Launch the executable to start again.';
     }
     catch (error) { elements.status.textContent=error.message; }
 });

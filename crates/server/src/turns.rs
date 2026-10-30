@@ -24,7 +24,7 @@ impl std::error::Error for Interrupted {}
 /// Steering addresses an application request owned by the signed-in user, never an arbitrary Codex turn.
 pub async fn steer(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>,Json(input):Json<Steering>)->ApiResult<Json<serde_json::Value>> {
     let user=app.user(&headers)?;
-    if input.text.trim().is_empty() || input.text.len()>protocol::MAX_MESSAGE_BYTES { return Err(ApiError::bad("Enter a message up to 16,000 bytes")); }
+    protocol::validate_input(&input.text,input.attachments.as_deref()).map_err(|error|ApiError::bad(&error.to_string()))?;
     let previous=app.db.steering(user,id)?;
     if let Some(found)=previous.iter().find(|found|found.id==input.id) {
         if found!=&input { return Err(ApiError::bad("Steering ID reused with different text")); }

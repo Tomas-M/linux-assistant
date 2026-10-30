@@ -118,8 +118,8 @@ impl Db {
         let steering=self.steering(user,request.request_id)?;
         let mut messages=session.messages;
         messages.extend(request.messages.clone());
-        messages.extend(steering.iter().map(|input|Message { role:Role::User,text:input.text.clone() }));
-        messages.push(Message { role:Role::Assistant,text:reply.text.clone() });
+        messages.extend(steering.iter().map(|input|Message { attachments:input.attachments.clone(), role:Role::User,text:input.text.clone() }));
+        messages.push(Message { attachments:None, role:Role::Assistant,text:reply.text.clone() });
         let result=Completed { reply:reply.clone(),revision:messages.len(),steering };
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
@@ -190,7 +190,7 @@ mod tests {
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
         ChatRequest { task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
-            messages:vec![Message { role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() }
+            messages:vec![Message { attachments:None, role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() }
     }
 
     /// An interrupted turn keeps account affinity and committed history but cannot resume an advanced thread.

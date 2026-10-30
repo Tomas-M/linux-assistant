@@ -1,6 +1,6 @@
 use std::{path::{Path, PathBuf}, sync::{Arc,atomic::{AtomicBool,Ordering}}};
 use anyhow::{bail, ensure, Context, Result};
-use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES, MAX_MESSAGE_BYTES};
+use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -57,7 +57,7 @@ impl Engine {
 
     /// Never expose authentication tokens or pending request internals to browser state.
     pub fn state(&self) -> Value {
-        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":self.saved.messages,
+        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":protocol::display_messages(&self.saved.messages),
             "pending":self.saved.pending,"retry_available":self.saved.request.is_some() || self.saved.pending_output.is_some(),"account":self.account})
     }
 
@@ -104,7 +104,7 @@ impl Engine {
         self.saved.settings.commands_enabled = enabled;
         if !enabled { self.full_access.store(false,Ordering::SeqCst); }
         if !enabled && self.saved.pending.take().is_some() {
-            self.saved.messages.push(Message { role:Role::Tool,text:"The user disabled command execution; the pending command was not run.".into() });
+            self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:"The user disabled command execution; the pending command was not run.".into() });
         }
         self.save()
     }
@@ -171,11 +171,11 @@ impl Engine {
     }
 
     /// Persist user input before dispatch; a lost response can be retried with the same request ID.
-    fn prepare_message(&mut self,text:String,cwd:String,id:Uuid)->Result<()> {
+    fn prepare_message(&mut self,text:String,cwd:String,id:Uuid,attachments:Option<Vec<protocol::Attachment>>)->Result<()> {
         ensure!(self.saved.request.is_none() && self.saved.pending_output.is_none(),"Retry the unfinished request or start a new chat first");
         ensure!(self.saved.pending.is_none(),"Approve or decline the pending command first");
-        ensure!(!text.trim().is_empty() && text.len()<=MAX_MESSAGE_BYTES,"Enter a message up to 16,000 bytes");
-        self.saved.messages.push(Message { role:Role::User,text });
+        protocol::validate_input(&text,attachments.as_deref())?;
+        self.saved.messages.push(Message { attachments, role:Role::User,text });
         self.saved.task_id=Some(id);
         if let Err(error)=self.prepare(cwd,id) { self.saved.messages.pop(); self.saved.task_id=None; return Err(error); }
         self.begin_activity(self.saved.messages.len()-1);
@@ -185,12 +185,12 @@ impl Engine {
     /// Tests and direct engine callers use the same durable input path as queued browser messages.
     #[cfg(test)]
     pub async fn chat(&mut self,text:String,cwd:String)->Result<Value> {
-        self.prepare_message(text,cwd,Uuid::new_v4())?;
+        self.prepare_message(text,cwd,Uuid::new_v4(),None)?;
         self.retry().await
     }
     /// Acknowledge dequeue only after saving its stable ID, making crash recovery unambiguous.
     pub async fn next(&mut self)->Result<bool> {
-        if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id)).await? { return Ok(false); }
+        if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id,input.attachments)).await? { return Ok(false); }
         self.retry().await?;
         Ok(true)
     }
@@ -199,7 +199,7 @@ impl Engine {
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
         ensure!(self.saved.token.is_some(),"Sign in first");
         let request = ChatRequest { task_id:*self.saved.task_id.get_or_insert(id),base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
-        ensure!(serde_json::to_vec(&request)?.len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
+        ensure!(serde_json::to_vec(&request)?.len()<=protocol::MAX_UPLOAD_BYTES && protocol::display_messages(&request.messages).to_string().len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
         self.saved.request = Some(request);
         self.save()
     }
@@ -228,14 +228,14 @@ impl Engine {
         ensure!(result.revision==expected,"Backend returned an unexpected conversation revision");
         // Completion is authoritative even if the separate steering acknowledgement was lost.
         for input in &result.steering { self.controls.remove(input.id).await?; }
-        self.saved.messages.extend(result.steering.into_iter().map(|input|Message { role:Role::User,text:input.text }));
-        self.saved.messages.push(Message { role:Role::Assistant,text:result.reply.text });
+        self.saved.messages.extend(result.steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
+        self.saved.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
         self.saved.committed=result.revision;
         self.saved.pending = result.reply.command.filter(|_|self.saved.settings.commands_enabled)
             .map(|proposal|PendingCommand { id:Uuid::new_v4(),proposal });
         self.saved.request = None;
         if self.controls.stopped.load(Ordering::SeqCst) && self.saved.pending.take().is_some() {
-            self.saved.messages.push(Message { role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
+            self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
         }
         if let Some(account) = &mut self.account { account.credits = result.credits; }
         if self.saved.pending.is_none() {
@@ -258,12 +258,16 @@ impl Engine {
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
                         self.live.activity(label,Some(progress));
                     }
-                    protocol::ChatEvent::Complete { response } => return Ok(response),
-                    protocol::ChatEvent::Error { message,settled,credits,steering } => {
+                    protocol::ChatEvent::Complete { mut response } => {
+                        if let Some(progress)=response.progress.take() { self.live.activity("Responding…",Some(progress)); }
+                        return Ok(response);
+                    },
+                    protocol::ChatEvent::Error { message,settled,credits,steering,progress } => {
+                        if let Some(progress)=progress { self.live.activity("Thinking…",Some(progress)); }
                         if let (Some(account),Some(credits))=(&mut self.account,credits) { account.credits=credits; }
                         if settled {
                             for input in &steering { self.controls.remove(input.id).await?; }
-                            self.saved.messages.extend(steering.into_iter().map(|input|Message { role:Role::User,text:input.text }));
+                            self.saved.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
                             let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
                             self.saved.request=None;
                             self.saved.task_id=None;
@@ -287,14 +291,21 @@ impl Engine {
         if approve {
             self.live.0.send_modify(|view|view["commands"].as_array_mut().unwrap().push(json!({"after":self.saved.messages.len(),"id":pending.id,"command":pending.proposal.command,"cwd":pending.proposal.cwd})));
         }
-        self.saved.messages.push(Message { role:Role::Tool,text:if approve {
+        self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:if approve {
             format!("User approved command: {}\nDirectory: {}\nExecution started. If no result follows, its outcome is unknown; do not automatically rerun.",pending.proposal.command,pending.proposal.cwd)
         } else { "The user declined the command. It was not executed.".into() } });
         if approve {
             self.saved.pending_output=Some(pending.id);
             self.save()?;
             self.live.activity(&format!("Running a local command: {}",pending.proposal.reason),None);
+            let proposal=pending.proposal.clone();
+            let before=tokio::task::spawn_blocking(move ||crate::changes::capture(&proposal.cwd,proposal.files.as_deref().unwrap_or_default())).await?;
             self.processes.run(pending.id,&pending.proposal).await?;
+            let changes=tokio::task::spawn_blocking(move ||crate::changes::compare(before)).await?;
+            self.live.0.send_modify(|view| {
+                if let Some(command)=view["commands"].as_array_mut().unwrap().iter_mut().find(|command|command["id"]==pending.id.to_string()) { command["changes"]=json!(changes); }
+            });
+            self.save()?;
         } else {
             self.prepare(pending.proposal.cwd,Uuid::new_v4())?;
         }
@@ -332,6 +343,35 @@ fn validate_backend(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Queued attachments survive an interrupted request and reload without leaking into live snapshots.
+    #[tokio::test]
+    async fn attachments_survive_retry()->Result<()> {
+        use axum::{routing::post,Json,Router};
+        let requests=Arc::new(std::sync::Mutex::new(Vec::<ChatRequest>::new()));
+        let seen=requests.clone();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>| {
+            let mut requests=seen.lock().unwrap(); requests.push(request.clone());
+            let event=if requests.len()==1 { protocol::ChatEvent::Progress { progress:Default::default() } }
+                else { protocol::ChatEvent::Complete { response:ChatResponse { progress:Some(protocol::Progress { compacted:Some(vec!["compact".into()]),..Default::default() }),reply:protocol::AssistantReply { text:"Read".into(),command:None },credits:99,revision:request.base+2,steering:vec![] } } };
+            async move { ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap())) }
+        }));
+        let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
+        let directory=tempfile::tempdir()?;
+        let mut engine=Engine::open(directory.path(),&backend).await?; engine.saved.token=Some("fixture".into());
+        let attachments=Some(vec![protocol::Attachment::Text { name:"日志.txt".into(),content:"PRIVATE_ATTACHMENT_TEXT".into() }]);
+        engine.controls.enqueue(crate::controls::Queued { id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
+        assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
+        assert!(engine.next().await.is_err()); drop(engine);
+        let mut engine=Engine::open(directory.path(),&backend).await?; engine.retry().await?;
+        assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
+        assert_eq!(engine.saved.messages[0].attachments,attachments);
+        assert_eq!(engine.live.0.borrow()["steps"][0]["compacted"][0],"compact");
+        let requests=requests.lock().unwrap(); assert_eq!(requests[0].request_id,requests[1].request_id); assert_eq!(requests[1].messages[0].attachments,attachments);
+        server.abort(); Ok(())
+    }
+
     /// A settled failure updates an overdraft immediately and retries as a newly admitted task.
     #[tokio::test]
     async fn failed_task_keeps_balance_and_starts_a_new_identity()->Result<()> {
@@ -343,7 +383,7 @@ mod tests {
         let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>| {
             seen.lock().unwrap().push((request.task_id,request.request_id));
             async move {
-                let event=protocol::ChatEvent::Error { message:"Stopped".into(),settled:true,credits:Some(-2),steering:vec![] };
+                let event=protocol::ChatEvent::Error { progress:None,message:"Stopped".into(),settled:true,credits:Some(-2),steering:vec![] };
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap()))
             }
         }));
@@ -351,7 +391,7 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("fixture".into());
-        engine.account=Some(Account { email:"fixture@example.test".into(),credits:1,development:true });
+        engine.account=Some(Account { email:"fixture@example.test".into(),credits:1,development:true,input_credits_per_million:200.0 });
         assert!(engine.chat("Hello".into(),"/tmp".into()).await.is_err());
         assert_eq!(engine.state()["account"]["credits"],-2);
         let next=engine.saved.request.as_ref().unwrap();
@@ -377,8 +417,8 @@ mod tests {
             async move {
                 let mut requests=seen.lock().unwrap();
                 requests.push(request.request_id);
-                let event=if requests.len()==1 { protocol::ChatEvent::Progress { progress:protocol::Progress { attempt:1,activity:None,text:"Partial 世界".into(),summaries:vec![] } } }
-                    else { protocol::ChatEvent::Complete { response:ChatResponse { reply:protocol::AssistantReply { text:"Complete 世界".into(),command:None },credits:8,revision:request.base+request.messages.len()+1,steering:vec![] } } };
+                let event=if requests.len()==1 { protocol::ChatEvent::Progress { progress:protocol::Progress { compacted:None,attempt:1,activity:None,text:"Partial 世界".into(),summaries:vec![] } } }
+                    else { protocol::ChatEvent::Complete { response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Complete 世界".into(),command:None },credits:8,revision:request.base+request.messages.len()+1,steering:vec![] } } };
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap()))
             }
         }));
@@ -412,13 +452,13 @@ mod tests {
         engine.set_backend(format!("http://{}",listener.local_addr()?)).await?;
         let app = Router::new().route("/v1/chat",post(move |Json(request): Json<ChatRequest>| async move {
             assert_eq!(request.platform,platform);
-            let command = (request.messages.last().unwrap().role==Role::User).then(|| CommandProposal { 
+            let command = (request.messages.last().unwrap().role==Role::User).then(|| CommandProposal { files:Some(vec!["approval.txt".into()]),
                 command:match platform {
                     Platform::Linux => "printf 'approved\\n' >> approval.txt",
                     Platform::Windows => "Add-Content -Encoding UTF8 -LiteralPath 'approval.txt' -Value 'approved'",
                 }.into(),cwd:request.cwd,reason:"Write a test marker".into(),
             });
-            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { reply:protocol::AssistantReply { text:"Test reply".into(),command },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
+            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Test reply".into(),command },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
         }));
         let server = tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         engine.saved.token = Some("test-session".into());
@@ -445,6 +485,8 @@ mod tests {
         assert!(engine.decide(id,true).await.is_err());
         let written = std::fs::read_to_string(dir.path().join("approval.txt"))?;
         assert_eq!(written.trim_start_matches('\u{feff}').trim(),"approved");
+        assert_eq!(engine.live.0.borrow()["commands"][0]["changes"][0]["kind"],"Created");
+        assert_eq!(engine.live.0.borrow()["commands"][0]["changes"][0]["added"],1);
         assert!(engine.saved.messages.iter().any(|m|m.role==Role::Tool && m.text.starts_with("Exit status:")));
         assert_eq!(engine.state()["platform"],std::env::consts::OS);
         server.abort();
@@ -456,7 +498,7 @@ mod tests {
     async fn disabling_commands_invalidates_proposals() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let mut engine = Engine::open(dir.path(),"http://127.0.0.1:8787").await?;
-        engine.saved.pending = Some(PendingCommand { id:Uuid::new_v4(),proposal:CommandProposal {  command:"true".into(),cwd:"/tmp".into(),reason:"test".into() } });
+        engine.saved.pending = Some(PendingCommand { id:Uuid::new_v4(),proposal:CommandProposal { files:None,  command:"true".into(),cwd:"/tmp".into(),reason:"test".into() } });
         engine.settings(false)?;
         assert!(engine.saved.pending.is_none());
         assert!(!engine.state().to_string().contains("poll_secret"));
@@ -481,7 +523,7 @@ mod tests {
         let app=Router::new().route("/v1/chat",post(|Json(request):Json<ChatRequest>|async move {
             assert_eq!(request.messages.len(),1);
             assert!(serde_json::to_vec(&request).unwrap().len()<16_000);
-            let response=ChatResponse { reply:protocol::AssistantReply { text:"Recorded".into(),command:None },credits:100,revision:request.base+2,steering:vec![] };
+            let response=ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Recorded".into(),command:None },credits:100,revision:request.base+2,steering:vec![] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
@@ -498,11 +540,11 @@ mod tests {
         assert_eq!(Engine::open(directory.path(),&backend).await?.live.0.borrow()["runs"],runs);
         assert!(serde_json::to_vec(&engine.saved.messages)?.len()>96_000);
         assert_eq!(engine.saved.committed,60);
-        let first=crate::controls::Queued { id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
-        let second=crate::controls::Queued { id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
+        let first=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
+        let second=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
         engine.controls.enqueue(first.clone()).await?;
         engine.controls.enqueue(second.clone()).await?;
-        engine.prepare_message(first.text,cwd,first.id)?;
+        engine.prepare_message(first.text,cwd,first.id,None)?;
         drop(engine);
         let mut engine=Engine::open(directory.path(),&backend).await?;
         assert_eq!(engine.live.0.borrow()["queue"][0]["id"],second.id.to_string());
@@ -532,14 +574,14 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
         let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>|async move {
-            let response=ChatResponse { reply:protocol::AssistantReply { text:"Done".into(),command:None },credits:10,revision:request.base+request.messages.len()+2,
-                steering:vec![protocol::Steering { id,text:"Queued steering".into() }] };
+            let response=ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Done".into(),command:None },credits:10,revision:request.base+request.messages.len()+2,
+                steering:vec![protocol::Steering { attachments:None, id,text:"Queued steering".into() }] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("fixture".into());
-        engine.controls.enqueue(crate::controls::Queued { id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
+        engine.controls.enqueue(crate::controls::Queued { attachments:None, id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
         engine.chat("Original task".into(),"/tmp".into()).await?;
         assert!(!engine.next().await?);
         assert_eq!(engine.saved.messages.len(),3);

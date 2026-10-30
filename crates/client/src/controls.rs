@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{storage,stream::Live};
 
 #[derive(Clone,Serialize,Deserialize)]
-pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool }
+pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
 pub struct Controls { pub stopped:AtomicBool, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
@@ -24,16 +24,16 @@ impl Controls {
     /// Persist the queue before publishing it, so browser reloads and daemon restarts retain input.
     fn publish(&self,queue:&[Queued])->Result<()> {
         storage::write(&self.path,&queue)?;
-        self.live.0.send_modify(|view|view["queue"]=json!(queue));
+        self.live.0.send_modify(|view|view["queue"]=protocol::display_messages(&queue));
         Ok(())
     }
     /// Enqueue user input once by its client-generated ID; commands are never supplied here.
     pub async fn enqueue(&self,input:Queued)->Result<()> {
-        ensure!(!input.text.trim().is_empty() && input.text.len()<=protocol::MAX_MESSAGE_BYTES,"Enter a message up to 16,000 bytes");
+        protocol::validate_input(&input.text,input.attachments.as_deref())?;
         let mut queue=self.queue.lock().await;
         if let Some(old)=queue.iter_mut().find(|old|old.id==input.id) {
-            if old.editing { old.text=input.text; old.editing=false; return self.publish(&queue); }
-            ensure!(old.text==input.text && old.cwd==input.cwd,"Queue ID reused");
+            if old.editing { old.text=input.text; old.attachments=input.attachments; old.editing=false; return self.publish(&queue); }
+            ensure!(old.text==input.text && old.attachments==input.attachments && old.cwd==input.cwd,"Queue ID reused");
             return Ok(());
         }
         ensure!(queue.len()<50,"Message queue is full");
@@ -70,7 +70,7 @@ impl Controls {
         let mut queue=self.queue.lock().await;
         let input=queue.iter().find(|input|input.id==id).context("This message is no longer queued")?;
         ensure!(!input.editing,"Submit the edited message before steering it");
-        let input=protocol::Steering { id,text:input.text.clone() };
+        let input=protocol::Steering { attachments:input.attachments.clone(), id,text:input.text.clone() };
         self.send("steer",json!(input)).await?;
         queue.retain(|queued|queued.id!=id);
         self.publish(&queue)?;
@@ -124,7 +124,7 @@ mod tests {
     async fn editing_preserves_queue_order()->Result<()> {
         let directory=tempfile::tempdir()?;
         let controls=Controls::open(directory.path(),Live::new())?;
-        let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
+        let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
         for input in &inputs { controls.enqueue(input.clone()).await?; }
         controls.edit(inputs[1].id,true).await?;
         assert!(controls.start_next(|input| { assert_eq!(input.text,"first"); Ok(()) }).await?);
@@ -145,7 +145,7 @@ mod tests {
         use axum::{routing::post,Json,Router};
         let directory=tempfile::tempdir()?;
         let controls=Controls::open(directory.path(),Live::new())?;
-        let input=Queued { id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
+        let input=Queued { attachments:Some(vec![protocol::Attachment::Text { name:"notes.txt".into(),content:"Attached steering".into() }]), id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
         controls.enqueue(input.clone()).await?;
         assert!(controls.steer_queued(input.id).await.is_err());
         assert_eq!(controls.queue.lock().await[0].text,input.text);
@@ -156,7 +156,7 @@ mod tests {
         let backend=format!("http://{}",listener.local_addr()?);
         let app=Router::new().route("/v1/chat/{id}/steer",post(move |Json(input):Json<protocol::Steering>| {
             let (notify,wait)=(notify.clone(),wait.clone());
-            async move { notify.notify_one(); wait.notified().await; Json(json!({"accepted":input.id})) }
+            async move { assert!(serde_json::to_string(&input.attachments).unwrap().contains("Attached steering")); notify.notify_one(); wait.notified().await; Json(json!({"accepted":input.id})) }
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let _active=controls.active(Remote { backend,token:"fixture".into(),request:Uuid::new_v4() });

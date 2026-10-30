@@ -19,7 +19,7 @@ use std::{fs::OpenOptions, sync::Arc, time::Duration};
 use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, HeaderMap, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Response}, routing::{get, post}, Json, Router};
 use clap::Parser;
 use fs2::FileExt;
-use protocol::{Account, ChatEvent, ChatRequest, ChatResponse, MAX_REQUEST_BYTES, MAX_MESSAGE_BYTES};
+use protocol::{Account, ChatEvent, ChatRequest, ChatResponse, MAX_REQUEST_BYTES};
 use tokio_stream::{wrappers::WatchStream, StreamExt};
 use serde_json::{json, Value};
 use crate::{config::Config, db::{hash, Db, Reservation}};
@@ -93,8 +93,8 @@ fn router(app: App) -> Router {
         .route("/v1/auth/device",post(auth::start)).route("/v1/auth/poll",post(auth::poll))
         .route("/v1/auth/email",post(auth::email)).route("/v1/auth/verify",post(auth::verify))
         .route("/auth/google/{device}",get(auth::google)).route("/auth/google/callback",get(auth::callback))
-        .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat))
-        .route("/v1/chat/{id}/steer",post(turns::steer)).route("/v1/chat/{id}/stop",post(turns::stop))
+        .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
+        .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop))
         .route("/v1/checkout",post(payments::checkout)).route("/webhooks/stripe",post(payments::webhook))
         .route("/payment/success",get(||async { Html(auth::document("<h1>Payment submitted</h1><p>Credits appear after the payment is confirmed. Return to Linux Assistant and refresh your balance.</p>")) }))
         .route("/payment/cancel",get(||async { Html(auth::document("<h1>Checkout cancelled</h1><p>Return to Linux Assistant to continue.</p>")) }))
@@ -129,7 +129,7 @@ async fn browser_security(State(app): State<App>, request: Request<Body>, next: 
 async fn me(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Account>> {
     let user = app.user(&headers)?;
     let email = app.db.0.lock().unwrap().query_row("SELECT email FROM users WHERE id=?1",[user],|r|r.get(0))?;
-    Ok(Json(Account { email,credits:app.db.balance(user)?,development:app.config.dev }))
+    Ok(Json(Account { email,credits:app.db.balance(user)?,development:app.config.dev,input_credits_per_million:app.config.pricing.input_credits_per_million.0 as f64/1_000_000.0 }))
 }
 
 /// Revoke the current session rather than merely forgetting its client-side copy.
@@ -144,10 +144,14 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Va
 async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<ChatRequest>) -> ApiResult<Response> {
     let user = app.user(&headers)?;
     let bytes = serde_json::to_vec(&input)?;
-    if input.messages.is_empty() || bytes.len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
+    if input.messages.is_empty() || bytes.len()>protocol::MAX_UPLOAD_BYTES || protocol::display_messages(&input.messages).to_string().len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
         return Err(ApiError::bad("New input is empty or exceeds the per-request limit"));
     }
-    if input.messages.iter().any(|m|m.text.len()>64_000) || input.messages.last().is_some_and(|m|m.role==protocol::Role::User && m.text.len()>MAX_MESSAGE_BYTES) {
+    for message in &input.messages {
+        if message.role==protocol::Role::User { protocol::validate_input(&message.text,message.attachments.as_deref()).map_err(|error|ApiError::bad(&error.to_string()))?; }
+        else if message.attachments.is_some() { return Err(ApiError::bad("Only user messages can include attachments")); }
+    }
+    if input.messages.iter().any(|m|m.text.len()>64_000) {
         return Err(ApiError::bad("Message is too long"));
     }
     let id = input.request_id.to_string();
@@ -158,7 +162,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
         Reservation::Cached(value) => serde_json::from_str(&value)?,
         Reservation::Failed(error) => {
             if !streaming { return Err(ApiError::busy(&error)); }
-            events.send_replace(ChatEvent::Error { message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
+            events.send_replace(ChatEvent::Error { progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
         Reservation::Pending => return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into())),
@@ -184,27 +188,28 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                         eprintln!("AI request failed: {error}");
                         let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged." } else { "AI is unavailable or at its usage limit. Recorded token usage was charged; retry shortly." };
                         if let Err(error)=task_app.db.settle(user,&id,Err(message.into())) {
-                            task_events.send_replace(ChatEvent::Error { message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                            task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                             return Err(ApiError::from(error));
                         }
                         Err(ApiError::busy(message))
                     }
                 };
+                let progress=match &*task_events.borrow() { ChatEvent::Progress { progress }=>Some(progress.clone()),_=>None };
                 match &result {
                     Ok(reply) => {
                         match task_app.db.balance(user) {
-                            Ok(credits)=> { task_events.send_replace(ChatEvent::Complete { response:ChatResponse { reply:reply.reply.clone(),credits,revision:reply.revision,steering:reply.steering.clone() } }); }
+                            Ok(credits)=> { task_events.send_replace(ChatEvent::Complete { response:ChatResponse { progress:progress.clone(), reply:reply.reply.clone(),credits,revision:reply.revision,steering:reply.steering.clone() } }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { message:"Could not read the balance. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not read the balance. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }
                     }
                     Err(error)=> {
                         match task_app.db.steering(user,input.request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?))) {
-                            Ok((steering,credits))=> { task_events.send_replace(ChatEvent::Error { message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
+                            Ok((steering,credits))=> { task_events.send_replace(ChatEvent::Error { progress:progress.clone(),message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }
@@ -216,7 +221,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
             task.await??
         }
     };
-    let response=ChatResponse { reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
+    let response=ChatResponse { progress:None, reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
     if streaming {
         events.send_replace(ChatEvent::Complete { response });
         Ok(chat_stream(receiver))

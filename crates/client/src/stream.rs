@@ -19,7 +19,13 @@ impl Live {
             if let Some(progress)=&progress {
                 let after=view["state"]["messages"].as_array().map_or(0,Vec::len);
                 let steps=view["steps"].as_array_mut().unwrap();
-                let step=json!({"after":after,"summaries":progress.summaries,"attempt":progress.attempt});
+                let mut compacted=progress.compacted.clone().unwrap_or_default();
+                if let Some(previous)=steps.last().filter(|step|step["after"]==after) {
+                    for id in previous["compacted"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                        if !compacted.iter().any(|current|current==id) { compacted.push(id.into()); }
+                    }
+                }
+                let step=json!({"after":after,"summaries":progress.summaries,"attempt":progress.attempt,"compacted":compacted});
                 // Text-only deltas do not change saved progress or require serializing its entire history.
                 if steps.last()!=Some(&step) {
                     if steps.last().is_some_and(|step|step["after"]==after) { steps.pop(); }
@@ -42,7 +48,7 @@ impl Live {
 pub struct Decoder { buffer: Vec<u8>,limit:usize }
 impl Default for Decoder {
     /// Provider events are bounded independently of the size of a local visible transcript.
-    fn default()->Self { Self { buffer:vec![],limit:1_000_000 } }
+    fn default()->Self { Self { buffer:vec![],limit:protocol::MAX_UPLOAD_BYTES+128_000 } }
 }
 
 impl Decoder {

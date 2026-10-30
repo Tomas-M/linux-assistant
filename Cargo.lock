@@ -7551,9 +7551,12 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "similar",
  "tempfile",
  "tokio",
  "tokio-stream",
+ "toml 1.0.6+spec-1.1.0",
  "tower",
  "uuid",
  "webbrowser",
@@ -9158,6 +9161,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 name = "protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "image",
  "serde",
  "serde_json",
  "uuid",

@@ -5,10 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Linux Assistant</title>
     <link rel="stylesheet" href="/style.css">
+    <script src="/attachments.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
 <body>
     <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+        <symbol id="icon-attach" viewBox="0 0 24 24"><path d="m8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L13 2m-8 12 9-9"/></symbol>
+        <symbol id="icon-compact" viewBox="0 0 24 24"><path d="M9 5h10M9 9h7M9 15h7M9 19h10M5 3v5l-2 4 2 4v5"/></symbol>
         <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></symbol>
         <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
         <symbol id="icon-send" viewBox="0 0 24 24"><path d="M12 20V4m-6 6 6-6 6 6"/></symbol>
@@ -24,7 +27,7 @@
         <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
     </defs></svg>
     <header class="topbar">
-        <a class="brand" href="/" aria-label="Linux Assistant home"><span class="brand-mark" aria-hidden="true"><svg><use href="#icon-terminal"/></svg></span><span class="brand-name">Linux Assistant</span></a>
+        <a id="brand" class="brand" href="/" aria-label="Linux Assistant home"><img id="brand-logo" alt="" hidden><span id="brand-mark" class="brand-mark" aria-hidden="true"><svg><use href="#icon-terminal"/></svg></span><span id="brand-name" class="brand-name">Linux Assistant</span></a>
         <nav aria-label="Workspace">
             <button id="new" class="quiet" aria-label="New chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span></button>
             <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme"><svg aria-hidden="true"><use href="#icon-moon"/></svg></button>
@@ -87,18 +90,27 @@
                 <div id="queued-messages" class="queued-messages" hidden></div>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
                 <form id="chat-form" class="composer">
+                    <div id="attachments" class="attachments" hidden></div>
+                    <input id="attachment-input" type="file" multiple hidden>
                     <label for="prompt" class="sr-only">Message your assistant</label>
                     <textarea id="prompt" rows="2" placeholder="Ask anything, or describe a task…"></textarea>
                     <div class="composer-bottom">
                         <label class="access-toggle"><input id="full-access" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span><span>Full access</span></label>
                         <span id="permission-note" class="muted">Commands run automatically</span>
+                        <button id="attach" type="button" class="icon-button attach" aria-label="Attach files" title="Attach images and UTF-8 text files"><svg aria-hidden="true"><use href="#icon-attach"/></svg></button>
                         <button id="send" class="send" aria-label="Send message"><svg aria-hidden="true"><use href="#icon-send"/></svg></button>
                     </div>
+                    <p id="attachment-note" class="attachment-note" role="status" hidden></p>
                 </form>
                 <div class="composer-caption"><span id="platform"></span></div>
             </div>
         </section>
     </main>
+    <dialog id="input-cost-dialog" aria-labelledby="input-cost-title">
+        <h2 id="input-cost-title">Send a large message?</h2>
+        <p id="input-cost-description"></p>
+        <form method="dialog" class="button-row"><button value="cancel">Cancel</button><button value="send" class="primary">Send anyway</button></form>
+    </dialog>
     <dialog id="settings-dialog" aria-labelledby="settings-title">
         <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
         <p id="account" class="muted"></p>

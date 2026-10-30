@@ -20,7 +20,7 @@ impl Engine {
     pub(super) fn finish_output(&mut self) -> Result<()> {
         let record=self.processes.get(self.saved.pending_output.unwrap())?;
         ensure!(record.finished_at.is_some(),"Command is still running");
-        self.saved.messages.push(Message { role:Role::Tool,text:preview(&record.result()) });
+        self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:preview(&record.result()) });
         self.saved.pending_output=None;
         if let Err(error)=self.prepare(record.proposal.cwd.clone(),Uuid::new_v4()) {
             self.saved.messages.pop();
@@ -66,13 +66,13 @@ mod tests {
                 if requests.len()==2 {
                     return (StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":"Ambiguous fixture failure"}))).into_response();
                 }
-                let command=(request.messages.last().unwrap().role==Role::User).then(||CommandProposal {
+                let command=(request.messages.last().unwrap().role==Role::User).then(||CommandProposal { files:None,
                     cwd:request.cwd,reason:"Inspect a diagnostic log".into(),
                     command:if cfg!(windows) { "Add-Content -LiteralPath 'runs.txt' -Value 'run'; [Console]::Out.WriteLine('HEAD_MARKER'); [Console]::Out.Write(('世界🙂 '*10000)); [Console]::Error.WriteLine('TAIL_ERROR')" }
                         else { "printf 'run\\n' >> runs.txt; printf 'HEAD_MARKER\\n'; i=0; while [ $i -lt 10000 ]; do printf '世界🙂 '; i=$((i+1)); done; printf 'TAIL_ERROR\\n' >&2" }.into(),
                 });
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete {
-                    response:ChatResponse { reply:protocol::AssistantReply { text:"Fixture response".into(),command },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
+                    response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Fixture response".into(),command },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
                 }).unwrap())).into_response()
             }
         }));

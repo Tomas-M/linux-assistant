@@ -127,14 +127,14 @@ mod tests {
     /// Capture Unicode and nonzero exit statuses without treating shell failure as transport failure.
     #[tokio::test]
     async fn captures_actual_process_results() -> Result<()> {
-        let result = run(&CommandProposal {  command:"printf 'Žluťoučký 世界'; printf 'problem' >&2; exit 7".into(),cwd:"/tmp".into(),reason:"test".into() }).await?;
+        let result = run(&CommandProposal { files:None,  command:"printf 'Žluťoučký 世界'; printf 'problem' >&2; exit 7".into(),cwd:"/tmp".into(),reason:"test".into() }).await?;
         assert!(result.contains("Žluťoučký 世界") && result.contains("problem") && result.contains('7'));
         Ok(())
     }
     /// Output caps must not block a command that writes more than the pipe buffer.
     #[tokio::test]
     async fn bounds_noisy_output() -> Result<()> {
-        let result = run(&CommandProposal {  command:"head -c 200000 /dev/zero".into(),cwd:"/tmp".into(),reason:"test".into() }).await?;
+        let result = run(&CommandProposal { files:None,  command:"head -c 200000 /dev/zero".into(),cwd:"/tmp".into(),reason:"test".into() }).await?;
         assert!(result.len()<25_000 && result.contains("truncated"));
         Ok(())
     }

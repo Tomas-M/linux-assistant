@@ -50,7 +50,7 @@ impl Pool {
         if config.dev {
             let reply=demo(request);
             if let Some(events)=events {
-                let mut progress=protocol::Progress { attempt:1,activity:None,summaries:vec![protocol::ProgressText { id:"demo".into(),text:"Simulated progress: preparing a development response.".into() }],text:String::new() };
+                let mut progress=protocol::Progress { compacted:None,attempt:1,activity:None,summaries:vec![protocol::ProgressText { id:"demo".into(),text:"Simulated progress: preparing a development response.".into() }],text:String::new() };
                 events.send_replace(protocol::ChatEvent::Progress { progress:progress.clone() });
                 for chunk in reply.text.chars().collect::<Vec<_>>().chunks(12) {
                     let delay=tokio::time::sleep(Duration::from_millis(40));
@@ -82,8 +82,8 @@ impl Pool {
         tokio::time::timeout(Duration::from_secs(600),async {
             let session = db.conversation(user,request.conversation_id)?;
             ensure!(request.base==session.messages.len(),"Conversation revision changed");
-            let recovery=serde_json::json!({"summary":session.checkpoint,"messages":session.messages[session.checkpoint_at..]});
-            let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000;
+            let recovery=serde_json::json!({"summary":session.checkpoint,"messages":protocol::recovery_messages(&session.messages[session.checkpoint_at..])});
+            let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000 || request.messages.iter().any(|message|message.attachments.is_some());
             let mut tried = Vec::new();
             let mut assigned = match &session.account_home {
                 Some(home) => Some(self.accounts.iter().position(|a|&a.home==home).context("Conversation account is no longer configured")?),
@@ -107,7 +107,7 @@ impl Pool {
                 let mut attempt=crate::usage::Attempt::start(db,Some(user),request,&account.home,purpose)?;
                 let mut reporter=progress::Reporter::new(events,tried.len());
                 let mut current=request.clone();
-                current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(|input|protocol::Message { role:Role::User,text:input.text }));
+                current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(|input|protocol::Message { attachments:input.attachments, role:Role::User,text:input.text }));
                 let result=rpc.answer(config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
                 let failure=result.as_ref().err().map(|error| {
                     if error.downcast_ref::<QuotaReached>().is_some() { "ChatGPT quota reached" }
@@ -206,7 +206,7 @@ pub async fn login(home: PathBuf) -> Result<()> {
 /// Deterministic development replies exercise local approval without consuming provider usage.
 fn demo(request: &ChatRequest) -> AssistantReply {
     let last = request.messages.last().unwrap();
-    let command = (request.commands_enabled && last.text.to_lowercase().contains("demo command")).then(|| CommandProposal { 
+    let command = (request.commands_enabled && last.text.to_lowercase().contains("demo command")).then(|| CommandProposal { files:None,
         command:match request.platform { Platform::Linux => "printf 'Linux Assistant command test\\n'", Platform::Windows => "Write-Output 'Linux Assistant command test'" }.into(),
         cwd:request.cwd.clone(),reason:"Print a harmless test message on your computer.".into(),
     });
