@@ -107,8 +107,6 @@ function render()
     for (const id of ['new','credits','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     for (const id of ['buy','buy-inline']) elements[id].disabled=buying || !state.account;
-    for (const id of ['checkout-link','balance-checkout-link'])
-        if (elements[id].dataset.email!==state.account?.email) { elements[id].hidden=true; elements[id].removeAttribute('href'); }
     renderConnection();
     renderComposer();
     renderLogin();
@@ -812,17 +810,27 @@ for (const [id,path] of [['new','new'],['credits','account'],['logout','logout']
 for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',async()=>
 {
     if (buying || !state.account) return;
+    // Open during the click so waiting for the backend does not trigger popup blocking.
+    const checkoutWindow=window.open('about:blank','_blank');
+    if (checkoutWindow)
+    {
+        checkoutWindow.opener=null;
+        checkoutWindow.document.title='Checkout';
+        checkoutWindow.document.body.textContent='Opening checkout…';
+    }
     buying=true;
     const email=state.account.email;
     render();
     try
     {
         const checkout=await api('checkout',{});
-        if (state.account?.email!==email) return;
-        for (const link of ['checkout-link','balance-checkout-link']) { elements[link].dataset.email=email; elements[link].href=checkout.url; elements[link].hidden=false; }
-        window.open(checkout.url,'_blank','noopener,noreferrer');
+        if (state.account?.email!==email) { checkoutWindow?.close(); return; }
+        const url=new URL(checkout.url);
+        if (url.protocol!=='https:' || url.hostname!=='checkout.stripe.com') throw new Error('Unexpected payment URL');
+        if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.location.replace(url.href);
+        else location.assign(url.href);
     }
-    catch (error) { elements.status.textContent=error.message; elements['settings-status'].textContent=error.message; }
+    catch (error) { checkoutWindow?.close(); elements.status.textContent=error.message; elements['settings-status'].textContent=error.message; }
     finally { buying=false; render(); }
 });
 let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
