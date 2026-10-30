@@ -6,7 +6,7 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame;
+let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame, scrollAfterSend=false;
 const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
 
@@ -173,6 +173,7 @@ function render()
     if (activity)
     {
         elements['activity-label'].textContent=activity.label;
+        elements['activity-icon'].toggleAttribute('hidden',activity.progress!==null);
         const summaries=activity.progress?.summaries || [], key=JSON.stringify(summaries);
         if (key!==summaryKey)
         {
@@ -309,7 +310,8 @@ async function watch()
                     {
                         renderFrame=null;
                         render();
-                        if (follow && state.messages.length) window.scrollTo({top:document.documentElement.scrollHeight});
+                        if (follow || scrollAfterSend) window.scrollTo({top:document.documentElement.scrollHeight});
+                        scrollAfterSend=false;
                     });
                 }
 
@@ -539,9 +541,13 @@ async function submitPrompt(steer=false)
     elements.prompt.style.height='auto';
     elements.status.textContent='';
     renderComposer();
+    // Follow the submitted prompt even when its first snapshot shares an already scheduled render.
+    scrollAfterSend=true;
+    window.scrollTo({top:document.documentElement.scrollHeight});
     try { await api(steering?'steer':'chat',{id,text}); }
     catch (error)
     {
+        scrollAfterSend=false;
         pendingIds.delete(id);
         elements.status.textContent=error.message;
         const accepted=state.messages.some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
