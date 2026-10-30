@@ -96,8 +96,8 @@ impl Controls {
     /// Forward control requests without waiting for the locked engine or command completion.
     pub async fn send(&self,action:&str,body:Value)->Result<Value> {
         let remote=self.remote.lock().unwrap().clone().context("No AI turn is running; queue the message instead")?;
-        let response=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(60)).build()?
-            .post(format!("{}/v1/chat/{}/{action}",remote.backend,remote.request)).bearer_auth(remote.token).json(&body).send().await?;
+        let request=crate::backend::client(60)?.post(format!("{}/v1/chat/{}/{action}",remote.backend,remote.request)).bearer_auth(remote.token).json(&body);
+        let response=crate::backend::send(request,&self.live,None).await?;
         let status=response.status();
         let value:Value=response.json().await?;
         ensure!(status.is_success(),"{}",value["error"].as_str().unwrap_or("Control request failed"));

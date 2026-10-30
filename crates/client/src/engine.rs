@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, time::Duration, sync::{Arc,atomic::{AtomicBool,Ordering}}};
+use std::{path::{Path, PathBuf}, sync::{Arc,atomic::{AtomicBool,Ordering}}};
 use anyhow::{bail, ensure, Context, Result};
 use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES, MAX_MESSAGE_BYTES};
 use serde::{Deserialize, Serialize};
@@ -48,7 +48,7 @@ impl Engine {
             }
         }
         let controls=crate::controls::Controls::open(directory,live.clone())?;
-        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:reqwest::Client::builder().timeout(Duration::from_secs(660)).redirect(reqwest::redirect::Policy::none()).build()?,login:None,account:None };
+        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:crate::backend::client(660)?,login:None,account:None };
         if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id).await?; }
         if engine.saved.settings.backend!=backend { engine.set_backend(backend.into()).await?; }
         engine.live.state(engine.state());
@@ -111,9 +111,9 @@ impl Engine {
 
     /// Request a code without opening a browser or exposing the device secret to the UI.
     pub async fn login(&mut self,email:String) -> Result<EmailChallenge> {
-        let login:DeviceLogin=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/device").send().await?).await?;
+        let login:DeviceLogin=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/device"),&self.live,None).await?).await?;
         let input=EmailLogin { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),email };
-        let challenge=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/email").json(&input).send().await?).await?;
+        let challenge=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/email").json(&input),&self.live,None).await?).await?;
         self.login=Some(login);
         Ok(challenge)
     }
@@ -122,7 +122,7 @@ impl Engine {
     pub async fn verify_login(&mut self,code:String) -> Result<Value> {
         let login=self.login.as_ref().context("Request a sign-in code first")?;
         let input=VerifyEmail { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),code };
-        let result:LoginResult=Self::response(self.backend(reqwest::Method::POST,"/v1/auth/verify").json(&input).send().await?).await?;
+        let result:LoginResult=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/verify").json(&input),&self.live,None).await?).await?;
         self.saved.token=Some(result.token.context("Backend did not issue a session")?);
         self.login=None;
         self.account=None;
@@ -134,7 +134,7 @@ impl Engine {
 
     /// Query the authoritative balance rather than estimating provider usage locally.
     pub async fn refresh_account(&mut self) -> Result<Value> {
-        let response = self.backend(reqwest::Method::GET,"/v1/me").send().await?;
+        let response = crate::backend::send(self.backend(reqwest::Method::GET,"/v1/me"),&self.live,None).await?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             self.saved.token = None;
             self.account = None;
@@ -147,7 +147,7 @@ impl Engine {
 
     /// Revoke server access before clearing the local session.
     pub async fn logout(&mut self) -> Result<()> {
-        let response = self.backend(reqwest::Method::POST,"/v1/logout").send().await?;
+        let response = crate::backend::send(self.backend(reqwest::Method::POST,"/v1/logout"),&self.live,None).await?;
         if response.status()!=reqwest::StatusCode::UNAUTHORIZED { Self::response::<Value>(response).await?; }
         self.saved.token = None;
         self.saved.settings.commands_enabled = false;
@@ -211,7 +211,7 @@ impl Engine {
         self.begin_activity(self.saved.messages.len());
         let _active=self.controls.active(crate::controls::Remote { backend:self.saved.settings.backend.clone(),token:self.saved.token.clone().unwrap(),request:request.request_id });
         self.live.activity("Waiting for assistant…",Some(Default::default()));
-        let response = self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request).send().await?;
+        let response = crate::backend::send(self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request),&self.live,Some(&self.controls.stopped)).await?;
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::PAYMENT_REQUIRED {
@@ -307,10 +307,6 @@ impl Engine {
         self.retry().await
     }
 
-    /// Ask the backend to create a checkout for its configured credit package.
-    pub async fn checkout(&self) -> Result<Value> {
-        Self::response(self.backend(reqwest::Method::POST,"/v1/checkout").send().await?).await
-    }
 }
 
 /// Normalize a required launch argument to a validated backend origin.

@@ -8,7 +8,7 @@ pub struct Live(pub watch::Sender<Value>);
 
 impl Live {
     /// Keep one current view independently of the conversation lock for reconnecting browsers.
-    pub fn new() -> Self { Self(watch::channel(json!({"state":null,"busy":false,"activity":null,"error":null,"steps":[],"runs":[],"commands":[]})).0) }
+    pub fn new() -> Self { Self(watch::channel(json!({"state":null,"busy":false,"activity":null,"error":null,"steps":[],"runs":[],"commands":[],"connections":{}})).0) }
 
     /// Publish durable conversation state without credentials or duplicated output logs.
     pub fn state(&self, state: Value) { self.0.send_modify(|view|view["state"]=state); }

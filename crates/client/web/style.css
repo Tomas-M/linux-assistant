@@ -25,6 +25,10 @@ main { max-width:850px; margin:auto; padding:40px 28px calc(var(--composer-heigh
 .welcome { padding-top:clamp(24px,9vh,110px); text-align:center; }
 #messages article { margin:18px 0 34px; }
 #messages .user { margin:16px 0 34px auto; padding:15px 20px; width:fit-content; max-width:88%; border-radius:18px 18px 4px 18px; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; }
+#messages .user-message .user { margin-bottom:6px; }
+.prompt-actions { display:flex; justify-content:flex-end; margin-bottom:24px; }
+.prompt-actions .copy-prompt { width:30px; height:30px; color:var(--muted); border-radius:7px; }
+.copy-prompt svg { width:16px; height:16px; }
 .answer { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.75; }
 .answer p { margin:0 0 18px; }
 .answer p:last-child { margin-bottom:0; }
@@ -40,7 +44,8 @@ main { max-width:850px; margin:auto; padding:40px 28px calc(var(--composer-heigh
 .tool-result .disclosure-arrow,.past-progress summary svg { opacity:.5; transition:transform .15s; }
 .tool-result[open] .disclosure-arrow,.past-progress[open] summary svg { transform:rotate(90deg); }
 .tool-result pre { max-height:320px; overflow:auto; margin:12px 0; }
-.tool-result>button { font-size:13px; padding:6px 0; text-decoration:underline; text-underline-offset:3px; }
+.tool-result button { font-size:13px; padding:6px 0; text-decoration:underline; text-underline-offset:3px; }
+.command-activity { margin:12px 0; padding-left:14px; border-left:1px solid var(--border); overflow-wrap:anywhere; }
 .activity { margin:28px 0; }
 .activity-heading { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:14px; margin-bottom:16px; }
 #elapsed { margin-left:auto; font-size:13px; }
@@ -115,7 +120,11 @@ input[type=checkbox] { accent-color:var(--accent); }
 #process-status { font-size:13px; color:var(--muted); }
 .queued-messages { max-height:120px; overflow:auto; padding:8px 12px; margin-bottom:8px; background:var(--surface); border:1px solid var(--border); border-radius:12px; font-size:13px; }
 .queue-heading,.balance-note { margin:0 4px 8px; font-size:13px; color:var(--muted); }
-.balance-note { color:var(--warning); padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:10px; }
+.balance-note { display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; color:var(--warning); padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:10px; }
+.balance-note>span { flex:1; min-width:180px; }
+.balance-note button { font-size:13px; padding:6px 10px; white-space:nowrap; }
+.balance-note a { width:100%; color:var(--accent); }
+.connection-note { padding:8px 12px; margin:0 4px 8px; border:1px solid var(--border); border-radius:10px; background:var(--bg); font-size:13px; color:var(--muted); }
 .queued-messages>div { display:flex; align-items:center; gap:8px; padding:5px 0; }
 .queued-messages span { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .queued-messages button { flex-shrink:0; display:inline-flex; align-items:center; justify-content:center; padding:5px 8px; }

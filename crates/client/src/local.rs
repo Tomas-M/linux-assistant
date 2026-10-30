@@ -11,7 +11,7 @@ use crate::{engine::Engine, processes::Processes, storage};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection { pub url: String, pub secret: String }
 #[derive(Clone)]
-struct Local { controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
+struct Local { session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
 struct LocalError(anyhow::Error);
 type LocalResult = std::result::Result<Json<Value>,LocalError>;
 
@@ -90,7 +90,7 @@ pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
     let connection = Connection { url:format!("http://{}",listener.local_addr()?),secret:format!("{}{}",Uuid::new_v4().simple(),Uuid::new_v4().simple()) };
     storage::write(&directory.join("daemon.json"),&connection)?;
     let processes=engine.processes.clone();
-    let state = Local { controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let state = Local { session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
     tokio::select! {
         result=axum::serve(listener,router(state)).into_future() => result?,
@@ -318,7 +318,16 @@ async fn process_stop(State(state): State<Local>, axum::extract::Path(id): axum:
     Ok(Json(json!({"ok":true})))
 }
 /// Return a backend-created payment URL without handling card information locally.
-async fn checkout(State(state): State<Local>) -> LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.checkout().await?)) }
+async fn checkout(State(state): State<Local>) -> LocalResult {
+    // Durable authentication can be read while a task holds the engine, without exposing it to the browser.
+    let saved:crate::engine::Saved=storage::read(&state.session_path)?;
+    let request=crate::backend::client(60)?.post(format!("{}/v1/checkout",saved.settings.backend)).bearer_auth(saved.token.context("Sign in first")?);
+    let response=crate::backend::send(request,&state.live,None).await?;
+    let status=response.status();
+    let value:Value=response.json().await?;
+    if !status.is_success() { return Err(anyhow::anyhow!("{}",value["error"].as_str().unwrap_or("Checkout failed")).into()); }
+    Ok(Json(value))
+}
 /// Stop explicitly; closing a browser tab leaves the assistant available to the CLI.
 async fn stop(State(state): State<Local>) -> Json<Value> { state.stop.notify_one(); Json(json!({"ok":true})) }
 
@@ -348,7 +357,7 @@ mod tests {
         engine.full_access.store(true,std::sync::atomic::Ordering::SeqCst);
         let live=engine.live.clone();
         let processes=engine.processes.clone();
-        let app=router(Local { controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
+        let app=router(Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
             connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) });
         let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("authorization","Bearer test-token").header("content-type","application/json")
             .body(Body::from(json!({"text":"Write a marker","cwd":directory.path()}).to_string()))?;
@@ -383,7 +392,7 @@ mod tests {
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -411,12 +420,34 @@ mod tests {
         assert_eq!(recovered.stderr,record.stderr);
         Ok(())
     }
+    /// Checkout uses current private saved authentication even while a task owns the engine lock.
+    #[tokio::test]
+    async fn checkout_remains_available_during_a_task()->Result<()> {
+        let directory=tempfile::tempdir()?;
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend=format!("http://{}",listener.local_addr()?);
+        let app=Router::new().route("/v1/checkout",post(|headers:axum::http::HeaderMap|async move {
+            assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
+            Json(json!({"url":"https://checkout.stripe.com/fixture"}))
+        }));
+        let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
+        let mut engine=Engine::open(directory.path(),&backend).await?;
+        engine.saved.token=Some("checkout-fixture".into());
+        engine.settings(false)?;
+        let local=Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let _busy=local.engine.lock().await;
+        let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()))).await?.map_err(|error|error.0)?;
+        assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
+        server.abort();
+        Ok(())
+    }
+
     /// Possession of a token cannot bypass the Host and Origin checks.
     #[tokio::test]
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into(),secret:"test-token".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         for (host,origin,token,status) in [
             ("127.0.0.1:1234",None,None,StatusCode::UNAUTHORIZED),

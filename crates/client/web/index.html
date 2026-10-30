@@ -62,6 +62,7 @@
                     <p id="development-code" class="muted" hidden></p>
                 </form>
                 <p id="auth-status" role="status" aria-live="polite"></p>
+                <p id="auth-connection" class="connection-note" role="status" hidden></p>
             </section>
             <section id="messages" aria-label="Conversation"></section>
             <section id="activity" class="activity" hidden aria-label="Assistant progress">
@@ -80,7 +81,8 @@
             <button id="retry" hidden>Retry unfinished request</button>
             <div id="scroll-anchor"></div>
             <div id="composer-wrap" class="composer-wrap" hidden>
-                <p id="balance-note" class="balance-note" hidden>Add credits to start a new task or steer. Your running task can finish.</p>
+                <p id="backend-connection" class="connection-note" role="status" hidden></p>
+                <div id="balance-note" class="balance-note" hidden><span>Add credits to start a new task or steer. Your running task can finish.</span><button id="buy-inline" type="button">Buy credits</button><a id="balance-checkout-link" target="_blank" rel="noopener noreferrer" hidden>Open secure checkout</a></div>
                 <p id="queue-heading" class="queue-heading" hidden></p>
                 <div id="queued-messages" class="queued-messages" hidden></div>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>

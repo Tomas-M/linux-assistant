@@ -6,7 +6,7 @@ if (location.hash)
     history.replaceState(null,'',location.pathname+location.search);
 }
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[]}, busy=false, acting=false, stopped=false, startedAt, renderFrame, scrollAfterSend=false;
+let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, stopped=false, startedAt, renderFrame, scrollAfterSend=false;
 const eventController=new AbortController(), pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
 
@@ -90,8 +90,12 @@ function render()
     elements['balance-note'].hidden=!depleted;
     if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
     else setIcon(elements['settings-open'],'user');
-    for (const id of ['new','commands','credits','buy','logout','approve','deny','retry'])
+    for (const id of ['new','commands','credits','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
+    for (const id of ['buy','buy-inline']) elements[id].disabled=buying || !state.account;
+    for (const id of ['checkout-link','balance-checkout-link'])
+        if (elements[id].dataset.email!==state.account?.email) { elements[id].hidden=true; elements[id].removeAttribute('href'); }
+    renderConnection();
     renderComposer();
     renderLogin();
     elements.retry.hidden=!state.retry_available || busy;
@@ -115,9 +119,27 @@ function render()
     const commands=new Map(view.commands.map(command=>[command.after,command]));
     state.messages.forEach((message,index)=>
     {
-        const command=commands.get(index), result=command && state.messages[index+1]?.role==='tool'?state.messages[index+1].text:'';
-        const running=!!command && !result && view.busy;
-        const progress=progressByMessage.get(index) || [], key=JSON.stringify([progress,command,result,running]), previous=messageRows[index];
+        const previous=messageRows[index];
+        if (message.role==='tool')
+        {
+            if (!previous || previous.role!=='tool')
+            {
+                const element=document.createElement('div');
+                if (previous) previous.element.replaceWith(element);
+                else elements.messages.append(element);
+                messageRows[index]={element,role:'tool'};
+            }
+            if (state.messages[index-1]?.role==='tool')
+            {
+                if (messageRows[index].details) { messageRows[index].element.replaceChildren(); delete messageRows[index].details; delete messageRows[index].commandKey; }
+                return;
+            }
+            let end=index+1;
+            while (state.messages[end]?.role==='tool') end++;
+            renderCommandGroup(messageRows[index],index,end,commands);
+            return;
+        }
+        const progress=progressByMessage.get(index) || [], key=JSON.stringify(progress);
         if (previous?.text===message.text && previous.role===message.role && previous.progress===key) return;
         const group=document.createElement('div');
         if (previous) previous.element.replaceWith(group);
@@ -137,26 +159,6 @@ function render()
             }
             group.append(details);
         }
-        if (message.role==='tool')
-        {
-            if (commands.has(index-1)) return;
-            const details=document.createElement('details'), summary=document.createElement('summary'), output=document.createElement('pre');
-            details.className='tool-result'+(running?' live-command':'');
-            summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span>'+(command?(running?'Running command…':result?'Ran commands':'Command started'):'Command details')+'</span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
-            output.textContent=command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):message.text;
-            details.append(summary,output);
-            if (command)
-            {
-                const button=document.createElement('button');
-                button.className='quiet';
-                button.dataset.process=command.id;
-                button.textContent='Open in task manager';
-                details.append(button);
-            }
-            details.open=previous?.element.querySelector('details.tool-result')?.open || false;
-            group.append(details);
-            return;
-        }
         const article=document.createElement('article');
         article.className=message.role;
         const text=document.createElement('div');
@@ -165,10 +167,24 @@ function render()
         else text.textContent=message.text;
         article.append(text);
         group.append(article);
+        if (message.role==='user')
+        {
+            group.className='user-message';
+            const actions=document.createElement('div'), copy=document.createElement('button');
+            actions.className='prompt-actions';
+            copy.className='icon-button copy-prompt';
+            copy.dataset.copyPrompt=index;
+            copy.title='Copy message';
+            copy.setAttribute('aria-label','Copy message');
+            setIcon(copy,'copy');
+            actions.append(copy);
+            group.append(actions);
+        }
     });
     renderCompletions();
     const activity=view.activity;
-    elements.activity.hidden=!activity || !view.busy;
+    const groupedCommand=activity?.progress===null && state.messages.at(-1)?.role==='tool';
+    elements.activity.hidden=!activity || !view.busy || groupedCommand;
     elements['activity-label'].classList.toggle('working',view.busy);
     if (activity)
     {
@@ -191,6 +207,51 @@ function render()
     }
     if (view.error) { elements.status.textContent=view.error; elements.status.dataset.taskError='true'; }
     else if (elements.status.dataset.taskError) { elements.status.textContent=''; delete elements.status.dataset.taskError; }
+}
+
+// Adjacent command events share a stable disclosure; conversation text starts a new group.
+function renderCommandGroup(row,start,end,commands)
+{
+    if (!row.details)
+    {
+        row.details=document.createElement('details');
+        row.details.className='tool-result';
+        const summary=document.createElement('summary');
+        summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
+        row.label=summary.querySelector('span');
+        row.activity=document.createElement('p');
+        row.activity.className='command-activity';
+        row.body=document.createElement('div');
+        row.details.append(summary,row.activity,row.body);
+        row.element.append(row.details);
+    }
+    const active=view.busy && end===state.messages.length && commands.has(end-1);
+    const grouped=view.commands.filter(command=>command.after>=start && command.after<end);
+    row.label.textContent='Command details';
+    if (grouped.length) row.label.textContent=active?'Running commands…':'Ran commands';
+    row.label.classList.toggle('working',active);
+    const activity=active && view.activity?.progress===null?view.activity.label:'';
+    row.activity.hidden=!activity;
+    row.activity.textContent=activity;
+    const key=JSON.stringify([state.messages.slice(start,end),grouped]);
+    if (row.commandKey===key) return;
+    row.commandKey=key;
+    row.body.replaceChildren();
+    for (let index=start;index<end;index++)
+    {
+        const command=commands.get(index), output=document.createElement('pre');
+        const result=command && index+1<end && !commands.has(index+1)?state.messages[++index].text:'';
+        output.textContent=command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):state.messages[index].text;
+        row.body.append(output);
+        if (command)
+        {
+            const button=document.createElement('button');
+            button.className='quiet';
+            button.dataset.process=command.id;
+            button.textContent='Open in task manager';
+            row.body.append(button);
+        }
+    }
 }
 
 // Completed tasks keep their own timestamp and interrupted text, even when the next queued task starts.
@@ -252,18 +313,24 @@ function renderCompletions()
 // Copy the final response, or its interrupted preview, without commands or progress chatter.
 elements.messages.addEventListener('click',async event=>
 {
-    const copy=event.target.closest('[data-copy]'), process=event.target.closest('[data-process]');
+    const copy=event.target.closest('[data-copy],[data-copy-prompt]'), process=event.target.closest('[data-process]');
     if (copy)
     {
-        const run=view.runs.filter(run=>run.finished_at)[Number(copy.dataset.copy)];
-        const text=run.partial || state.messages.slice(run.start,run.end).findLast(message=>message.role==='assistant')?.text || '';
+        const prompt=copy.hasAttribute('data-copy-prompt'), label=prompt?'Copy message':'Copy response';
+        let text;
+        if (prompt) text=state.messages[Number(copy.dataset.copyPrompt)].text;
+        else
+        {
+            const run=view.runs.filter(run=>run.finished_at)[Number(copy.dataset.copy)];
+            text=run.partial || state.messages.slice(run.start,run.end).findLast(message=>message.role==='assistant')?.text || '';
+        }
         try
         {
             await navigator.clipboard.writeText(text);
             setIcon(copy,'check');
             copy.title='Copied';
             copy.setAttribute('aria-label','Copied');
-            setTimeout(()=>{setIcon(copy,'copy');copy.title='Copy response';copy.setAttribute('aria-label','Copy response');},1600);
+            setTimeout(()=>{setIcon(copy,'copy');copy.title=label;copy.setAttribute('aria-label',label);},1600);
         }
         catch (error) { elements.status.textContent='Could not copy: '+error.message; }
     }
@@ -601,13 +668,22 @@ for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
 });
 for (const [id,path] of [['new','new'],['credits','account'],['logout','logout'],['retry','retry']])
     elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='logout') elements['settings-dialog'].close();}));
-elements.buy.addEventListener('click',()=>action(async()=>
+for (const id of ['buy','buy-inline']) elements[id].addEventListener('click',async()=>
 {
-    const checkout=await api('checkout',{});
-    elements['checkout-link'].href=checkout.url;
-    elements['checkout-link'].hidden=false;
-    window.open(checkout.url,'_blank','noopener,noreferrer');
-}));
+    if (buying || !state.account) return;
+    buying=true;
+    const email=state.account.email;
+    render();
+    try
+    {
+        const checkout=await api('checkout',{});
+        if (state.account?.email!==email) return;
+        for (const link of ['checkout-link','balance-checkout-link']) { elements[link].dataset.email=email; elements[link].href=checkout.url; elements[link].hidden=false; }
+        window.open(checkout.url,'_blank','noopener,noreferrer');
+    }
+    catch (error) { elements.status.textContent=error.message; }
+    finally { buying=false; render(); }
+});
 elements.stop.addEventListener('click',async()=>
 {
     try
@@ -780,7 +856,19 @@ const processTimer=setInterval(()=>
     const interval=elements['process-panel'].hidden && !view.busy?5000:1000;
     if (state?.authenticated && !document.hidden && Date.now()-lastProcessPoll>=interval) pollProcesses();
 },1000);
-const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin();},1000);
+// Connection attempts remain visible during both sign-in and an active task, including concurrent checkout.
+function renderConnection()
+{
+    const retry=Object.values(view.connections).sort((a,b)=>b.attempt-a.attempt)[0];
+    for (const id of ['backend-connection','auth-connection'])
+    {
+        elements[id].hidden=!retry;
+        if (!retry) continue;
+        const seconds=Math.max(0,Math.ceil((retry.retry_at-Date.now())/1000));
+        elements[id].textContent=(seconds?'Backend unavailable. Retrying in '+seconds+'s':'Connecting to backend…')+' · attempt '+retry.attempt+' of 5';
+    }
+}
+const elapsedTimer=setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin(); renderConnection();},1000);
 // Reserve the actual composer height, including queued messages and a multiline draft, below the transcript.
 new ResizeObserver(()=>
 {
