@@ -85,6 +85,12 @@
         </section>
         <section id="settings">
             <div class="section-heading"><div><h2>Backend settings</h2><p>Saved in the server database. Changes apply immediately to new requests; active AI requests keep their settings.</p></div></div>
+            <div class="panel">
+                <h3>Backup and restore</h3>
+                <p class="hint">Includes saved settings, integration secrets, connected AI account credentials and pause settings. Keep the JSON file private. Restore preserves the current admin password, users, credits and conversation history. Pause active AI accounts and wait for their turns to finish before restoring.</p>
+                <div class="actions"><button id="backup-settings" type="button">Download backup</button><button id="restore-settings" type="button" class="quiet">Restore backup</button><input id="restore-file" type="file" accept=".json,application/json" hidden></div>
+                <p id="backup-status" role="status" aria-live="polite"></p>
+            </div>
             <form id="backend-settings" class="panel">
                 <div id="settings-fields"></div>
                 <fieldset><legend>Credit packs</legend><p class="hint">One button per row, in this order. Enter the matching one-time USD Price from Stripe. The USD amount is displayed to users; Stripe charges the selected Price ID.</p>

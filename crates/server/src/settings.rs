@@ -6,6 +6,8 @@ use rusqlite::{params,OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json,Value};
 use crate::{config::{Config,FieldError},db::{secret,Db},App,ApiError,ApiResult};
+mod backup;
+pub use backup::{download,restore};
 #[cfg(test)]
 mod tests;
 

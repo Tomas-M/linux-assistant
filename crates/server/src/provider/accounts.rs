@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 use uuid::Uuid;
 
-pub(super) struct Login { id:Uuid, instructions:Value, error:Arc<std::sync::Mutex<Option<String>>>, task:tokio::task::JoinHandle<()> }
+pub(super) struct Login { id:Uuid, instructions:Value, error:Arc<std::sync::Mutex<Option<String>>>, pub(super) task:tokio::task::JoinHandle<()> }
 impl Login {
     /// Completion and failure are derived from the worker task, never persisted as account states.
     fn view(&self)->Value {
@@ -28,7 +28,7 @@ impl Pool {
     /// Persist pause changes without touching credentials or interrupting active threads.
     pub fn pause(&self,db:&Db,id:&str,paused:bool)->Result<()> {
         let account=self.account(id)?;
-        let _access=account.access.try_read().context("Account is being deleted; refresh the dashboard")?;
+        let _access=account.access.try_read().context("Account is being updated; refresh the dashboard")?;
         ensure!(self.registered(&account),"Unknown account");
         let connection=db.0.lock().unwrap();
         if paused { connection.execute("INSERT OR IGNORE INTO provider_pauses(home) VALUES(?1)",[&account.home])?; }

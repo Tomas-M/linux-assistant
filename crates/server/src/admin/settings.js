@@ -144,3 +144,53 @@ document.getElementById('backend-settings').addEventListener('submit',async even
     finally { button.disabled=false; }
 });
 loadSettings().catch(error=>{document.getElementById('settings-result').textContent=error.message;});
+
+// Serialize settings transfers with Save so a restore cannot race a draft submission in this tab.
+function setTransferBusy(busy)
+{
+    for (const id of ['backup-settings','restore-settings','save-settings']) document.getElementById(id).disabled=busy;
+}
+
+document.getElementById('backup-settings').addEventListener('click',async()=>
+{
+    if (document.getElementById('save-settings').disabled) return;
+    const status=document.getElementById('backup-status');
+    setTransferBusy(true); status.textContent='Preparing backup…';
+    try
+    {
+        const backup=await api('settings/backup');
+        const url=URL.createObjectURL(new Blob([JSON.stringify(backup,null,2)+'\n'],{type:'application/json;charset=utf-8'})),link=document.createElement('a');
+        link.href=url; link.download='linux-assistant-settings.json'; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+        status.textContent='Backup download started. It includes private credentials; keep it in a safe place.';
+    }
+    catch (error) { status.textContent=error.message; }
+    finally { setTransferBusy(false); }
+});
+
+document.getElementById('restore-settings').addEventListener('click',()=>
+{
+    if (!document.getElementById('save-settings').disabled) document.getElementById('restore-file').click();
+});
+document.getElementById('restore-file').addEventListener('change',async event=>
+{
+    const file=event.target.files[0],status=document.getElementById('backup-status');
+    event.target.value='';
+    if (!file || document.getElementById('save-settings').disabled) return;
+    setTransferBusy(true); status.textContent='Reading backup…';
+    try
+    {
+        if (file.size>16*1024*1024) throw new Error('The settings backup exceeds the 16 MiB upload limit.');
+        let backup;
+        try { backup=JSON.parse(await file.text()); } catch { throw new Error('This file is not valid JSON.'); }
+        if (!backup?.settings || !Array.isArray(backup.accounts)) throw new Error('Choose a settings backup downloaded from this application.');
+        if (!confirm('Replace saved settings and AI accounts with this backup ('+backup.accounts.length+' accounts)? Public URL: '+backup.settings.public_url+'. Unsaved edits will be discarded. The current admin password, users, credits and conversation history will be kept.')) { status.textContent='Restore cancelled.'; return; }
+        status.textContent='Restoring settings and AI accounts…';
+        await api('settings/restore',backup);
+        clearSettingsError();
+        document.getElementById('new-password').value=''; document.getElementById('confirm-password').value='';
+        await loadSettings(); await refresh();
+        status.textContent='Settings and AI accounts restored. The admin password is unchanged.';
+    }
+    catch (error) { status.textContent=error.message; }
+    finally { setTransferBusy(false); }
+});

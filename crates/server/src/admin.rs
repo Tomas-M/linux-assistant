@@ -2,7 +2,7 @@ mod reports;
 #[cfg(test)]
 mod tests;
 
-use axum::{body::Body, extract::{Path, State}, http::{header, HeaderMap, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Redirect, Response}, routing::{get, post}, Form, Json, Router};
+use axum::{body::Body, extract::{DefaultBodyLimit, Path, State}, http::{header, HeaderMap, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Redirect, Response}, routing::{get, post}, Form, Json, Router};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,6 +19,8 @@ pub fn router(app: App) -> Router<App> {
         .route("/admin/api/users/{id}/credits",post(credits)).route("/admin/api/users/{id}/block",post(block))
         .route("/admin/api/users/{id}/revoke",post(revoke)).route("/admin/api/users/{id}/checkout",post(checkout))
         .route("/admin/api/settings",get(crate::settings::view).post(crate::settings::save))
+        .route("/admin/api/settings/backup",get(crate::settings::download))
+        .route("/admin/api/settings/restore",post(crate::settings::restore).layer(DefaultBodyLimit::max(16*1024*1024)))
         .route("/admin/api/logout",post(logout)).route_layer(middleware::from_fn_with_state(app,authorize));
     private.route("/admin/setup",get(crate::settings::setup_page).post(crate::settings::setup))
         .route("/admin/login",get(|State(app):State<App>|async move {

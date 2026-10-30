@@ -10,16 +10,20 @@ impl Pool {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let mut tasks=tokio::task::JoinSet::new();
-            for account in self.accounts() {
-                let pool=self.clone();
-                let db=db.clone();
-                tasks.spawn(async move { pool.probe(&db,&account).await });
-            }
-            while let Some(result)=tasks.join_next().await {
-                let error=match result { Ok(Ok(()))=>continue,Ok(Err(error))=>format!("{error:#}"),Err(error)=>error.to_string() };
-                crate::diagnostics::record("error","account_monitor",None,None,&error);
-            }
+            self.clone().refresh(db.clone()).await;
+        }
+    }
+
+    /// Startup, scheduled refreshes and restored credentials share the same bounded parallel probes.
+    pub async fn refresh(self:Arc<Self>,db:Arc<Db>) {
+        let mut tasks=tokio::task::JoinSet::new();
+        for account in self.accounts() {
+            let (pool,db)=(self.clone(),db.clone());
+            tasks.spawn(async move { pool.probe(&db,&account).await });
+        }
+        while let Some(result)=tasks.join_next().await {
+            let error=match result { Ok(Ok(()))=>continue,Ok(Err(error))=>format!("{error:#}"),Err(error)=>error.to_string() };
+            crate::diagnostics::record("error","account_monitor",None,None,&error);
         }
     }
 

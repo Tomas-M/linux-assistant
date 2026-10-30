@@ -3,6 +3,8 @@ mod transport;
 mod progress;
 mod monitor;
 mod accounts;
+mod backup;
+pub use backup::AccountBackup;
 #[cfg(test)]
 mod tests;
 
