@@ -132,6 +132,8 @@ dialog::backdrop { background:#14261b38; backdrop-filter:blur(3px); }
 #settings-dialog { padding:12px; overflow:hidden; }
 #settings-dialog[open] { display:flex; flex-direction:column; }
 .settings-scroll { min-height:0; overflow-y:auto; padding:16px; }
+#settings-dialog .button-row { flex-wrap:nowrap; }
+#settings-dialog .button-row button { flex:1; min-width:0; padding:9px 10px; font-size:14px; }
 .dialog-heading,.process-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .dialog-heading h2 { margin:0; }
 .account-balance { display:grid; gap:8px; margin:24px 0; }
