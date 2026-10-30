@@ -42,10 +42,11 @@ async function addAttachments(files)
             }
             else
             {
-                const textType=file.type.startsWith('text/') || /\.(txt|md|log|csv|tsv|json|jsonl|xml|html|css|js|ts|jsx|tsx|rs|py|sh|ps1|toml|yaml|yml|ini|conf|sql|c|h|cpp|hpp|java|php|svg)$/iu.test(file.name) || !file.name.includes('.');
-                if (!textType) throw new Error(file.name+': supported files are PNG, JPEG, WebP, and UTF-8 text/code. PDFs, Office files and archives are not supported yet.');
-                const content=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());
-                if (content.includes('\0')) throw new Error(file.name+': this is a binary file, not UTF-8 text.');
+                // Text is identified by its contents, regardless of its extension or desktop MIME mapping.
+                let content;
+                try { content=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()); }
+                catch (error) { if (!(error instanceof TypeError)) throw error; throw new Error(file.name+': this is not valid UTF-8 text. Supported images are PNG, JPEG and WebP.'); }
+                if (/[\u0000-\u0008\u000b\u000e-\u001f\u007f]/u.test(content)) throw new Error(file.name+': this contains binary control bytes, not readable text.');
                 added.push({kind:'text',name:file.name,content});
             }
         }
