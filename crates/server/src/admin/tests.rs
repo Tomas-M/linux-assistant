@@ -42,6 +42,11 @@ async fn authentication_and_browser_boundaries() -> anyhow::Result<()> {
     let invalid=app.clone().oneshot(Request::builder().method("POST").uri("/admin/login").header(header::CONTENT_TYPE,"application/x-www-form-urlencoded").body(Body::from("password=wrong"))?).await?;
     assert_eq!(invalid.status(),StatusCode::UNAUTHORIZED);
     let cookie=sign_in(&app).await?;
+    for (path,body) in [("/admin/api/accounts",json!({"api_key":null})),("/admin/api/accounts/missing/pause",json!({"paused":true})),("/admin/api/accounts/login/00000000-0000-0000-0000-000000000000/cancel",json!({}))] {
+        assert_eq!(request(&app,path,"",Some(body.clone())).await?.0,StatusCode::UNAUTHORIZED);
+        let response=app.clone().oneshot(Request::builder().method("POST").uri(path).header(header::COOKIE,&cookie).header(header::CONTENT_TYPE,"application/json").body(Body::from(body.to_string()))?).await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+    }
     assert_eq!(request(&app,"/admin/api/users",&cookie,None).await?.0,StatusCode::OK);
     let reference=uuid::Uuid::new_v4().to_string();
     crate::diagnostics::record("error","quota_refresh",Some(&reference),Some("account-1"),"TLS failed 世界; Bearer private-test-token");

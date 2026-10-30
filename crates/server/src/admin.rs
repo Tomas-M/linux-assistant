@@ -12,7 +12,8 @@ use crate::{db::{hash, now, secret}, App, ApiError, ApiResult};
 /// Keep every administrative data route behind the same session and browser-write checks.
 pub fn router(app: App) -> Router<App> {
     let private=Router::new().route("/admin",get(||async { Html(include_str!("admin/dashboard.html")) }))
-        .route("/admin/api/accounts",get(accounts)).route("/admin/api/report",get(reports::report))
+        .route("/admin/api/accounts",get(accounts).post(add_account)).route("/admin/api/report",get(reports::report))
+        .route("/admin/api/accounts/login/{id}/cancel",post(cancel_account_login)).route("/admin/api/accounts/{id}/pause",post(pause_account))
         .route("/admin/api/logs",get(crate::diagnostics::list))
         .route("/admin/api/users",get(reports::users)).route("/admin/api/accounts/{id}/test",post(test_account))
         .route("/admin/api/users/{id}/credits",post(credits)).route("/admin/api/users/{id}/block",post(block))
@@ -80,17 +81,45 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Respons
 
 /// Expose fresh or explicitly stale quota readings without waiting for running model requests.
 async fn accounts(State(app): State<App>) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({"accounts":app.pool.account_status(&app.db)?,"now":now()})))
+    Ok(Json(json!({"accounts":app.pool.account_status(&app.db)?,"login":app.pool.login_status().await,"now":now()})))
+}
+
+#[derive(Deserialize)]
+struct AddAccount { api_key:Option<String> }
+/// Run sign-in independently of the HTTP connection; all credentials stay on the backend.
+async fn add_account(State(app):State<App>,Json(input):Json<AddAccount>)->ApiResult<Json<Value>> {
+    if app.config.dev { return Err(ApiError::bad("Live account sign-in is disabled in development mode")); }
+    tokio::spawn(async move {
+        app.pool.add(app.db,input.api_key).await.map(Json).map_err(|error| {
+            let message=crate::diagnostics::clean(&format!("{error:#}"));
+            crate::diagnostics::record("error","account_login",None,None,&message);
+            ApiError::bad(&message)
+        })
+    }).await?
+}
+
+/// Cancel only the pending sign-in referenced by the current admin page.
+async fn cancel_account_login(State(app):State<App>,Path(id):Path<uuid::Uuid>)->ApiResult<Json<Value>> {
+    app.pool.cancel_login(id).await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+struct AccountAccess { paused:bool }
+/// Pauses persist across restarts and never revoke credentials or kill a running turn.
+async fn pause_account(State(app):State<App>,Path(id):Path<String>,Json(input):Json<AccountAccess>)->ApiResult<Json<Value>> {
+    app.pool.pause(&app.db,&id,input.paused)?;
+    Ok(Json(json!({"ok":true})))
 }
 
 #[derive(Deserialize)]
 struct TestPrompt { prompt: String }
 
 /// Let an operator verify a specific account without silently falling back to another one.
-async fn test_account(State(app): State<App>, Path(id): Path<usize>, Json(input): Json<TestPrompt>) -> ApiResult<Json<Value>> {
+async fn test_account(State(app): State<App>, Path(id): Path<String>, Json(input): Json<TestPrompt>) -> ApiResult<Json<Value>> {
     if input.prompt.trim().is_empty() || input.prompt.len()>2000 { return Err(ApiError::bad("Enter a prompt of 1–2000 UTF-8 bytes")); }
     tokio::spawn(async move {
-        app.pool.test_account(&app.config,&app.db,id,input.prompt).await.map(Json).map_err(|error|ApiError::busy(&error.to_string()))
+        app.pool.test_account(&app.config,&app.db,app.pool.index(&id)?,input.prompt).await.map(Json).map_err(|error|ApiError::busy(&error.to_string()))
     }).await?
 }
 

@@ -1,4 +1,4 @@
-use std::{path::Path,sync::{LazyLock,Mutex,OnceLock}};
+use std::{path::Path,sync::{LazyLock,Mutex,OnceLock,RwLock}};
 use anyhow::{Context,Result};
 use axum::{extract::Query,Json};
 use regex::Regex;
@@ -10,7 +10,7 @@ use crate::{config::Config,db::now,ApiError,ApiResult};
 static LOG:OnceLock<Log>=OnceLock::new();
 const MAX_ENTRIES:i64=10_000;
 const RETENTION:i64=30*86400;
-struct Log { connection:Mutex<Connection>,secrets:Vec<String> }
+struct Log { connection:Mutex<Connection>,secrets:RwLock<Vec<String>> }
 
 /// Keep diagnostics independent of the application database, including errors while its lock is held.
 pub fn init(config:&Config)->Result<()> {
@@ -19,10 +19,18 @@ pub fn init(config:&Config)->Result<()> {
     LOG.set(Log::open(&config.database.with_extension("logs.db"),secrets)?).map_err(|_|anyhow::anyhow!("Diagnostics already initialized"))
 }
 
+/// Register runtime-added API keys so even provider messages cannot persist their literal value.
+pub fn protect(secret:&str) {
+    if let Some(log)=LOG.get() {
+        let mut secrets=log.secrets.write().unwrap();
+        if !secret.is_empty() && !secrets.iter().any(|value|value==secret) { secrets.push(secret.into()); }
+    }
+}
+
 /// Redact known configuration secrets and common credential formats before storing or printing errors.
 pub fn clean(message:&str)->String {
     let mut text=message.to_owned();
-    if let Some(log)=LOG.get() { for secret in &log.secrets { text=text.replace(secret,"[redacted]"); } }
+    if let Some(log)=LOG.get() { for secret in log.secrets.read().unwrap().iter() { text=text.replace(secret,"[redacted]"); } }
     static PATTERNS:LazyLock<Vec<Regex>>=LazyLock::new(||[
         r"(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+",
         r"\b(?:sk-[A-Za-z0-9_-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]+|whsec_[A-Za-z0-9]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
@@ -63,7 +71,7 @@ impl Log {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS diagnostics(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at INTEGER NOT NULL,level TEXT NOT NULL,stage TEXT NOT NULL,request_id TEXT,account TEXT,message TEXT NOT NULL); CREATE INDEX IF NOT EXISTS diagnostics_time ON diagnostics(created_at);")?;
         connection.execute("DELETE FROM diagnostics WHERE created_at<?1",[now()-RETENTION])?;
-        Ok(Self { connection:Mutex::new(connection),secrets })
+        Ok(Self { connection:Mutex::new(connection),secrets:RwLock::new(secrets) })
     }
 
     /// Bound both history length and age; logging errors do not change request settlement.

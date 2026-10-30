@@ -12,6 +12,8 @@ fn main() -> Result<()> {
         let method=request["method"].as_str().unwrap_or_default();
         if method=="initialized" { continue; }
         writeln!(fs::OpenOptions::new().create(true).append(true).open(home.join("events.jsonl"))?,"{request}")?;
+        // New account fixtures have no credentials until the mock login completes.
+        if method=="initialize" && !home.join("fixture.json").exists() { fs::write(home.join("fixture.json"),json!({"primary":0,"login_fixture":true}).to_string())?; }
         let mut settings: Value=serde_json::from_slice(&fs::read(home.join("fixture.json"))?)?;
         if settings["rpc_error_method"]==method {
             println!("{}",json!({"id":request["id"],"error":{"code":-32000,"message":settings["error_message"],"data":{"codexErrorInfo":"unauthorized"}}}));
@@ -21,7 +23,19 @@ fn main() -> Result<()> {
         let turn_id=uuid::Uuid::new_v4().to_string();
         let result=match method {
             "initialize" => json!({}),
-            "account/read" => json!({"account":{"type":"chatgpt","email":"fixture@example.test","planType":"plus"}}),
+            "account/read" => {
+                let account=if settings["login_fixture"]==true && !home.join("auth.json").exists() { Value::Null }
+                    else if settings["auth_type"]=="apiKey" { json!({"type":"apiKey"}) }
+                    else { json!({"type":"chatgpt","email":"fixture@example.test","planType":"plus"}) };
+                json!({"account":account})
+            }
+            "account/login/start" => {
+                settings["auth_type"]=request["params"]["type"].clone();
+                fs::write(home.join("fixture.json"),settings.to_string())?;
+                fs::write(home.join("auth.json"),json!({"OPENAI_API_KEY":request["params"]["apiKey"]}).to_string())?;
+                if request["params"]["type"]=="apiKey" { json!({"type":"apiKey"}) }
+                else { json!({"type":"chatgptDeviceCode","loginId":"fixture-login","verificationUrl":"https://auth.openai.com/codex/device","userCode":"ABCD-1234"}) }
+            }
             "account/rateLimits/read" => json!({"rateLimitsByLimitId":{"codex":{
                 "primary":{"usedPercent":settings["primary"],"resetsAt":4000000000i64},
                 "secondary":settings.get("secondary").map(|used|json!({"usedPercent":used,"resetsAt":4000000000i64}))
@@ -53,6 +67,10 @@ fn main() -> Result<()> {
         }
         println!("{}",json!({"id":request["id"],"result":result}));
         io::stdout().flush()?;
+        if method=="account/login/start" {
+            println!("{}",json!({"method":"account/login/completed","params":{"loginId":"fixture-login","success":true,"error":null}}));
+            io::stdout().flush()?;
+        }
         if matches!(method,"turn/steer"|"turn/interrupt") {
             let thread=request["params"]["threadId"].as_str().unwrap();
             let Some((turn,weight))=held.remove(thread) else { continue; };

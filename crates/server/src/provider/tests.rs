@@ -46,6 +46,45 @@ fn ranks_by_bottleneck_and_rejects_unknown_quota() -> Result<()> {
     Ok(())
 }
 
+/// UI-added credentials survive restart, API accounts skip subscription quotas, and pauses control failover.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn integration_admin_account_controls()->Result<()> {
+    crate::diagnostics::init_test();
+    let directory=tempfile::tempdir()?;
+    let mut config=Config::parse_from(["assistant-server"]); config.database=directory.path().join("test.db");
+    let db=Arc::new(Db::open(&config.database)?);
+    let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into(); let pool=Arc::new(pool);
+    let pending=pool.clone().add(db.clone(),None).await?;
+    assert_eq!(pending["user_code"],"ABCD-1234");
+    tokio::time::timeout(Duration::from_secs(10),async { while pool.login_status().await["finished"]!=true { tokio::time::sleep(Duration::from_millis(10)).await; } }).await?;
+    assert!(pool.login_status().await["error"].is_null());
+    let chatgpt=pool.account_status(&db)?[0]["id"].as_str().unwrap().to_owned();
+    let key="sk-fixture-private-1234567890";
+    pool.clone().add(db.clone(),Some(key.into())).await?;
+    assert!(!crate::diagnostics::clean(key).contains(key));
+    let accounts=pool.account_status(&db)?; assert_eq!(accounts.len(),2);
+    let api=accounts.iter().find(|account|account["limits"]["authType"]=="apiKey").unwrap();
+    let api_id=api["id"].as_str().unwrap().to_owned();
+    let api_home=api["home"].as_str().unwrap().to_owned();
+    assert!(!std::fs::read_to_string(std::path::Path::new(&api_home).join("events.jsonl"))?.contains("account/rateLimits/read"));
+    pool.pause(&db,&chatgpt,true)?;
+    let user=db.user("admin-account-controls@example.test",None,100)?; let mut chat=request();
+    assert_eq!(turn(&pool,&config,&db,user,&mut chat).await?.account_home.as_deref(),Some(api_home.as_str()));
+    account(std::path::Path::new(&api_home),json!({"auth_type":"apiKey","turn_error":"usageLimitExceeded"}))?;
+    assert!(pool.answer(&config,&db,user,&request()).await.is_err());
+    assert!(!std::fs::read_to_string(std::path::Path::new(&api_home).join("events.jsonl"))?.contains("account/rateLimits/read"));
+    pool.pause(&db,&api_id,true)?;
+    let error=pool.answer(&config,&db,user,&request()).await.err().unwrap(); assert!(error.to_string().contains("paused by operator"));
+    pool.pause(&db,&chatgpt,false)?;
+    assert_ne!(turn(&pool,&config,&db,user,&mut chat).await?.account_home.as_deref(),Some(api_home.as_str()));
+    drop(pool);
+    let reloaded=Pool::new(&config)?;
+    assert_eq!(reloaded.account_status(&db)?.iter().find(|account|account["id"]==api_id).unwrap()["paused"],true);
+    assert_eq!(reloaded.account_status(&db)?.iter().find(|account|account["id"]==chatgpt).unwrap()["paused"],false);
+    Ok(())
+}
+
 /// Preserve quota and generation causes, redact credentials, and record recovery without a model call.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
@@ -152,9 +191,9 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let mut chat=request();
     let first=turn(&pool,&config,&db,user,&mut chat).await?;
-    assert_eq!(first.account_home.as_deref(),Some(pool.accounts[2].home.as_str()));
+    assert_eq!(first.account_home.as_deref(),Some(pool.accounts()[2].home.as_str()));
     account(&config.codex_homes[2],json!({"primary":90,"secondary":90}))?;
-    pool.accounts[2].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
+    pool.accounts()[2].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let second=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_eq!(first.thread_id,second.thread_id);
     let events=std::fs::read_to_string(config.codex_homes[2].join("events.jsonl"))?;
@@ -180,7 +219,7 @@ async fn integration_persistent_account_affinity() -> Result<()> {
     assert_eq!(resumed.account_home,first.account_home);
     account(&config.codex_homes[0],json!({"primary":100,"secondary":90}))?;
     // Selection refreshes the provider only after the five-minute quota cache expires.
-    pool.accounts[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
+    pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let moved=turn(&pool,&config,&db,user,&mut chat).await?;
     assert_ne!(moved.account_home,first.account_home);
     assert_ne!(moved.thread_id,first.thread_id);
@@ -215,7 +254,7 @@ async fn integration_mid_turn_limit_and_errors() -> Result<()> {
         if error=="usageLimitExceeded" {
             let next=result?;
             assert_ne!(next.account_home,initial.account_home);
-            assert!(pool.accounts[0].limits.lock().await.unwrap().retry_at>now());
+            assert!(pool.accounts()[0].limits.lock().await.unwrap().retry_at>now());
         } else {
             assert!(result.is_err());
             let session=db.conversation(user,chat.conversation_id)?;
@@ -385,7 +424,8 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     assert_eq!(pool.account_status(&db)?[1]["email"],"fixture@example.test");
     pool.account_status(&db)?;
     assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
-    let _busy=pool.accounts[1].worker.lock().await;
+    let account=pool.accounts()[1].clone();
+    let _busy=account.worker.lock().await;
     pool.probe(&db,1).await?;
     assert_eq!(pool.account_status(&db)?[1]["busy"],false);
     assert_eq!(before,std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?);
@@ -417,9 +457,9 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     assert!(saved.checkpoint.contains("IMPORTANT_GOAL") && saved.checkpoint_at>0);
     assert!(serde_json::to_vec(&saved.messages[saved.checkpoint_at..])?.len()<64_000);
     account(&config.codex_homes[0],json!({"primary":100}))?;
-    pool.accounts[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
+    pool.accounts()[0].limits.lock().await.as_mut().unwrap().checked_at=now()-301;
     let moved=turn(&pool,&config,&db,user,&mut chat).await?;
-    assert_eq!(moved.account_home.as_deref(),Some(pool.accounts[1].home.as_str()));
+    assert_eq!(moved.account_home.as_deref(),Some(pool.accounts()[1].home.as_str()));
     let events=std::fs::read_to_string(config.codex_homes[1].join("events.jsonl"))?;
     let event:Value=serde_json::from_str(events.lines().find(|line|line.contains("\"method\":\"turn/start\"")).unwrap())?;
     let input=event["params"]["input"][0]["text"].as_str().unwrap();

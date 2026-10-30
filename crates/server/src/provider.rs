@@ -2,10 +2,11 @@ mod rpc;
 mod transport;
 mod progress;
 mod monitor;
+mod accounts;
 #[cfg(test)]
 mod tests;
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock}};
 use anyhow::{ensure, Context, Result};
 use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform, Role};
 use serde_json::Value;
@@ -13,33 +14,47 @@ use tokio::sync::Mutex;
 use crate::{config::Config, db::{now, Db}};
 use rpc::Rpc;
 
-pub struct Pool { accounts: Vec<ProviderAccount>, executable: PathBuf, selection: Mutex<()> }
+pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, login:Mutex<Option<accounts::Login>>, executable:PathBuf, selection:Mutex<()> }
 struct ProviderAccount { home: String, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>> }
 #[derive(Clone, Copy, Debug)]
-struct Limits { used: f64, retry_at: i64, checked_at: i64 }
+struct Limits { used:f64, retry_at:i64, checked_at:i64, api_key:bool }
 pub struct Answer { pub reply: AssistantReply, pub account_home: Option<String>, pub thread_id: Option<String>, pub checkpoint: Option<String> }
 
 impl Pool {
     /// Account directories are stable identities, so reordering configuration cannot reassign chats.
     pub fn new(config: &Config) -> Result<Self> {
-        let mut accounts = Vec::new();
-        for home in &config.codex_homes {
-            let home = home.canonicalize().context("Operator account directory does not exist")?.to_string_lossy().into_owned();
-            ensure!(!accounts.iter().any(|a: &ProviderAccount|a.home==home),"Duplicate operator account directory");
-            accounts.push(ProviderAccount { home,worker:Mutex::new(None),limits:Mutex::new(None) });
+        let managed=config.database.parent().unwrap().join("managed-accounts");
+        let mut homes=config.codex_homes.clone();
+        if managed.exists() {
+            let mut saved=std::fs::read_dir(&managed)?.filter_map(|entry|entry.ok()).filter(|entry|entry.file_type().is_ok_and(|kind|kind.is_dir()) && entry.path().join("auth.json").is_file()).map(|entry|entry.path()).collect::<Vec<_>>();
+            saved.sort(); homes.extend(saved);
         }
-        Ok(Self { accounts,executable:std::env::current_exe()?,selection:Mutex::new(()) })
+        let mut accounts=Vec::<Arc<ProviderAccount>>::new();
+        for home in &homes {
+            let home = home.canonicalize().context("Operator account directory does not exist")?.to_string_lossy().into_owned();
+            ensure!(!accounts.iter().any(|account|account.home==home),"Duplicate operator account directory");
+            if let Ok(auth)=std::fs::read(std::path::Path::new(&home).join("auth.json")) {
+                if let Ok(auth)=serde_json::from_slice::<Value>(&auth) {
+                    if let Some(key)=auth["OPENAI_API_KEY"].as_str() { crate::diagnostics::protect(key); }
+                }
+            }
+            accounts.push(Arc::new(ProviderAccount { home,worker:Mutex::new(None),limits:Mutex::new(None) }));
+        }
+        Ok(Self { accounts:RwLock::new(accounts),managed,login:Mutex::new(None),executable:std::env::current_exe()?,selection:Mutex::new(()) })
     }
+
+    /// Snapshot shared account handles without holding the registry lock across network operations.
+    fn accounts(&self)->Vec<Arc<ProviderAccount>> { self.accounts.read().unwrap().clone() }
 
     /// Lock only worker startup; each conversation then owns an independent session on that transport.
     async fn rpc(&self,index:usize)->Result<Rpc> {
-        let account=&self.accounts[index];
+        let account=self.accounts()[index].clone();
         let mut worker=account.worker.lock().await;
         if worker.as_ref().is_none_or(|rpc|!rpc.alive()) { *worker=Some(Rpc::start(&self.executable,&account.home).await?); }
         Ok(worker.as_ref().unwrap().session())
     }
 
-    /// Conversations run concurrently on each account and move only after a confirmed quota failure.
+    /// Conversations run concurrently and move after an operator pause or a confirmed quota failure.
     #[cfg(test)]
     pub async fn answer(&self, config: &Config, db: &Db, user: i64, request: &ChatRequest) -> Result<Answer> {
         self.answer_stream(config,db,user,request,None,None).await
@@ -86,7 +101,7 @@ impl Pool {
             let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000 || request.messages.iter().any(|message|message.attachments.is_some());
             let mut tried = Vec::new();
             let mut assigned = match &session.account_home {
-                Some(home) => Some(self.accounts.iter().position(|a|&a.home==home).context("Conversation account is no longer configured")?),
+                Some(home) => self.accounts().iter().position(|account|&account.home==home),
                 None => None,
             };
             loop {
@@ -95,7 +110,8 @@ impl Pool {
                     None => self.select(db,user,request,&tried).await?,
                 };
                 tried.push(index);
-                let account = &self.accounts[index];
+                let account=self.accounts()[index].clone();
+                if self.paused(db,&account.home)? { continue; }
                 self.probe(db,index).await?;
                 let limits=account.limits.lock().await.with_context(||format!("{}: account quota unavailable; see quota_refresh diagnostics",account.home))?;
                 if limits.retry_at>now() { continue; }
@@ -118,13 +134,14 @@ impl Pool {
                     }
                     Err(error) if error.downcast_ref::<QuotaReached>().is_some() => {
                         let mut cache=account.limits.lock().await;
-                        let mut limits = match rpc.call("account/rateLimits/read",serde_json::json!({})).await.and_then(|value|Limits::read(&value)) {
+                        // API limits are enforced upstream and have no subscription-quota endpoint.
+                        let mut limits = if limits.api_key { limits } else { match rpc.call("account/rateLimits/read",serde_json::json!({})).await.and_then(|value|Limits::read(&value)) {
                             Ok(value) => value,
                             Err(error) => {
                                 crate::diagnostics::record("warning","quota_refresh",Some(&request.request_id.to_string()),Some(&account.home),&format!("Could not refresh quota after a usage-limit response: {error:#}"));
                                 limits
                             }
-                        };
+                        } };
                         limits.retry_at = limits.retry_at.max(now()+60);
                         *cache=Some(limits);
                     }
@@ -139,17 +156,19 @@ impl Pool {
         let _selection = self.selection.lock().await;
         let mut candidates = Vec::new();
         let mut excluded=Vec::new();
-        for (index,account) in self.accounts.iter().enumerate() {
+        for (index,account) in self.accounts().iter().enumerate() {
             if tried.contains(&index) { excluded.push(format!("{}: already tried for this request",account.home)); continue; }
+            if self.paused(db,&account.home)? { excluded.push(format!("{}: paused by operator",account.home)); continue; }
             self.probe(db,index).await?;
             if let Some(limits) = *account.limits.lock().await {
-                if limits.retry_at<=now() { candidates.push((index,limits.used,db.assigned_conversations(&account.home)?)); }
+                if limits.retry_at<=now() { candidates.push((index,limits.api_key,limits.used,db.assigned_conversations(&account.home)?)); }
                 else { excluded.push(format!("{}: quota/cooldown blocks selection until {} UTC (Unix time); {:.1}% used; checked at {}",account.home,limits.retry_at,limits.used,limits.checked_at)); }
             } else { excluded.push(format!("{}: quota unavailable; see quota_refresh diagnostics for this account",account.home)); }
         }
-        let index = candidates.into_iter().min_by(|a,b|a.1.total_cmp(&b.1).then(a.2.cmp(&b.2))).map(|c|c.0)
-            .with_context(||format!("No selectable ChatGPT account. {}",if excluded.is_empty() { "No accounts configured".into() } else { excluded.join("; ") }))?;
-        db.bind_conversation(user,request.conversation_id,&self.accounts[index].home)?;
+        // Prefer subscription allowance when both modes are enabled; pausing ChatGPT selects API access.
+        let index = candidates.into_iter().min_by(|a,b|a.1.cmp(&b.1).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3))).map(|c|c.0)
+            .with_context(||format!("No selectable AI account. {}",if excluded.is_empty() { "No accounts configured".into() } else { excluded.join("; ") }))?;
+        db.bind_conversation(user,request.conversation_id,&self.accounts()[index].home)?;
         Ok(index)
     }
 }
@@ -165,6 +184,7 @@ impl std::error::Error for QuotaReached {}
 impl Limits {
     /// Unknown limits are not treated as unused quota; the latest exhausted reset controls eligibility.
     fn read(value: &Value) -> Result<Self> {
+        if value["authType"]=="apiKey" { return Ok(Self { used:0.0,retry_at:0,checked_at:now(),api_key:true }); }
         let limits = match value.get("rateLimitsByLimitId").filter(|v|v.is_object()) {
             Some(buckets) => &buckets["codex"], None => &value["rateLimits"],
         };
@@ -180,7 +200,7 @@ impl Limits {
         }
         if limits["rateLimitReachedType"].is_string() { retry_at=retry_at.max(now()+60); }
         let used = windows.into_iter().reduce(f64::max).context("Codex did not report its usage windows")?;
-        Ok(Self { used,retry_at,checked_at:now() })
+        Ok(Self { used,retry_at,checked_at:now(),api_key:false })
     }
 }
 

@@ -11,7 +11,7 @@ impl Pool {
         loop {
             interval.tick().await;
             let mut tasks=tokio::task::JoinSet::new();
-            for index in 0..self.accounts.len() {
+            for index in 0..self.accounts().len() {
                 let pool=self.clone();
                 let db=db.clone();
                 tasks.spawn(async move { pool.probe(&db,index).await });
@@ -25,13 +25,14 @@ impl Pool {
 
     /// A failed refresh preserves the last successful reading and clearly marks it as stale.
     pub(super) async fn probe(&self, db: &Db, index: usize) -> Result<()> {
-        let account=&self.accounts[index];
+        let account=self.accounts()[index].clone();
         let mut cached=account.limits.lock().await;
         if cached.is_some_and(|limits|now()-limits.checked_at<300) { return Ok(()); }
         let result=tokio::time::timeout(Duration::from_secs(20),async {
             let mut rpc=self.rpc(index).await.context("Starting authenticated account worker")?;
             let identity=rpc.call("account/read",json!({"refreshToken":false})).await.context("Reading account identity")?;
-            let limits=rpc.call("account/rateLimits/read",json!({})).await.context("Fetching account quotas")?;
+            let mut limits=if identity["account"]["type"]=="apiKey" { json!({}) } else { rpc.call("account/rateLimits/read",json!({})).await.context("Fetching account quotas")? };
+            limits["authType"]=identity["account"]["type"].clone();
             *cached=Some(Limits::read(&limits).context("Parsing account quotas")?);
             Ok::<_,anyhow::Error>((identity,limits))
         }).await.context("Quota refresh timed out after 20 seconds").and_then(|result|result);
@@ -42,7 +43,7 @@ impl Pool {
                 conn.execute("INSERT INTO provider_accounts(home,checked_at,email,plan,limits) VALUES(?1,?2,?3,?4,?5)
                     ON CONFLICT(home) DO UPDATE SET checked_at=excluded.checked_at,email=excluded.email,plan=excluded.plan,limits=excluded.limits,error=NULL",
                     params![account.home,now(),identity["account"]["email"].as_str(),identity["account"]["planType"].as_str(),limits.to_string()])?;
-                conn.execute("INSERT INTO quota_history(account_home,checked_at,limits) VALUES(?1,?2,?3)",params![account.home,now(),limits.to_string()])?;
+                if limits["authType"]!="apiKey" { conn.execute("INSERT INTO quota_history(account_home,checked_at,limits) VALUES(?1,?2,?3)",params![account.home,now(),limits.to_string()])?; }
                 if recovered { crate::diagnostics::record("info","quota_refresh",None,Some(&account.home),"Quota refresh recovered"); }
             }
             Err(error) => {
@@ -60,12 +61,13 @@ impl Pool {
     pub fn account_status(&self, db: &Db) -> Result<Vec<Value>> {
         use rusqlite::OptionalExtension;
         let conn=db.0.lock().unwrap();
-        self.accounts.iter().enumerate().map(|(index,account)| {
+        self.accounts().iter().map(|account| {
             let mut row=conn.query_row("SELECT checked_at,email,plan,limits,error FROM provider_accounts WHERE home=?1",[&account.home],|r| {
                 Ok(json!({"checked_at":r.get::<_,Option<i64>>(0)?,"email":r.get::<_,Option<String>>(1)?,"plan":r.get::<_,Option<String>>(2)?,
                     "limits":r.get::<_,Option<String>>(3)?,"error":r.get::<_,Option<String>>(4)?}))
             }).optional()?.unwrap_or(json!({"checked_at":null,"limits":null}));
-            row["id"]=json!(index);
+            row["id"]=json!(crate::db::hash(&account.home));
+            row["paused"]=json!(conn.query_row("SELECT EXISTS(SELECT 1 FROM provider_pauses WHERE home=?1)",[&account.home],|row|row.get::<_,bool>(0))?);
             row["home"]=json!(account.home);
             let active=account.worker.try_lock().ok().and_then(|worker|worker.as_ref().map(Rpc::active)).unwrap_or(0);
             row["active_requests"]=json!(active);
@@ -77,7 +79,8 @@ impl Pool {
 
     /// Test only the selected account, with an ephemeral thread, no tools, and no user debit.
     pub async fn test_account(&self, config: &Config, db: &Db, index: usize, prompt: String) -> Result<Value> {
-        let account=self.accounts.get(index).context("Unknown account")?;
+        let account=self.accounts().get(index).context("Unknown account")?.clone();
+        ensure!(!self.paused(db,&account.home)?,"Resume this account before running a test");
 
         let request=protocol::ChatRequest { task_id:uuid::Uuid::new_v4(),base:0,request_id:uuid::Uuid::new_v4(),conversation_id:uuid::Uuid::new_v4(),
             platform:Platform::Linux,messages:vec![protocol::Message { attachments:None, role:Role::User,text:prompt }],commands_enabled:false,cwd:"/".into() };

@@ -70,7 +70,7 @@ impl Config {
             ensure!(matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")), "Development URL must be localhost");
         } else {
             ensure!(url.scheme() == "https", "Production public URL must use HTTPS (reverse proxy)");
-            ensure!(!self.codex_homes.is_empty(), "Configure dedicated Codex account homes");
+            ensure!(!self.codex_homes.is_empty() || self.admin_password.is_some(), "Configure an admin password to add accounts, or dedicated Codex account homes");
             ensure!(!self.smtp_host.trim().is_empty() && !self.smtp_host.contains("://"), "Set ASSISTANT_SMTP_HOST to a hostname without ssl:// or smtps://");
             ensure!(self.smtp_port>0, "SMTP port must be nonzero");
             ensure!(self.smtp_username.as_ref().is_some_and(|value|!value.trim().is_empty()), "Configure ASSISTANT_SMTP_USERNAME");

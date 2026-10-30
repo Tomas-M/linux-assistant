@@ -3,6 +3,7 @@
 /.tools/
 /.dev/
 /.env
+/managed-accounts/
 *.db
 *.db-shm
 *.db-wal

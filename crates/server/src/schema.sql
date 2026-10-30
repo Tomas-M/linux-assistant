@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions(token_hash TEXT PRIMARY KEY, password_
 CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY REFERENCES users(id), created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS credit_adjustments(id TEXT PRIMARY KEY, ledger_id INTEGER NOT NULL UNIQUE REFERENCES ledger(id), note TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS provider_accounts(home TEXT PRIMARY KEY, checked_at INTEGER, email TEXT, plan TEXT, limits TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS provider_pauses(home TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), request_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
     account_home TEXT NOT NULL, purpose TEXT NOT NULL, model TEXT, thread_id TEXT, turn_id TEXT, started_at INTEGER NOT NULL, finished_at INTEGER, error TEXT,
     input_tokens INTEGER, cached_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER);

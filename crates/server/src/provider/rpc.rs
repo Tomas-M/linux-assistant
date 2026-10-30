@@ -40,7 +40,7 @@ impl Rpc {
     pub(super) async fn start(executable: &Path, home: &str) -> Result<Self> {
         let mut rpc = Self::start_unauthenticated(executable,home).await?;
         let auth = rpc.call("account/read",json!({"refreshToken":false})).await?;
-        ensure!(auth["account"]["type"]=="chatgpt","Operator account needs ChatGPT sign-in");
+        ensure!(matches!(auth["account"]["type"].as_str(),Some("chatgpt"|"apiKey")),"Operator account needs ChatGPT sign-in or an OpenAI API key");
         Ok(rpc)
     }
 

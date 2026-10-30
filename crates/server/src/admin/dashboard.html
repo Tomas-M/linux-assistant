@@ -17,9 +17,20 @@
         <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1>Operations overview</h1></div><span id="connection" role="status">Connecting…</span></div>
         <div id="notice" role="status" hidden></div>
         <section id="accounts">
-            <div class="section-heading"><div><h2>ChatGPT accounts</h2><p>Quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a7 7 0 0 1 12-3l3 3M4 16l3 3a7 7 0 0 0 12-3"/></svg>Refresh display</button></div>
+            <div class="section-heading"><div><h2>AI accounts</h2><p>ChatGPT quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a7 7 0 0 1 12-3l3 3M4 16l3 3a7 7 0 0 0 12-3"/></svg>Refresh display</button></div>
+            <details class="panel"><summary>Add account</summary>
+                <div class="account-add">
+                    <div><h3>ChatGPT account</h3><p>Sign in using a link and device code. Credentials are saved on this backend.</p><button id="account-connect" type="button">Sign in with ChatGPT</button></div>
+                    <form id="api-key-form"><h3>OpenAI API key</h3><p>Uses separately billed API access and the backend’s configured model.</p><label>API key<input id="api-key" type="password" autocomplete="new-password" maxlength="8192" required></label><button type="submit">Add API key</button></form>
+                </div><p id="account-add-status" role="status" aria-live="polite"></p>
+            </details>
+            <section id="account-login" class="panel" aria-label="ChatGPT sign-in" hidden>
+                <h3>Connect ChatGPT</h3><p id="account-login-status" role="status" aria-live="polite"></p>
+                <a id="account-login-link" target="_blank" rel="noopener noreferrer">Open OpenAI sign-in</a>
+                <strong id="account-login-code"></strong><button id="account-login-cancel" class="quiet" type="button">Cancel sign-in</button>
+            </section>
             <div id="account-cards" class="account-grid"></div>
-            <p class="hint">Quotas include activity on the ChatGPT account outside this service. Test prompts consume the selected account’s allowance and are recorded as admin tests; no user credits are deducted.</p>
+            <p class="hint">Pause blocks new turns; active turns finish. A later turn can continue on another enabled account using its recovery checkpoint. API accounts have no ChatGPT quota percentage; OpenAI bills their API usage. Test prompts consume the selected account’s allowance and are recorded as admin tests; no user credits are deducted.</p>
         </section>
         <section id="diagnostics">
             <div class="section-heading"><div><h2>Diagnostics</h2><p>Backend failures and recovery events. Latest entries refresh automatically.</p></div><button id="download-logs" class="quiet" disabled>Download displayed logs</button></div>

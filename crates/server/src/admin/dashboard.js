@@ -3,6 +3,7 @@ const state={page:0,userPage:0,users:[],accounts:[],selected:null,report:null,ad
 const number=new Intl.NumberFormat();
 const dollars=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:6});
 const markupCache=new WeakMap();
+let addingAccount=false;
 const logs={before:null,next:null,search:'',level:'',entries:[],version:0};
 
 // Preserve open disclosures and focus when the escaped markup has not changed.
@@ -87,7 +88,7 @@ async function loadAccounts()
     const container=document.getElementById('account-cards');
     const homes=new Set(data.accounts.map(account=>account.home));
     for (const card of [...container.children]) if (!homes.has(card.dataset.home)) card.remove();
-    if (!data.accounts.length) container.innerHTML='<article class="panel">No ChatGPT accounts configured'+(state.report?.development ? ' (development mode)' : '')+'.</article>';
+    if (!data.accounts.length) container.innerHTML='<article class="panel">No AI accounts configured'+(state.report?.development ? ' (development mode)' : '')+'.</article>';
     for (const account of data.accounts)
     {
         let card=[...container.children].find(card=>card.dataset.home===account.home);
@@ -101,14 +102,36 @@ async function loadAccounts()
         }
         card.querySelector('form').dataset.test=account.id;
         const stale=!account.checked_at || data.now-account.checked_at>330;
-        let status='Connected';
+        let status=account.limits?.authType==='apiKey'?'Key configured':'Connected';
         if (stale) status='Waiting for refresh';
         if (account.active_requests) status=count(account.active_requests)+' active';
         if (account.error) status='Refresh failed';
-        const markup='<span class="badge '+(account.error ? 'error' : stale ? 'warn' : '')+'">'+status+'</span><h3>'+escapeHtml(account.email || 'Account '+(account.id+1))+'</h3><p>'+escapeHtml(account.plan || 'Plan unknown')+'</p>'+quotaMarkup(account.limits)+'<small>Last checked '+utc(account.checked_at)+'</small><small class="account-home">'+escapeHtml(account.home)+'</small>'+(account.error ? '<p>'+escapeHtml(account.error)+'</p>' : '');
+        if (account.paused) status='Paused';
+        const apiKey=account.limits?.authType==='apiKey';
+        const button=card.querySelector('form button'); button.disabled=account.paused || button.dataset.running==='true';
+        let badge='';
+        if (account.paused || stale) badge='warn';
+        if (account.error) badge='error';
+        const title=account.email || (apiKey?'OpenAI API '+account.id.slice(0,8):account.home.split(/[\\/]/u).at(-1));
+        const quota=apiKey?'<p class="hint">API billing · no subscription quota percentage</p>':quotaMarkup(account.limits);
+        const markup='<span class="badge '+badge+'">'+escapeHtml(status)+'</span><h3>'+escapeHtml(title)+'</h3><p>'+escapeHtml(apiKey?'OpenAI API':account.plan || 'Plan unknown')+'</p>'+quota+'<small>'+count(account.active_requests)+' active turns</small><small>Last checked '+utc(account.checked_at)+'</small><small class="account-home">'+escapeHtml(account.home)+'</small>'+(account.error?'<p>'+escapeHtml(account.error)+'</p>':'')+'<button class="quiet account-access" data-pause="'+escapeHtml(account.id)+'" data-paused="'+account.paused+'">'+(account.paused?'Resume account':'Pause account')+'</button>';
         const statusBox=card.querySelector('.account-status');
         setMarkup(statusBox,markup);
     }
+    state.login=data.login;
+    document.getElementById('account-login').hidden=!data.login;
+    if (data.login)
+    {
+        const login=data.login, link=document.getElementById('account-login-link'), code=document.getElementById('account-login-code');
+        link.hidden=code.hidden=login.finished;
+        link.href=login.verification_url;
+        code.textContent=login.user_code;
+        document.getElementById('account-login-status').textContent=login.finished?(login.error || 'Account connected.'):'Open OpenAI sign-in and enter this code. Expires '+utc(login.expires_at)+'. This page updates automatically.';
+        document.getElementById('account-login-cancel').textContent=login.finished?'Dismiss':'Cancel sign-in';
+    }
+    const pendingLogin=!!data.login && !data.login.finished;
+    document.getElementById('account-connect').disabled=addingAccount || pendingLogin;
+    document.querySelector('#api-key-form button').disabled=addingAccount || pendingLogin;
     const select=document.getElementById('account-filter');
     const selected=select.value;
     const options='<option value="">All accounts</option>'+data.accounts.map(account=>'<option value="'+escapeHtml(account.home)+'">'+escapeHtml(account.email || account.home)+'</option>').join('');
@@ -277,14 +300,50 @@ async function refresh()
     finally { state.refreshing=false; }
 }
 
+// One pending sign-in is shared by all admin tabs; credentials are never retained in UI state.
+async function addAccount(key)
+{
+    if (addingAccount) return;
+    addingAccount=true;
+    document.getElementById('account-connect').disabled=true;
+    document.querySelector('#api-key-form button').disabled=true;
+    const status=document.getElementById('account-add-status'); status.textContent='Connecting…';
+    try
+    {
+        await api('accounts',{api_key:key});
+        document.getElementById('api-key').value='';
+        status.textContent=key?'API key saved. Run a short test to verify model access.':'Complete sign-in using the code below.';
+    }
+    catch (error) { status.textContent=error.message; }
+    finally { addingAccount=false; await loadAccounts().catch(error=>notice(error.message)); }
+}
+document.getElementById('account-connect').addEventListener('click',()=>addAccount(null));
+document.getElementById('api-key-form').addEventListener('submit',event=>{event.preventDefault();addAccount(document.getElementById('api-key').value.trim());});
+document.getElementById('account-login-cancel').addEventListener('click',async event=>
+{
+    const button=event.currentTarget; button.disabled=true;
+    try { await api('accounts/login/'+state.login.id+'/cancel',{}); await loadAccounts(); }
+    catch (error) { notice(error.message); }
+    finally { button.disabled=false; }
+});
+document.getElementById('account-cards').addEventListener('click',async event=>
+{
+    const button=event.target.closest('[data-pause]');
+    if (!button) return;
+    button.disabled=true;
+    try { await api('accounts/'+button.dataset.pause+'/pause',{paused:button.dataset.paused!=='true'}); await loadAccounts(); }
+    catch (error) { notice(error.message); }
+    finally { button.disabled=false; }
+});
+
 document.getElementById('account-cards').addEventListener('submit',async event=>
 {
     event.preventDefault();
     const form=event.target,button=form.querySelector('button'),result=form.parentElement.querySelector('.test-result');
-    button.disabled=true;result.textContent='Waiting for this account…';
+    button.disabled=true;button.dataset.running='true';result.textContent='Waiting for this account…';
     try { result.textContent=(await api('accounts/'+form.dataset.test+'/test',{prompt:form.elements.prompt.value})).text; await loadReport(); }
     catch (error) { result.textContent=error.message; }
-    finally { button.disabled=false; }
+    finally { delete button.dataset.running; button.disabled=!!state.accounts.find(account=>account.id===form.dataset.test)?.paused; }
 });
 document.getElementById('filters').addEventListener('submit',event=> { event.preventDefault();state.page=0;state.filters=query();loadReport().catch(error=>notice(error.message)); });
 document.getElementById('reset-filters').addEventListener('click',()=> { resetFilters();loadReport().catch(error=>notice(error.message)); });
