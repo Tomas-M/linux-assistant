@@ -116,6 +116,8 @@ fn router(state: Local) -> Router {
             Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{ICONS}}",protocol::ICONS_SVG))
         }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
+        .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
+        .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
         .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
         .route("/logo.png",get(|State(state):State<Local>|async move { match &state.brand.logo { Some(bytes)=>([(header::CONTENT_TYPE,"image/png")],bytes.clone()).into_response(),None=>StatusCode::NOT_FOUND.into_response() } }))

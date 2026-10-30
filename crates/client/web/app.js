@@ -1,7 +1,7 @@
 'use strict';
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
 let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
-const pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
+const pendingIds=new Set(), messageRows=[], completionRows=[];
 let queueKey='', summaryKey='', steeringKey='';
 let socialLogin, enabledProviders=[], emailEnabled=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
@@ -27,43 +27,7 @@ async function api(path,body)
     return value;
 }
 
-// Render a small Markdown subset with DOM nodes; HTML and links never become executable markup.
-function renderAnswer(element,text)
-{
-    if (renderedAnswers.get(element)===text) return;
-    renderedAnswers.set(element,text);
-    element.replaceChildren();
-    text.split('```').forEach((section,index)=>
-    {
-        if (index%2)
-        {
-            const pre=document.createElement('pre');
-            pre.textContent=section.replace(/^[\w+-]*\n/u,'');
-            element.append(pre);
-            return;
-        }
-        for (const paragraph of section.split(/\n\s*\n/u).filter(Boolean))
-        {
-            const lines=paragraph.split('\n'), list=lines.every(line=>/^\s*[-*] /u.test(line));
-            const block=document.createElement(list?'ul':/^#{1,3} /u.test(paragraph)?'h3':'p');
-            for (const line of list?lines:[paragraph.replace(/^#{1,3} /u,'')])
-            {
-                const target=list?document.createElement('li'):block;
-                const value=list?line.replace(/^\s*[-*] /u,''):line;
-                for (const part of value.split(/(\*\*[^*]+\*\*|\x60[^\x60]+\x60)/u))
-                {
-                    if (part.startsWith('**') && part.endsWith('**')) { const strong=document.createElement('strong'); strong.textContent=part.slice(2,-2); target.append(strong); }
-                    else if (part.startsWith('\x60') && part.endsWith('\x60')) { const code=document.createElement('code'); code.textContent=part.slice(1,-1); target.append(code); }
-                    else target.append(document.createTextNode(part));
-                }
-                if (list) block.append(target);
-            }
-            element.append(block);
-        }
-    });
-}
-
-// Model text, command output, and user input are displayed as text, never HTML.
+// Replies use safe Markdown; command output and user input remain plain text.
 function render()
 {
     if (!state) return;
