@@ -46,6 +46,39 @@ fn ranks_by_bottleneck_and_rejects_unknown_quota() -> Result<()> {
     Ok(())
 }
 
+/// Preserve quota and generation causes, redact credentials, and record recovery without a model call.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn integration_diagnostics_preserve_causes()->Result<()> {
+    crate::diagnostics::init_test();
+    let directory=tempfile::tempdir()?;
+    let mut config=Config::parse_from(["assistant-server"]);
+    config.codex_homes.push(directory.path().join("diagnostic-account"));
+    let home=&config.codex_homes[0];
+    account(home,json!({"primary":23,"rpc_error_method":"account/rateLimits/read","error_message":"HTTP 401: authentication expired; Bearer PRIVATE_TOKEN"}))?;
+    let db=Db::open(std::path::Path::new(":memory:"))?;
+    let mut pool=Pool::new(&config)?;
+    pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
+    pool.probe(&db,0).await?;
+    let status=pool.account_status(&db)?;
+    let error=status[0]["error"].as_str().unwrap();
+    assert!(error.contains("account/rateLimits/read") && error.contains("HTTP 401"));
+    assert!(!error.contains("PRIVATE_TOKEN"));
+    account(home,json!({"primary":23,"turn_error":"unexpectedServerError","error_message":"Upstream failed 世界; refresh_token=PRIVATE_TOKEN"}))?;
+    pool.probe(&db,0).await?;
+    assert!(pool.account_status(&db)?[0]["error"].is_null());
+    let user=db.user("diagnostic@example.test",None,100)?;
+    let error=pool.answer(&config,&db,user,&request()).await.err().unwrap();
+    assert!(error.to_string().contains("unexpectedServerError"));
+    let stored:String=db.0.lock().unwrap().query_row("SELECT error FROM usage ORDER BY id DESC LIMIT 1",[],|row|row.get(0))?;
+    assert!(stored.contains("Upstream failed 世界") && !stored.contains("PRIVATE_TOKEN"));
+    let filter=serde_json::from_value(json!({"search":home.to_string_lossy()}))?;
+    let logs=crate::diagnostics::list(axum::extract::Query(filter)).await.map_err(|_|anyhow::anyhow!("Cannot read diagnostics"))?.0;
+    assert!(logs.to_string().contains("Quota refresh recovered"));
+    assert!(logs.to_string().contains("HTTP 401") && !logs.to_string().contains("PRIVATE_TOKEN"));
+    Ok(())
+}
+
 /// Exercise early notifications and real JSONL deltas without forwarding private reasoning or JSON syntax.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]

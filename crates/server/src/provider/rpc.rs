@@ -21,16 +21,14 @@ impl Rpc {
         std::fs::create_dir_all(&workspace)?;
         let mut command = Command::new(executable);
         command.arg("--provider-worker").env("CODEX_HOME",home).env_remove("OPENAI_API_KEY").env_remove("CODEX_API_KEY")
-            .current_dir(workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+            .env("RUST_LOG","warn").current_dir(workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         // Provider children receive only their own authentication home, never application or payment secrets.
         for (key,_) in std::env::vars_os() {
             let name = key.to_string_lossy().to_ascii_uppercase();
             if ["ASSISTANT_","LINUX_ASSISTANT_","STRIPE_","GOOGLE_"].iter().any(|prefix|name.starts_with(prefix)) { command.env_remove(key); }
         }
         #[cfg(windows)] { command.creation_flags(0x08000000); }
-        // Integration workers use temporary, unsigned-in homes; expose their startup failures to tests.
-        #[cfg(test)] { command.stderr(Stdio::inherit()); }
-        let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?);
+        let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?,home.to_string_lossy().into_owned());
         let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,usage:HashMap::new() };
         rpc.call("initialize",json!({"clientInfo":{"name":"linux_assistant","title":"Linux Assistant","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true}})).await?;
@@ -75,7 +73,7 @@ impl Rpc {
             Some(events)=>events.recv().await.context("Provider conversation stream closed or overflowed")?,
             None=>self.global.recv().await?,
         };
-        ensure!(message["method"]!="assistant/transportClosed","Embedded Codex transport closed");
+        ensure!(message["method"]!="assistant/transportClosed","{}",self.transport.failure());
         if message["method"]=="thread/tokenUsage/updated" {
             if let Some(thread)=message["params"]["threadId"].as_str() { self.usage.insert(thread.into(),message["params"]["tokenUsage"]["total"].clone()); }
         }
@@ -85,10 +83,11 @@ impl Rpc {
     /// Match independent RPC responses while the account dispatcher continues delivering every thread's events.
     pub(super) async fn call(&mut self,method:&str,params:Value)->Result<Value> {
         if method=="thread/resume" { self.subscribe(params["threadId"].as_str().context("Missing thread ID")?).await?; }
-        let message=self.transport.call(self.owner,method,params).await?;
+        let message=self.transport.call(self.owner,method,params).await.with_context(||format!("Codex RPC {method}"))?;
         if let Some(error)=message.get("error") {
-            if error.pointer("/data/codexErrorInfo").is_some_and(|v|v=="usageLimitExceeded") { return Err(QuotaReached.into()); }
-            bail!("Codex protocol error: {}",error["message"]);
+            let detail=format!("Codex {method} failed: code={}; reason={}; {}",error["code"],error["data"]["codexErrorInfo"],error["message"].as_str().unwrap_or("No provider error message"));
+            if error.pointer("/data/codexErrorInfo").is_some_and(|v|v=="usageLimitExceeded") { return Err(anyhow::Error::from(QuotaReached).context(detail)); }
+            bail!("{detail}");
         }
         let result=message["result"].clone();
         if method=="thread/start" { self.subscribe(result["thread"]["id"].as_str().context("Missing thread ID")?).await?; }
@@ -205,8 +204,11 @@ impl Rpc {
                 Some("turn/completed") => {
                     let turn = &event["params"]["turn"];
                     if turn["id"].as_str().is_some_and(|id|id!=turn_id) { continue; }
-                    if turn["error"]["codexErrorInfo"]=="usageLimitExceeded" { return Err(QuotaReached.into()); }
-                    ensure!(turn["status"]=="completed","Provider did not complete the turn");
+                    if turn["status"]!="completed" {
+                        let detail=format!("Codex turn {}: reason={}; {}",turn["status"],turn["error"]["codexErrorInfo"],turn["error"]["message"].as_str().unwrap_or("No provider error message"));
+                        if turn["error"]["codexErrorInfo"]=="usageLimitExceeded" { return Err(anyhow::Error::from(QuotaReached).context(detail)); }
+                        bail!("{detail}");
+                    }
                     let mut value:Value=serde_json::from_str(&answer).context("Invalid assistant response")?;
                     let memory=if checkpoint {
                         let value=value.as_object_mut().context("Invalid assistant response")?.remove("checkpoint").context("Missing recovery checkpoint")?;

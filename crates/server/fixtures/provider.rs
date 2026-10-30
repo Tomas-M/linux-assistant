@@ -13,6 +13,11 @@ fn main() -> Result<()> {
         if method=="initialized" { continue; }
         writeln!(fs::OpenOptions::new().create(true).append(true).open(home.join("events.jsonl"))?,"{request}")?;
         let mut settings: Value=serde_json::from_slice(&fs::read(home.join("fixture.json"))?)?;
+        if settings["rpc_error_method"]==method {
+            println!("{}",json!({"id":request["id"],"error":{"code":-32000,"message":settings["error_message"],"data":{"codexErrorInfo":"unauthorized"}}}));
+            io::stdout().flush()?;
+            continue;
+        }
         let turn_id=uuid::Uuid::new_v4().to_string();
         let result=match method {
             "initialize" => json!({}),
@@ -113,7 +118,7 @@ fn main() -> Result<()> {
                     settings["primary"]=json!(100);
                     fs::write(home.join("fixture.json"),serde_json::to_vec(&settings)?)?;
                 }
-                println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turnId":turn_id,"turn":{"id":turn_id,"status":"failed","error":{"codexErrorInfo":error}}}}));
+                println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turnId":turn_id,"turn":{"id":turn_id,"status":"failed","error":{"codexErrorInfo":error,"message":settings["error_message"]}}}}));
             } else {
                 let text=format!("Fixture reply from {}",home.file_name().unwrap().to_string_lossy());
                 let mut answer=json!({"text":text,"command":null});

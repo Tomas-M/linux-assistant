@@ -17,7 +17,8 @@ impl Pool {
                 tasks.spawn(async move { pool.probe(&db,index).await });
             }
             while let Some(result)=tasks.join_next().await {
-                if !matches!(result,Ok(Ok(()))) { eprintln!("Account monitoring failed"); }
+                let error=match result { Ok(Ok(()))=>continue,Ok(Err(error))=>format!("{error:#}"),Err(error)=>error.to_string() };
+                crate::diagnostics::record("error","account_monitor",None,None,&error);
             }
         }
     }
@@ -28,24 +29,28 @@ impl Pool {
         let mut cached=account.limits.lock().await;
         if cached.is_some_and(|limits|now()-limits.checked_at<300) { return Ok(()); }
         let result=tokio::time::timeout(Duration::from_secs(20),async {
-            let mut rpc=self.rpc(index).await?;
-            let identity=rpc.call("account/read",json!({"refreshToken":false})).await?;
-            let limits=rpc.call("account/rateLimits/read",json!({})).await?;
-            *cached=Some(Limits::read(&limits)?);
+            let mut rpc=self.rpc(index).await.context("Starting authenticated account worker")?;
+            let identity=rpc.call("account/read",json!({"refreshToken":false})).await.context("Reading account identity")?;
+            let limits=rpc.call("account/rateLimits/read",json!({})).await.context("Fetching account quotas")?;
+            *cached=Some(Limits::read(&limits).context("Parsing account quotas")?);
             Ok::<_,anyhow::Error>((identity,limits))
-        }).await;
+        }).await.context("Quota refresh timed out after 20 seconds").and_then(|result|result);
         let conn=db.0.lock().unwrap();
         match result {
-            Ok(Ok((identity,limits))) => {
+            Ok((identity,limits)) => {
+                let recovered:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM provider_accounts WHERE home=?1 AND error IS NOT NULL)",[&account.home],|row|row.get(0))?;
                 conn.execute("INSERT INTO provider_accounts(home,checked_at,email,plan,limits) VALUES(?1,?2,?3,?4,?5)
                     ON CONFLICT(home) DO UPDATE SET checked_at=excluded.checked_at,email=excluded.email,plan=excluded.plan,limits=excluded.limits,error=NULL",
                     params![account.home,now(),identity["account"]["email"].as_str(),identity["account"]["planType"].as_str(),limits.to_string()])?;
                 conn.execute("INSERT INTO quota_history(account_home,checked_at,limits) VALUES(?1,?2,?3)",params![account.home,now(),limits.to_string()])?;
+                if recovered { crate::diagnostics::record("info","quota_refresh",None,Some(&account.home),"Quota refresh recovered"); }
             }
-            _ => {
+            Err(error) => {
                 *cached=None;
+                let message=crate::diagnostics::clean(&format!("Quota refresh failed: {error:#}"));
+                crate::diagnostics::record("error","quota_refresh",None,Some(&account.home),&message);
                 conn.execute("INSERT INTO provider_accounts(home,error) VALUES(?1,?2) ON CONFLICT(home) DO UPDATE SET error=excluded.error",
-                    params![account.home,"Unable to refresh; check account sign-in or connectivity"])?;
+                    params![account.home,message])?;
             }
         }
         Ok(())
@@ -84,10 +89,15 @@ impl Pool {
             Ok::<_,anyhow::Error>(reply)
         }).await;
         let result=result.context("Test timed out").and_then(|result|result);
-        attempt.finish(result.as_ref().err().map(|_|"Account test failed; check sign-in, quota or connectivity"))?;
+        let failure=result.as_ref().err().map(|error|crate::diagnostics::clean(&format!("{error:#}")));
+        attempt.finish(failure.as_deref())?;
         match result {
             Ok(reply)=>Ok(json!({"text":reply.text,"usage_id":attempt.id})),
-            Err(_)=>anyhow::bail!("Account test failed; check sign-in, quota or connectivity"),
+            Err(_)=> {
+                let message=failure.unwrap();
+                crate::diagnostics::record("error","admin_test",Some(&request.request_id.to_string()),Some(&account.home),&message);
+                anyhow::bail!("{message}");
+            }
         }
     }
 }

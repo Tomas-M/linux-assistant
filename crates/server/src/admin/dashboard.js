@@ -3,6 +3,7 @@ const state={page:0,userPage:0,users:[],accounts:[],selected:null,report:null,ad
 const number=new Intl.NumberFormat();
 const dollars=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:6});
 const markupCache=new WeakMap();
+const logs={before:null,next:null,search:'',level:'',entries:[],version:0};
 
 // Preserve open disclosures and focus when the escaped markup has not changed.
 function setMarkup(element,markup)
@@ -231,6 +232,34 @@ async function loadUsers()
     document.getElementById('user-next').disabled=(state.userPage+1)*50>=data.matching;
 }
 
+// Cursor pages remain stable during auto-refresh; expanded diagnostics keep their DOM nodes.
+async function loadLogs()
+{
+    const version=++logs.version, query=new URLSearchParams({search:logs.search});
+    if (logs.before) query.set('before',logs.before);
+    if (logs.level) query.set('level',logs.level);
+    const data=await api('logs?'+query);
+    if (version!==logs.version) return;
+    logs.entries=data.entries; logs.next=data.next_before;
+    const container=document.getElementById('log-entries'), present=new Set();
+    data.entries.forEach((entry,index)=>
+    {
+        const id=String(entry.id); present.add(id);
+        let row=[...container.children].find(row=>row.dataset.id===id);
+        if (!row)
+        {
+            row=document.createElement('details'); row.className='diagnostic panel'; row.dataset.id=id;
+            row.innerHTML='<summary><svg class="log-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg><span class="badge '+({error:'error',warning:'warn'}[entry.level] || '')+'">'+escapeHtml(entry.level)+'</span><time>'+escapeHtml(utc(entry.created_at))+'</time><strong>'+escapeHtml(entry.stage)+'</strong><span class="diagnostic-preview">'+escapeHtml(entry.message.split('\n')[0])+'</span></summary><p>'+escapeHtml([entry.request_id?'Request '+entry.request_id:'',entry.account?'Account '+entry.account:''].filter(Boolean).join(' · '))+'</p><pre></pre>';
+            row.querySelector('pre').textContent=entry.message;
+        }
+        if (container.children[index]!==row) container.insertBefore(row,container.children[index] || null);
+    });
+    for (const row of [...container.children]) if (!present.has(row.dataset.id)) row.remove();
+    document.getElementById('older-logs').disabled=!logs.next;
+    document.getElementById('download-logs').disabled=!logs.entries.length;
+    document.getElementById('log-page').textContent=logs.entries.length?logs.entries.length+' entries · '+(logs.before?'Older page':'Latest'):'No matching diagnostics';
+}
+
 // Refresh cached backend data without initiating extra ChatGPT quota requests.
 async function refresh()
 {
@@ -238,7 +267,7 @@ async function refresh()
     state.refreshing=true;
     try
     {
-        const results=await Promise.allSettled([loadAccounts(),loadReport(),loadUsers()]);
+        const results=await Promise.allSettled([loadAccounts(),loadReport(),loadUsers(),loadLogs()]);
         const failed=results.find(result=>result.status==='rejected');
         if (failed) throw failed.reason;
         document.getElementById('connection').textContent='Display updated '+new Date().toLocaleTimeString();
@@ -263,6 +292,19 @@ document.getElementById('user-search').addEventListener('submit',event=> { event
 for (const [id,key,step,load] of [['previous','page',-1,loadReport],['next','page',1,loadReport],['user-previous','userPage',-1,loadUsers],['user-next','userPage',1,loadUsers]])
     document.getElementById(id).addEventListener('click',()=> { state[key]=Math.max(0,state[key]+step);load().catch(error=>notice(error.message)); });
 document.getElementById('refresh').addEventListener('click',refresh);
+document.getElementById('log-filters').addEventListener('submit',event=>
+{
+    event.preventDefault(); logs.before=null; logs.search=document.getElementById('log-search').value.trim(); logs.level=document.getElementById('log-level').value;
+    loadLogs().catch(error=>notice(error.message));
+});
+document.getElementById('latest-logs').addEventListener('click',()=>{logs.before=null; loadLogs().catch(error=>notice(error.message));});
+document.getElementById('older-logs').addEventListener('click',()=>{logs.before=logs.next; loadLogs().catch(error=>notice(error.message));});
+document.getElementById('download-logs').addEventListener('click',()=>
+{
+    const text=logs.entries.map(entry=>JSON.stringify(entry)).join('\n')+'\n';
+    const url=URL.createObjectURL(new Blob([text],{type:'application/x-ndjson;charset=utf-8'})),link=document.createElement('a');
+    link.href=url; link.download='assistant-diagnostics.jsonl'; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
 document.getElementById('logout').addEventListener('click',async()=> { try { await api('logout',{});location.href='/admin/login'; } catch (error) { notice(error.message); } });
 document.getElementById('close-user').addEventListener('click',()=>document.getElementById('user-dialog').close());
 document.getElementById('user-table').addEventListener('click',event=>

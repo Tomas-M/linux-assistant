@@ -5,6 +5,7 @@ mod auth;
 mod admin;
 mod config;
 mod db;
+mod diagnostics;
 mod embedded;
 mod mail;
 mod payments;
@@ -37,7 +38,7 @@ impl ApiError {
 }
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     /// Keep database details and upstream responses out of public error bodies.
-    fn from(error: E) -> Self { eprintln!("Backend error: {}",error.into()); Self(StatusCode::INTERNAL_SERVER_ERROR,"Backend operation failed".into()) }
+    fn from(error: E) -> Self { diagnostics::record("error","backend",None,None,&format!("{:#}",error.into())); Self(StatusCode::INTERNAL_SERVER_ERROR,"Backend operation failed".into()) }
 }
 impl IntoResponse for ApiError {
     /// Every API failure has the same machine-readable shape.
@@ -58,7 +59,11 @@ fn main() -> anyhow::Result<()> {
     if std::env::args_os().any(|arg|arg=="--provider-worker") {
         return codex_arg0::arg0_dispatch_or_else(embedded::run);
     }
-    run()
+    run().map_err(|error| {
+        let message=diagnostics::clean(&format!("{error:#}"));
+        diagnostics::record("error","backend_runtime",None,None,&message);
+        anyhow::anyhow!(message)
+    })
 }
 
 /// Run one backend process per SQLite database so startup recovery is unambiguous.
@@ -75,6 +80,7 @@ async fn run() -> anyhow::Result<()> {
     config.validate()?;
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(config.database.with_extension("lockfile"))?;
     lock.try_lock_exclusive().map_err(|_|anyhow::anyhow!("Another backend is using this database"))?;
+    diagnostics::init(&config)?;
     let db = Arc::new(Db::open(&config.database)?);
     db.recover()?;
     let mail = if config.dev { None } else { Some(mail::transport(&config)?.build()) };
@@ -82,6 +88,7 @@ async fn run() -> anyhow::Result<()> {
         http:reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build()? };
     let listener = tokio::net::TcpListener::bind(app.config.listen).await?;
     println!("Linux Assistant backend on {}{}",listener.local_addr()?,if app.config.dev { " (DEVELOPMENT, simulated AI)" } else { "" });
+    diagnostics::record("info","startup",None,None,&format!("Backend started; Codex {}; model {}; reasoning {}",env!("CODEX_VERSION"),app.config.model.as_deref().unwrap_or("provider default"),app.config.reasoning_effort.as_deref().unwrap_or("provider default")));
     if app.config.admin_password.is_some() && !app.config.dev { tokio::spawn(app.pool.clone().monitor(app.db.clone())); }
     axum::serve(listener,router(app)).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
     Ok(())
@@ -185,13 +192,13 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                 let result=match result {
                     Ok(reply) => Ok(reply),
                     Err(error) => {
-                        eprintln!("AI request failed: {error}");
-                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged." } else { "AI is unavailable or at its usage limit. Recorded token usage was charged; retry shortly." };
-                        if let Err(error)=task_app.db.settle(user,&id,Err(message.into())) {
+                        diagnostics::record("error","chat",Some(&id),None,&format!("{error:#}"));
+                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged.".to_owned() } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
+                        if let Err(error)=task_app.db.settle(user,&id,Err(message.clone())) {
                             task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                             return Err(ApiError::from(error));
                         }
-                        Err(ApiError::busy(message))
+                        Err(ApiError::busy(&message))
                     }
                 };
                 let progress=match &*task_events.borrow() { ChatEvent::Progress { progress }=>Some(progress.clone()),_=>None };

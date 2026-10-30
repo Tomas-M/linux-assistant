@@ -13,6 +13,7 @@ use crate::{db::{hash, now, secret}, App, ApiError, ApiResult};
 pub fn router(app: App) -> Router<App> {
     let private=Router::new().route("/admin",get(||async { Html(include_str!("admin/dashboard.html")) }))
         .route("/admin/api/accounts",get(accounts)).route("/admin/api/report",get(reports::report))
+        .route("/admin/api/logs",get(crate::diagnostics::list))
         .route("/admin/api/users",get(reports::users)).route("/admin/api/accounts/{id}/test",post(test_account))
         .route("/admin/api/users/{id}/credits",post(credits)).route("/admin/api/users/{id}/block",post(block))
         .route("/admin/api/users/{id}/revoke",post(revoke)).route("/admin/api/users/{id}/checkout",post(checkout))

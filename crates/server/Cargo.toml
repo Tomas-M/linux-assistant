@@ -24,6 +24,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"
+regex = "1"
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "webpki-roots"] }
 
 [build-dependencies]

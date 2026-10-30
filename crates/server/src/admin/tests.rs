@@ -6,6 +6,7 @@ use tower::ServiceExt;
 
 /// Build a private test dashboard with no real accounts, mail, or payment credentials.
 fn application() -> anyhow::Result<App> {
+    crate::diagnostics::init_test();
     let mut config=crate::config::Config::parse_from(["assistant-server","--dev"]);
     config.admin_password=Some("local-test-password-only".into());
     Ok(App { turns:Arc::new(Default::default()),pool:Arc::new(crate::provider::Pool::new(&config)?),config:Arc::new(config),db:Arc::new(crate::db::Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new(),mail:None })
@@ -37,11 +38,24 @@ async fn authentication_and_browser_boundaries() -> anyhow::Result<()> {
     let mut state=application()?;
     let app=crate::router(state.clone());
     assert_eq!(request(&app,"/admin/api/users","",None).await?.0,StatusCode::UNAUTHORIZED);
+    assert_eq!(request(&app,"/admin/api/logs","",None).await?.0,StatusCode::UNAUTHORIZED);
     let invalid=app.clone().oneshot(Request::builder().method("POST").uri("/admin/login").header(header::CONTENT_TYPE,"application/x-www-form-urlencoded").body(Body::from("password=wrong"))?).await?;
     assert_eq!(invalid.status(),StatusCode::UNAUTHORIZED);
     let cookie=sign_in(&app).await?;
     assert_eq!(request(&app,"/admin/api/users",&cookie,None).await?.0,StatusCode::OK);
+    let reference=uuid::Uuid::new_v4().to_string();
+    crate::diagnostics::record("error","quota_refresh",Some(&reference),Some("account-1"),"TLS failed 世界; Bearer private-test-token");
+    let (status,logs)=request(&app,&format!("/admin/api/logs?search={reference}"),&cookie,None).await?;
+    assert_eq!(status,StatusCode::OK);
+    assert!(logs["entries"][0]["message"].as_str().unwrap().contains("TLS failed 世界"));
+    assert!(!logs.to_string().contains("private-test-token"));
+    assert_eq!(request(&app,"/admin/api/logs?level=invalid",&cookie,None).await?.0,StatusCode::BAD_REQUEST);
     let user=state.db.user("用户@example.test",None,10)?;
+    state.db.0.lock().unwrap().execute("INSERT INTO sessions VALUES(?1,?2,?3)",params![hash("ordinary-user"),user,now()+60])?;
+    let response=app.clone().oneshot(Request::builder().uri("/admin/api/logs").header(header::AUTHORIZATION,"Bearer ordinary-user").body(Body::empty())?).await?;
+    assert_eq!(response.status(),StatusCode::UNAUTHORIZED);
+    let response=app.clone().oneshot(Request::builder().uri("/admin/api/logs").header(header::COOKIE,&cookie).header(header::ORIGIN,"https://attacker.example").body(Body::empty())?).await?;
+    assert_eq!(response.status(),StatusCode::FORBIDDEN);
     let response=app.clone().oneshot(Request::builder().method("POST").uri(format!("/admin/api/users/{user}/block")).header(header::COOKIE,&cookie)
         .header(header::CONTENT_TYPE,"application/json").body(Body::from("{\"blocked\":true}"))?).await?;
     assert_eq!(response.status(),StatusCode::FORBIDDEN);
@@ -49,10 +63,12 @@ async fn authentication_and_browser_boundaries() -> anyhow::Result<()> {
         .header(header::CONTENT_TYPE,"application/json").header("X-Admin-Request","1").header(header::ORIGIN,"https://attacker.example").body(Body::from("{\"blocked\":true}"))?).await?;
     assert_eq!(response.status(),StatusCode::FORBIDDEN);
     Arc::make_mut(&mut state.config).admin_password=Some("changed-test-password".into());
+    assert_eq!(request(&crate::router(state.clone()),"/admin/api/logs",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
     assert_eq!(request(&crate::router(state.clone()),"/admin/api/users",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
     assert_eq!(request(&app,"/admin/api/logout",&cookie,Some(json!({}))).await?.0,StatusCode::OK);
     assert_eq!(request(&app,"/admin/api/users",&cookie,None).await?.0,StatusCode::UNAUTHORIZED);
     Arc::make_mut(&mut state.config).admin_password=None;
+    assert_eq!(request(&crate::router(state.clone()),"/admin/api/logs",&cookie,None).await?.0,StatusCode::NOT_FOUND);
     assert_eq!(request(&crate::router(state),"/admin/api/users",&cookie,None).await?.0,StatusCode::NOT_FOUND);
     Ok(())
 }

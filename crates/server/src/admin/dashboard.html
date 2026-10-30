@@ -10,7 +10,7 @@
 <body>
     <header class="topbar">
         <a class="brand" href="/admin">LA<span>Linux Assistant <small>Operations</small></span></a>
-        <nav aria-label="Dashboard sections"><a href="#accounts">Accounts</a><a href="#usage">Usage</a><a href="#users">Users</a><a href="#payments">Payments</a></nav>
+        <nav aria-label="Dashboard sections"><a href="#accounts">Accounts</a><a href="#diagnostics">Diagnostics</a><a href="#usage">Usage</a><a href="#users">Users</a><a href="#payments">Payments</a></nav>
         <button id="logout" class="quiet">Sign out</button>
     </header>
     <main>
@@ -20,6 +20,17 @@
             <div class="section-heading"><div><h2>ChatGPT accounts</h2><p>Quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 8a7 7 0 0 1 12-3l3 3M4 16l3 3a7 7 0 0 0 12-3"/></svg>Refresh display</button></div>
             <div id="account-cards" class="account-grid"></div>
             <p class="hint">Quotas include activity on the ChatGPT account outside this service. Test prompts consume the selected account’s allowance and are recorded as admin tests; no user credits are deducted.</p>
+        </section>
+        <section id="diagnostics">
+            <div class="section-heading"><div><h2>Diagnostics</h2><p>Backend failures and recovery events. Latest entries refresh automatically.</p></div><button id="download-logs" class="quiet" disabled>Download displayed logs</button></div>
+            <form id="log-filters" class="filters">
+                <label>Search<input id="log-search" type="search" maxlength="320" placeholder="Request ID, account or error"></label>
+                <label>Level<select id="log-level"><option value="">All levels</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Information</option></select></label>
+                <button type="submit">Search logs</button><button id="latest-logs" type="button" class="quiet">Latest</button>
+            </form>
+            <p class="hint">Times are UTC. Up to 10,000 events from the last 30 days survive restarts. Credentials are redacted; request bodies and attachments are not recorded. Paste a request reference from a client error to find its details.</p>
+            <div id="log-entries" class="diagnostic-entries" role="region" aria-label="Diagnostic entries" tabindex="0" aria-live="polite"></div>
+            <div class="pager"><span id="log-page"></span><button id="older-logs" class="quiet" disabled>Older entries</button></div>
         </section>
         <section id="usage">
             <div class="section-heading"><div><h2>Usage &amp; credits</h2><p id="coverage">Loading measurement coverage…</p></div></div>

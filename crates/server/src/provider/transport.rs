@@ -1,7 +1,7 @@
 use std::{collections::HashMap,sync::{Arc,Mutex}};
 use anyhow::{ensure,Context,Result};
 use serde_json::{json,Value};
-use tokio::{io::{AsyncBufReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStdout},sync::{broadcast,mpsc,oneshot}};
+use tokio::{io::{AsyncBufReadExt,AsyncReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStderr,ChildStdout},sync::{broadcast,mpsc,oneshot}};
 use uuid::Uuid;
 
 enum Outbound { Call(Value,Uuid,Option<oneshot::Sender<Value>>), Subscribe(String,Uuid,mpsc::Sender<Value>,oneshot::Sender<bool>), Release(String,Uuid) }
@@ -9,7 +9,37 @@ pub(super) struct Transport {
     sender:mpsc::UnboundedSender<Outbound>,
     pub(super) threads:Arc<Mutex<HashMap<String,(Uuid,mpsc::Sender<Value>)>>>,
     pub(super) global:broadcast::Sender<Value>,
+    failure:Arc<Mutex<Option<String>>>,
     task:tokio::task::JoinHandle<()>,
+    stderr:tokio::task::JoinHandle<()>,
+}
+
+/// Record only the message from structured worker warnings/errors, never its attached request fields.
+fn worker_message(line:&[u8],account:&str) {
+    let text=String::from_utf8_lossy(line);
+    if text.trim().is_empty() { return; }
+    if let Ok(value)=serde_json::from_str::<Value>(&text) {
+        let level=match value["level"].as_str() { Some("ERROR")=>"error",Some("WARN"|"WARNING")=>"warning",_=>return };
+        if let Some(message)=value["fields"]["message"].as_str() { crate::diagnostics::record(level,"provider_worker",None,Some(account),message); }
+    } else { crate::diagnostics::record("warning","provider_worker",None,Some(account),&text); }
+}
+
+/// Drain stderr continuously with bounded memory, including an unterminated fatal startup error.
+async fn worker_stderr(mut stderr:ChildStderr,account:&str)->Result<()> {
+    let mut chunk=[0u8;4096]; let mut line=Vec::new(); let mut truncated=false;
+    loop {
+        let count=stderr.read(&mut chunk).await?;
+        if count==0 { break; }
+        for byte in &chunk[..count] {
+            if *byte==b'\n' {
+                if truncated { crate::diagnostics::record("warning","provider_worker",None,Some(account),"Worker diagnostic line exceeded 8 KiB and was omitted"); }
+                else { worker_message(&line,account); }
+                line.clear(); truncated=false;
+            } else if line.len()<8192 { line.push(*byte); } else { truncated=true; }
+        }
+    }
+    if !truncated { worker_message(&line,account); }
+    Ok(())
 }
 
 /// Retain a partial UTF-8 line when another outbound request wins the transport select.
@@ -28,12 +58,19 @@ async fn read(output:&mut BufReader<ChildStdout>,line:&mut Vec<u8>)->Result<Valu
 
 impl Transport {
     /// One account process dispatches replies by request ID and notifications by conversation thread.
-    pub(super) fn start(mut child:Child)->Arc<Self> {
+    pub(super) fn start(mut child:Child,account:String)->Arc<Self> {
+        let stderr=child.stderr.take().unwrap();
+        let stderr_account=account.clone();
+        let stderr=tokio::spawn(async move {
+            if let Err(error)=worker_stderr(stderr,&stderr_account).await { crate::diagnostics::record("error","provider_worker",None,Some(&stderr_account),&format!("Reading worker stderr: {error:#}")); }
+        });
         let mut input=child.stdin.take().unwrap();
         let mut output=BufReader::new(child.stdout.take().unwrap());
         let (sender,mut receiver)=mpsc::unbounded_channel();
         let threads=Arc::new(Mutex::new(HashMap::<String,(Uuid,mpsc::Sender<Value>)>::new()));
         let global=broadcast::channel(32).0;
+        let failure=Arc::new(Mutex::new(None));
+        let failed=failure.clone();
         let (routes,notifications,cleanup)=(threads.clone(),global.clone(),sender.clone());
         let task=tokio::spawn(async move {
             let mut pending=HashMap::<u64,(Value,Uuid,oneshot::Sender<Value>)>::new();
@@ -108,19 +145,23 @@ impl Transport {
                     for value in write { input.write_all(format!("{value}\n").as_bytes()).await?; input.flush().await?; }
                 }
             }.await;
-            if result.is_err() { eprintln!("Embedded Codex transport closed; active requests must retry"); }
+            if let Err(error)=result {
+                let message=crate::diagnostics::clean(&format!("Embedded Codex transport closed: {error:#}; process status: {:?}",child.try_wait()));
+                *failed.lock().unwrap()=Some(message.clone());
+                crate::diagnostics::record("error","provider_transport",None,Some(&account),&message);
+            }
             routes.lock().unwrap().clear();
             let _=notifications.send(json!({"method":"assistant/transportClosed"}));
             let _=child.kill().await;
         });
-        Arc::new(Self { sender,threads,global,task })
+        Arc::new(Self { sender,threads,global,task,failure,stderr })
     }
 
     /// Route one response to its caller; a dropped caller never consumes another request's reply.
     pub(super) async fn call(&self,owner:Uuid,method:&str,params:Value)->Result<Value> {
         let (reply,result)=oneshot::channel();
         self.sender.send(Outbound::Call(json!({"method":method,"params":params}),owner,Some(reply)))?;
-        result.await.context("Embedded Codex transport closed")
+        result.await.with_context(||self.failure())
     }
 
     /// Serialize subscription changes with release and resume requests to avoid stale cleanup races.
@@ -138,9 +179,30 @@ impl Transport {
     pub(super) fn release(&self,thread:String,owner:Uuid) { let _=self.sender.send(Outbound::Release(thread,owner)); }
     /// A failed account transport is replaced on the next request.
     pub(super) fn alive(&self)->bool { !self.task.is_finished() }
+    /// Retain the reader/process failure when RPC callers only observe a closed response channel.
+    pub(super) fn failure(&self)->String { self.failure.lock().unwrap().clone().unwrap_or_else(||"Embedded Codex transport closed".into()) }
 }
 
 impl Drop for Transport {
     /// Only losing the entire account transport terminates its process, never dropping one conversation.
-    fn drop(&mut self) { self.task.abort(); }
+    fn drop(&mut self) { self.task.abort(); self.stderr.abort(); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// Worker diagnostics preserve error messages but discard attached data and routine info records.
+    #[tokio::test]
+    async fn worker_messages_drop_payloads()->Result<()> {
+        crate::diagnostics::init_test();
+        let account=Uuid::new_v4().to_string();
+        worker_message(&serde_json::to_vec(&json!({"level":"ERROR","fields":{"message":"HTTP 401 世界; Bearer PRIVATE_CREDENTIAL","prompt":"PRIVATE_INPUT"},"span":{"input":"PRIVATE_INPUT"}}))?,&account);
+        worker_message(br#"{"level":"INFO","fields":{"message":"PRIVATE_INFO"}}"#,&account);
+        let filter=serde_json::from_value(json!({"search":account}))?;
+        let entries=crate::diagnostics::list(axum::extract::Query(filter)).await.map_err(|_|anyhow::anyhow!("Cannot read diagnostics"))?.0;
+        assert_eq!(entries["entries"].as_array().unwrap().len(),1);
+        assert!(entries.to_string().contains("HTTP 401 世界"));
+        assert!(!entries.to_string().contains("PRIVATE_"));
+        Ok(())
+    }
 }

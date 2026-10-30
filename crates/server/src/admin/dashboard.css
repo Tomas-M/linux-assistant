@@ -80,6 +80,15 @@ tbody tr:hover { background:#f8faf9; }
 tbody tr:last-child td { border:0; }
 td code { font-size:var(--small); }
 .pager { display:flex; align-items:center; justify-content:flex-end; gap:16px; font-size:var(--secondary); margin-top:16px; }
+.diagnostic-entries { max-height:60vh; overflow:auto; scrollbar-gutter:stable; }
+.diagnostic-entries:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.diagnostic { padding:16px 20px; margin-bottom:10px; min-width:0; }
+.diagnostic summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; font-size:var(--secondary); }
+.diagnostic time { color:var(--muted); font-size:var(--small); font-weight:400; }
+.diagnostic[open] .log-chevron { transform:rotate(90deg); }
+.diagnostic-preview { flex-basis:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:400; color:var(--muted); }
+.diagnostic p { overflow-wrap:anywhere; font-size:var(--small); }
+.diagnostic pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--secondary); margin:0; padding:14px; background:var(--bg); border-radius:8px; }
 #user-search { display:flex; }
 #user-table td:nth-child(2) { min-width:220px; }
 #user-table td:first-child { min-width:48px; }

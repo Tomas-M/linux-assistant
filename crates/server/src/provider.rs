@@ -97,7 +97,7 @@ impl Pool {
                 tried.push(index);
                 let account = &self.accounts[index];
                 self.probe(db,index).await?;
-                let limits=account.limits.lock().await.context("Account quota is unavailable; retry shortly")?;
+                let limits=account.limits.lock().await.with_context(||format!("{}: account quota unavailable; see quota_refresh diagnostics",account.home))?;
                 if limits.retry_at>now() { continue; }
                 let mut rpc=self.rpc(index).await?;
                 let same_account = session.account_home.as_deref()==Some(account.home.as_str());
@@ -109,21 +109,21 @@ impl Pool {
                 let mut current=request.clone();
                 current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(|input|protocol::Message { attachments:input.attachments, role:Role::User,text:input.text }));
                 let result=rpc.answer(config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
-                let failure=result.as_ref().err().map(|error| {
-                    if error.downcast_ref::<QuotaReached>().is_some() { "ChatGPT quota reached" }
-                    else if error.downcast_ref::<crate::turns::Interrupted>().is_some() { "Stopped by user; token counts may be partial" }
-                    else { "Provider request failed" }
-                });
-                attempt.finish(failure)?;
+                let failure=result.as_ref().err().map(|error|crate::diagnostics::clean(&format!("{error:#}")));
+                if let Some(message)=&failure { crate::diagnostics::record("error","generation",Some(&request.request_id.to_string()),Some(&account.home),message); }
+                attempt.finish(failure.as_deref())?;
                 match result {
                     Ok((reply,thread_id,checkpoint)) => {
                         return Ok(Answer { reply,account_home:Some(account.home.clone()),thread_id:Some(thread_id),checkpoint });
                     }
                     Err(error) if error.downcast_ref::<QuotaReached>().is_some() => {
                         let mut cache=account.limits.lock().await;
-                        let mut limits = match rpc.call("account/rateLimits/read",serde_json::json!({})).await {
-                            Ok(value) => Limits::read(&value).unwrap_or(limits),
-                            Err(_) => limits,
+                        let mut limits = match rpc.call("account/rateLimits/read",serde_json::json!({})).await.and_then(|value|Limits::read(&value)) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                crate::diagnostics::record("warning","quota_refresh",Some(&request.request_id.to_string()),Some(&account.home),&format!("Could not refresh quota after a usage-limit response: {error:#}"));
+                                limits
+                            }
                         };
                         limits.retry_at = limits.retry_at.max(now()+60);
                         *cache=Some(limits);
@@ -138,15 +138,17 @@ impl Pool {
     async fn select(&self, db: &Db, user: i64, request: &ChatRequest, tried: &[usize]) -> Result<usize> {
         let _selection = self.selection.lock().await;
         let mut candidates = Vec::new();
+        let mut excluded=Vec::new();
         for (index,account) in self.accounts.iter().enumerate() {
-            if tried.contains(&index) { continue; }
+            if tried.contains(&index) { excluded.push(format!("{}: already tried for this request",account.home)); continue; }
             self.probe(db,index).await?;
             if let Some(limits) = *account.limits.lock().await {
                 if limits.retry_at<=now() { candidates.push((index,limits.used,db.assigned_conversations(&account.home)?)); }
-            }
+                else { excluded.push(format!("{}: quota/cooldown blocks selection until {} UTC (Unix time); {:.1}% used; checked at {}",account.home,limits.retry_at,limits.used,limits.checked_at)); }
+            } else { excluded.push(format!("{}: quota unavailable; see quota_refresh diagnostics for this account",account.home)); }
         }
         let index = candidates.into_iter().min_by(|a,b|a.1.total_cmp(&b.1).then(a.2.cmp(&b.2))).map(|c|c.0)
-            .context("No authenticated account with available, reported quota; retry after a reset or sign in again")?;
+            .with_context(||format!("No selectable ChatGPT account. {}",if excluded.is_empty() { "No accounts configured".into() } else { excluded.join("; ") }))?;
         db.bind_conversation(user,request.conversation_id,&self.accounts[index].home)?;
         Ok(index)
     }
