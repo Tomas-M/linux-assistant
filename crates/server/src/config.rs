@@ -38,6 +38,14 @@ pub struct Config {
     pub google_client_id: Option<String>,
     #[arg(long, env = "GOOGLE_CLIENT_SECRET", hide_env_values = true)]
     pub google_client_secret: Option<String>,
+    #[arg(long,env="MICROSOFT_CLIENT_ID")]
+    pub microsoft_client_id:Option<String>,
+    #[arg(long,env="MICROSOFT_CLIENT_SECRET",hide_env_values=true)]
+    pub microsoft_client_secret:Option<String>,
+    #[arg(long,env="GITHUB_CLIENT_ID")]
+    pub github_client_id:Option<String>,
+    #[arg(long,env="GITHUB_CLIENT_SECRET",hide_env_values=true)]
+    pub github_client_secret:Option<String>,
     #[arg(long, env = "ASSISTANT_SMTP_HOST", default_value = "smtp.gmail.com", help = "SMTP hostname without a URL scheme; connections use implicit TLS")]
     pub smtp_host: String,
     #[arg(long, env = "ASSISTANT_SMTP_PORT", default_value_t = 465)]
@@ -77,7 +85,10 @@ impl Config {
             ensure!(self.smtp_password.as_ref().is_some_and(|value|!value.trim().is_empty()), "Configure ASSISTANT_SMTP_PASSWORD");
             ensure!(self.email_from.is_some(), "Configure ASSISTANT_EMAIL_FROM");
         }
-        ensure!(self.google_client_id.is_some() == self.google_client_secret.is_some(), "Configure both Google credentials");
+        for (name,id,secret) in [("Google",&self.google_client_id,&self.google_client_secret),("Microsoft",&self.microsoft_client_id,&self.microsoft_client_secret),("GitHub",&self.github_client_id,&self.github_client_secret)] {
+            ensure!(id.is_some()==secret.is_some(),"Configure both {name} credentials");
+            ensure!(id.as_ref().is_none_or(|value|!value.trim().is_empty()) && secret.as_ref().is_none_or(|value|!value.trim().is_empty()),"{name} credentials must not be empty");
+        }
         let payment_fields = [self.stripe_secret.is_some(), self.stripe_webhook_secret.is_some(), self.stripe_price.is_some()];
         ensure!(payment_fields.iter().all(|v| *v) || payment_fields.iter().all(|v| !*v), "Configure all three Stripe settings");
         Ok(())

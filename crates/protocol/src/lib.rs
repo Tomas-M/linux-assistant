@@ -86,7 +86,18 @@ pub struct DeviceLogin {
 pub struct PollLogin { pub device_id: String, pub poll_secret: String }
 
 #[derive(Deserialize, Serialize)]
-pub struct LoginResult { pub token: Option<String> }
+pub struct LoginResult { pub token:Option<String>, pub email_verification:Option<EmailVerification> }
+
+#[derive(Clone,Copy,Debug,Deserialize,Serialize,PartialEq)]
+#[serde(rename_all="lowercase")]
+pub enum AuthProvider { Google,Microsoft,Github }
+impl AuthProvider {
+    /// Use canonical provider keys in configuration, URLs and stable identity records.
+    pub fn key(self)->&'static str { match self { Self::Google=>"google",Self::Microsoft=>"microsoft",Self::Github=>"github" } }
+}
+
+#[derive(Clone,Deserialize,Serialize)]
+pub struct EmailVerification { pub provider:AuthProvider, pub email:Option<String> }
 
 #[derive(Deserialize, Serialize)]
 pub struct EmailLogin { pub device_id: String, pub poll_secret: String, pub email: String }

@@ -47,7 +47,7 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
 }
 
 /// Build a fully isolated backend with deterministic development integrations.
-fn application() -> anyhow::Result<App> {
+pub(super) fn application() -> anyhow::Result<App> {
     let config = Config::parse_from(["assistant-server","--dev"]);
     Ok(App { turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),config:Arc::new(config),db:Arc::new(Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new(),mail:None })
 }

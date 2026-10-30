@@ -3,6 +3,8 @@ const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(ele
 let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, scrollAfterSend=false;
 const pendingIds=new Set(), messageRows=[], completionRows=[], renderedAnswers=new WeakMap();
 let queueKey='', summaryKey='', steeringKey='';
+let socialLogin, enabledProviders=[];
+const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
 function setIcon(button,name)
@@ -534,12 +536,109 @@ const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 function renderLogin()
 {
     const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));
-    for (const id of ['email','login','verify','change-email']) elements[id].disabled=loginBusy;
+    const waiting=!!socialLogin && !socialLogin.verification;
+    for (const id of ['email','login','verify','change-email']) elements[id].disabled=loginBusy || waiting;
     elements['code-digits'].disabled=loginBusy;
     elements.resend.disabled=loginBusy || remaining>0;
     elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
     elements.login.textContent=loginBusy?'Sending…':'Send sign-in code';
+    elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification;
+    for (const button of document.querySelectorAll('[data-provider]'))
+    {
+        button.hidden=!enabledProviders.includes(button.dataset.provider);
+        button.disabled=loginBusy || !!socialLogin;
+    }
+    elements['cancel-sign-in'].hidden=!socialLogin;
+    elements['cancel-sign-in'].disabled=loginBusy;
 }
+
+// Email and social sign-in share one success transition, including clearing old session errors.
+function signedIn(current)
+{
+    socialLogin?.popup?.close();
+    socialLogin=undefined;
+    state=current;
+    view.error=null;
+    elements.status.textContent='';
+    delete elements.status.dataset.taskError;
+    elements['auth-status'].textContent='';
+    elements['code-form'].hidden=true;
+    elements['email-form'].hidden=false;
+    for (const input of codeInputs) input.value='';
+    renderLogin(); render();
+    elements.prompt.focus();
+}
+
+// Poll through the native client; neither application sessions nor device secrets enter the popup.
+async function pollSocial()
+{
+    const attempt=socialLogin;
+    if (!attempt?.id || attempt.verification || loginBusy) return;
+    if (state?.authenticated) { signedIn(state); return; }
+    try
+    {
+        const result=await api('login/poll',{id:attempt.id});
+        if (socialLogin!==attempt) return;
+        if (result.state) { signedIn(result.state); return; }
+        if (result.email_verification)
+        {
+            attempt.verification=true;
+            attempt.popup?.close();
+            elements.email.value=result.email_verification.email || '';
+            elements['auth-status'].textContent='Confirm your email once to finish linking '+providerNames[attempt.provider]+'.';
+            renderLogin(); elements.email.focus();
+            return;
+        }
+    }
+    catch (error)
+    {
+        if (socialLogin!==attempt) return;
+        attempt.popup?.close();
+        try { await api('login/cancel',{id:attempt.id}); if (socialLogin===attempt) socialLogin=undefined; }
+        catch { /* Keep Cancel available if the backend is temporarily unreachable. */ }
+        elements['auth-status'].textContent=error.message;
+        renderLogin();
+        return;
+    }
+    if (socialLogin===attempt) setTimeout(pollSocial,2000);
+}
+
+document.querySelectorAll('[data-provider]').forEach(button=>button.addEventListener('click',async()=>
+{
+    if (loginBusy || socialLogin) return;
+    const popup=window.open('about:blank','_blank','popup,width=520,height=720');
+    if (!popup) { elements['auth-status'].textContent='Allow popups for this local page, then try signing in again.'; return; }
+    popup.opener=null;
+    const attempt={provider:button.dataset.provider,popup};
+    socialLogin=attempt;
+    loginBusy=true;
+    elements['auth-status'].textContent='Continue with '+providerNames[attempt.provider]+' in the sign-in window…';
+    renderLogin();
+    try
+    {
+        const result=await api('login/social',{provider:attempt.provider});
+        Object.assign(attempt,{id:result.id,expires_at:result.expires_at});
+        popup.location=result.url;
+    }
+    catch (error) { popup.close(); socialLogin=undefined; elements['auth-status'].textContent=error.message; }
+    finally { loginBusy=false; renderLogin(); }
+    pollSocial();
+}));
+elements['cancel-sign-in'].addEventListener('click',async()=>
+{
+    if (loginBusy || !socialLogin?.id) return;
+    loginBusy=true; renderLogin();
+    try
+    {
+        await api('login/cancel',{id:socialLogin.id});
+        socialLogin.popup?.close(); socialLogin=undefined;
+        elements['email-form'].hidden=false; elements['code-form'].hidden=true;
+        elements['auth-status'].textContent='';
+        elements.email.focus();
+    }
+    catch (error) { elements['auth-status'].textContent=error.message; }
+    finally { loginBusy=false; renderLogin(); }
+});
 
 // Both the initial request and resend use the same email and never navigate away.
 async function requestCode()
@@ -582,15 +681,7 @@ elements['code-form'].addEventListener('submit',async event=>
     renderLogin();
     try
     {
-        state=await api('login/verify',{code});
-        view.error=null;
-        elements.status.textContent='';
-        delete elements.status.dataset.taskError;
-        elements['code-form'].hidden=true;
-        elements['email-form'].hidden=false;
-        for (const input of codeInputs) input.value='';
-        render();
-        elements.prompt.focus();
+        signedIn(await api('login/verify',{code}));
     }
     catch (error) { elements['auth-status'].textContent=error.message; }
     finally
@@ -1017,8 +1108,15 @@ api('state').then(async current=>
 {
     state=current;
     render();
+    if (!state.authenticated && state.sign_in)
+    {
+        socialLogin={...state.sign_in};
+        elements['auth-status'].textContent='Waiting for '+providerNames[socialLogin.provider]+' sign-in…';
+        renderLogin(); pollSocial();
+    }
     if (state.authenticated && !view.busy)
     {
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
     }
 }).catch(error=>{elements.status.textContent=error.message;});
+api('login/providers').then(result=>{enabledProviders=result.providers; renderLogin();}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message+' You can still use email.';});

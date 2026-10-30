@@ -191,6 +191,12 @@ svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8;
 .auth-card .primary { width:100%; margin-top:20px; }
 .auth-actions { display:flex; align-items:center; justify-content:space-between; margin-top:16px; font-size:13px; }
 .auth-actions button { padding:6px 0; }
+.auth-divider { display:flex; align-items:center; gap:12px; margin:24px 0 16px; color:var(--muted); font-size:13px; }
+.auth-divider::before,.auth-divider::after { content:''; flex:1; height:1px; background:var(--border); }
+.social-buttons { display:grid; gap:10px; }
+.social-buttons button { display:flex; align-items:center; justify-content:center; gap:12px; min-height:44px; font-size:14px; font-weight:500; }
+.social-buttons svg { width:20px; height:20px; fill:currentColor; stroke:none; flex-shrink:0; }
+#cancel-sign-in { width:100%; margin-top:16px; font-size:14px; }
 #login-email { color:var(--text); overflow-wrap:anywhere; }
 .code-digits { display:flex; gap:8px; border:0; padding:0; margin:24px 0 0; min-width:0; }
 .code-digits input { min-width:0; flex:1; padding:12px 0; text-align:center; font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }

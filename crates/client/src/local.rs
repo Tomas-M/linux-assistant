@@ -125,6 +125,8 @@ fn router(state: Local) -> Router {
         .route("/api/state",get(state_view)).route("/api/account",post(account))
         .route("/api/settings",post(settings))
         .route("/api/login",post(login)).route("/api/login/verify",post(verify_login)).route("/api/logout",post(logout))
+        .route("/api/login/providers",get(auth_providers)).route("/api/login/social",post(social_start))
+        .route("/api/login/poll",post(social_poll)).route("/api/login/cancel",post(social_cancel))
         .route("/api/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/steer",post(steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
         .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
         .route("/api/command",post(decide)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/stop",post(stop))
@@ -158,12 +160,25 @@ struct EmailInput { email: String }
 #[derive(Deserialize)]
 struct CodeInput { code: String }
 #[derive(Deserialize)]
+struct SocialInput { provider:protocol::AuthProvider }
+#[derive(Deserialize)]
+struct LoginId { id:String }
+#[derive(Deserialize)]
 struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid>, attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Deserialize)]
 struct Decision { id: Uuid, approve: bool }
 
 /// Read the same assistant state in either interface.
 async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live.0.borrow()["state"].clone()) }
+
+/// Return only the configured provider names to the sign-in form.
+async fn auth_providers(State(state):State<Local>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.auth_providers().await?)) }
+/// Create a native-owned device challenge before navigating the provider popup.
+async fn social_start(State(state):State<Local>,Json(input):Json<SocialInput>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.social_start(input.provider).await?)) }
+/// Exchange an approved challenge without exposing its secret or session token.
+async fn social_poll(State(state):State<Local>,Json(input):Json<LoginId>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.social_poll(input.id).await?)) }
+/// A cancellation affects only the matching challenge, including when multiple tabs are open.
+async fn social_cancel(State(state):State<Local>,Json(input):Json<LoginId>)->LocalResult { state.engine.try_lock().context("Assistant is busy")?.social_cancel(input.id).await?; Ok(Json(json!({"ok":true}))) }
 /// Reconnect without waiting for the engine or restarting its current operation.
 async fn events(State(state): State<Local>) -> Response { state.live.response() }
 /// Revoking automatic execution is immediate, even during a long command or provider request.

@@ -1,10 +1,7 @@
-use axum::{extract::{Path, Query, State}, http::{header, HeaderMap}, response::{Html, IntoResponse, Redirect, Response}, Json};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use protocol::{DeviceLogin, EmailChallenge, EmailLogin, LoginResult, PollLogin, VerifyEmail};
+use axum::{extract::State, Json};
+pub mod social;
+use protocol::{AuthProvider, DeviceLogin, EmailChallenge, EmailLogin, EmailVerification, LoginResult, PollLogin, VerifyEmail};
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 use crate::{db::{hash, now, secret}, App, ApiError, ApiResult};
 
 /// Begin a short-lived sign-in owned by the client, without navigating to the backend.
@@ -27,13 +24,21 @@ pub async fn poll(State(app): State<App>, Json(input): Json<PollLogin>) -> ApiRe
     let tx = conn.transaction()?;
     let user: Option<Option<i64>> = tx.query_row("SELECT user_id FROM devices WHERE id=?1 AND poll_hash=?2 AND expires_at>?3",params![input.device_id,hash(&input.poll_secret),now()],|r|r.get(0)).optional()?;
     let Some(user) = user else { return Err(ApiError::bad("Sign-in expired or already consumed")); };
-    let Some(user) = user else { return Ok(Json(LoginResult { token:None })); };
+    let Some(user) = user else {
+        let social:Option<(String,Option<String>,Option<String>,Option<String>)>=tx.query_row("SELECT s.provider,s.subject,s.error,d.email FROM social_signins s JOIN devices d ON d.id=s.device_id WHERE s.device_id=?1",[&input.device_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let mut email_verification=None;
+        if let Some((provider,subject,error,email))=social {
+            if let Some(error)=error { return Err(ApiError::bad(&error)); }
+            if subject.is_some() { email_verification=Some(EmailVerification { provider:serde_json::from_value(serde_json::json!(provider))?,email }); }
+        }
+        return Ok(Json(LoginResult { token:None,email_verification }));
+    };
     let token = secret();
     tx.execute("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?1,?2,?3)",params![hash(&token),user,now()+30*86400])?;
     tx.execute("DELETE FROM oauth WHERE device_id=?1",[&input.device_id])?;
     tx.execute("DELETE FROM devices WHERE id=?1",[&input.device_id])?;
     tx.commit()?;
-    Ok(Json(LoginResult { token:Some(token) }))
+    Ok(Json(LoginResult { token:Some(token),email_verification:None }))
 }
 
 /// Deliver six random digits, limiting sends across all devices for the same email.
@@ -78,7 +83,11 @@ pub async fn verify(State(app): State<App>, Json(input): Json<VerifyEmail>) -> A
         if code.len()!=6 || !code.bytes().all(|c|c.is_ascii_digit()) || expected != hash(&format!("{}:{code}",input.device_id)) { return Err(ApiError::bad("Incorrect sign-in code")); }
         email
     };
-    let user = app.db.user(&email,None,app.config.free_credits)?;
+    let identity:Option<(String,String)>=app.db.0.lock().unwrap().query_row("SELECT provider,subject FROM social_signins WHERE device_id=?1 AND subject IS NOT NULL",[&input.device_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let user=if let Some((provider,subject))=identity {
+        let provider:AuthProvider=serde_json::from_value(serde_json::json!(provider))?;
+        app.db.social_user(&email,provider,&subject,app.config.free_credits)?
+    } else { app.db.user(&email,None,app.config.free_credits)? };
     approve(&app,&input.device_id,user)?;
     poll(State(app),Json(PollLogin { device_id:input.device_id,poll_secret:input.poll_secret })).await
 }
@@ -89,55 +98,6 @@ fn require_login(app:&App,id:&str,secret:&str)->ApiResult<()> {
     let valid:bool=app.db.0.lock().unwrap().query_row("SELECT poll_hash=?1 FROM devices WHERE id=?2",params![hash(secret),id],|r|r.get(0))?;
     if !valid { return Err(ApiError::bad("Invalid sign-in")); }
     Ok(())
-}
-
-/// Bind Google OAuth state to this browser and protect the authorization code with PKCE.
-pub async fn google(State(app): State<App>, Path(device): Path<String>) -> ApiResult<Response> {
-    require_device(&app,&device)?;
-    let client = app.config.google_client_id.as_ref().ok_or_else(||ApiError::bad("Google sign-in is not configured"))?;
-    let state = secret();
-    let verifier = secret();
-    app.db.0.lock().unwrap().execute("INSERT INTO oauth(state_hash,device_id,verifier,expires_at) VALUES(?1,?2,?3,?4)",params![hash(&state),device,verifier,now()+600])?;
-    let redirect = format!("{}/auth/google/callback",app.config.public_url);
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")?;
-    url.query_pairs_mut().extend_pairs([("client_id",client.as_str()),("redirect_uri",&redirect),("response_type","code"),
-        ("scope","openid email profile"),("state",&state),("code_challenge",&challenge),("code_challenge_method","S256"),("prompt","select_account")]);
-    let mut response = Redirect::to(url.as_str()).into_response();
-    let secure = if app.config.dev { "" } else { "; Secure" };
-    response.headers_mut().insert(header::SET_COOKIE,format!("assistant_oauth={state}; HttpOnly; SameSite=Lax; Path=/auth/google; Max-Age=600{secure}").parse()?);
-    Ok(response)
-}
-
-#[derive(Deserialize)]
-pub struct Callback { state: String, code: String }
-
-/// Exchange Google's code server-side and use Google's verified, stable subject identity.
-pub async fn callback(State(app): State<App>, headers: HeaderMap, Query(input): Query<Callback>) -> ApiResult<Html<String>> {
-    let cookie = headers.get(header::COOKIE).and_then(|v|v.to_str().ok()).unwrap_or("");
-    let expected = format!("assistant_oauth={}",input.state);
-    if !cookie.split(';').any(|part|part.trim() == expected) { return Err(ApiError::bad("OAuth browser state did not match")); }
-    let (device,verifier): (String,String) = {
-        let mut conn = app.db.0.lock().unwrap();
-        let tx = conn.transaction()?;
-        let row = tx.query_row("SELECT device_id,verifier FROM oauth WHERE state_hash=?1 AND expires_at>?2",params![hash(&input.state),now()],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        tx.execute("DELETE FROM oauth WHERE state_hash=?1",[hash(&input.state)])?;
-        tx.commit()?;
-        row
-    };
-    require_device(&app,&device)?;
-    let token: Value = app.http.post("https://oauth2.googleapis.com/token").form(&[
-        ("client_id",app.config.google_client_id.as_ref().unwrap().as_str()),("client_secret",app.config.google_client_secret.as_ref().unwrap()),
-        ("redirect_uri",&format!("{}/auth/google/callback",app.config.public_url)),("code",&input.code),("code_verifier",&verifier),("grant_type","authorization_code")
-    ]).send().await?.error_for_status()?.json().await?;
-    let access = token["access_token"].as_str().ok_or_else(||ApiError::bad("Google did not issue a token"))?;
-    let profile: Value = app.http.get("https://openidconnect.googleapis.com/v1/userinfo").bearer_auth(access).send().await?.error_for_status()?.json().await?;
-    if profile["email_verified"] != true { return Err(ApiError::bad("Google email is not verified")); }
-    let sub = profile["sub"].as_str().ok_or_else(||ApiError::bad("Google subject missing"))?;
-    let email = profile["email"].as_str().ok_or_else(||ApiError::bad("Google email missing"))?.to_lowercase();
-    let user = app.db.user(&email,Some(sub),app.config.free_credits)?;
-    approve(&app,&device,user)?;
-    Ok(Html(document("<h1>Signed in with Google</h1><p>Return to Linux Assistant. You can close this tab.</p>")))
 }
 
 /// Validate unpredictable device identifiers before reflecting them into HTML.

@@ -3,7 +3,7 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use protocol::{AssistantReply, ChatRequest, Message, Role, Steering};
+use protocol::{AssistantReply, AuthProvider, ChatRequest, Message, Role, Steering};
 
 pub struct Db(pub Mutex<Connection>);
 #[derive(Default)]
@@ -53,6 +53,27 @@ impl Db {
     /// Derive the balance from the ledger instead of maintaining duplicate state.
     pub fn balance(&self, user: i64) -> Result<i64> {
         Ok(self.0.lock().unwrap().query_row("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE user_id=?1", [user], |r| r.get(0))?)
+    }
+
+    /// Resolve stable provider identities before considering a potentially changed email address.
+    pub fn identity_user(&self, provider:AuthProvider, subject:&str)->Result<Option<i64>> {
+        let conn=self.0.lock().unwrap();
+        Ok(if provider==AuthProvider::Google { conn.query_row("SELECT id FROM users WHERE google_sub=?1",[subject],|r|r.get(0)).optional()? }
+            else { conn.query_row("SELECT user_id FROM social_identities WHERE provider=?1 AND subject=?2",params![provider.key(),subject],|r|r.get(0)).optional()? })
+    }
+
+    /// Link only an email whose ownership the provider or our own code has established.
+    pub fn social_user(&self, email:&str, provider:AuthProvider, subject:&str, free:i64)->Result<i64> {
+        if provider==AuthProvider::Google { return self.user(email,Some(subject),free); }
+        let mut conn=self.0.lock().unwrap();
+        let tx=conn.transaction()?;
+        if let Some(id)=tx.query_row("SELECT user_id FROM social_identities WHERE provider=?1 AND subject=?2",params![provider.key(),subject],|r|r.get(0)).optional()? { return Ok(id); }
+        tx.execute("INSERT OR IGNORE INTO users(email) VALUES(?1)",[email])?;
+        let id:i64=tx.query_row("SELECT id FROM users WHERE email=?1",[email],|r|r.get(0))?;
+        tx.execute("INSERT INTO social_identities(provider,subject,user_id) VALUES(?1,?2,?3)",params![provider.key(),subject,id])?;
+        tx.execute("INSERT OR IGNORE INTO ledger(user_id,delta,reference,created_at) VALUES(?1,?2,?3,?4)",params![id,free,format!("welcome:{id}"),now()])?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Resolve an unexpired session without exposing the raw token in storage.

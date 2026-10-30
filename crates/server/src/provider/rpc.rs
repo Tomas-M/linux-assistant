@@ -25,7 +25,7 @@ impl Rpc {
         // Provider children receive only their own authentication home, never application or payment secrets.
         for (key,_) in std::env::vars_os() {
             let name = key.to_string_lossy().to_ascii_uppercase();
-            if ["ASSISTANT_","LINUX_ASSISTANT_","STRIPE_","GOOGLE_"].iter().any(|prefix|name.starts_with(prefix)) { command.env_remove(key); }
+            if ["ASSISTANT_","LINUX_ASSISTANT_","STRIPE_","GOOGLE_","MICROSOFT_","GITHUB_"].iter().any(|prefix|name.starts_with(prefix)) { command.env_remove(key); }
         }
         #[cfg(windows)] { command.creation_flags(0x08000000); }
         let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?,home.to_string_lossy().into_owned());

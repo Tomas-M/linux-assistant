@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::{processes::Processes, storage};
 mod output;
 mod presentation;
+mod social;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Settings { pub backend: String, pub commands_enabled: bool }
@@ -24,7 +25,7 @@ pub struct Saved {
     pub request: Option<ChatRequest>,
     pub pending_output: Option<Uuid>,
 }
-pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<DeviceLogin>, account: Option<Account> }
+pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<social::LoginAttempt>, account: Option<Account> }
 
 impl Engine {
     /// One daemon owns settings and conversation state for both frontends.
@@ -58,7 +59,7 @@ impl Engine {
     /// Never expose authentication tokens or pending request internals to browser state.
     pub fn state(&self) -> Value {
         json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":protocol::display_messages(&self.saved.messages),
-            "pending":self.saved.pending,"retry_available":self.saved.request.is_some() || self.saved.pending_output.is_some(),"account":self.account})
+            "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),"pending":self.saved.pending,"retry_available":self.saved.request.is_some() || self.saved.pending_output.is_some(),"account":self.account})
     }
 
     /// Keep all state transitions durable before performing external side effects.
@@ -111,18 +112,25 @@ impl Engine {
 
     /// Request a code without opening a browser or exposing the device secret to the UI.
     pub async fn login(&mut self,email:String) -> Result<EmailChallenge> {
-        let login:DeviceLogin=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/device"),&self.live,None).await?).await?;
+        let login=if let Some(login)=self.login.as_ref().filter(|login|login.provider.is_some()) { login.device.clone() }
+            else { Self::response::<DeviceLogin>(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/device"),&self.live,None).await?).await? };
         let input=EmailLogin { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),email };
         let challenge=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/email").json(&input),&self.live,None).await?).await?;
-        self.login=Some(login);
+        let provider=self.login.as_ref().and_then(|login|login.provider);
+        self.login=Some(social::LoginAttempt { device:login,provider });
         Ok(challenge)
     }
 
     /// Verify inside the client and persist the session before loading account details.
     pub async fn verify_login(&mut self,code:String) -> Result<Value> {
-        let login=self.login.as_ref().context("Request a sign-in code first")?;
+        let login=&self.login.as_ref().context("Request a sign-in code first")?.device;
         let input=VerifyEmail { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),code };
         let result:LoginResult=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/verify").json(&input),&self.live,None).await?).await?;
+        self.finish_login(result).await
+    }
+
+    /// Finish email and provider sign-ins through the same durable session transition.
+    async fn finish_login(&mut self,result:LoginResult)->Result<Value> {
         self.saved.token=Some(result.token.context("Backend did not issue a session")?);
         self.login=None;
         self.account=None;

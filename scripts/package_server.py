@@ -18,7 +18,7 @@ def main():
     files=[ROOT/name for name in (
         "Cargo.toml","Cargo.lock","rust-toolchain.toml",".cargo/config.toml",
         "README.md","THIRD_PARTY_NOTICES.md","deploy/START-HERE.md",
-        "deploy/server.env.example","deploy/linux-assistant.service","scripts/build_server.sh","scripts/install_server_update.sh",
+        "deploy/server.env.example","deploy/SOCIAL_SIGN_IN.md","deploy/linux-assistant.service","scripts/build_server.sh","scripts/install_server_update.sh",
         "scripts/reset_conversations.sh","scripts/reset_conversations.py")]
     files+=sorted(path for path in (ROOT/"crates").rglob("*")
                   if path.is_file() and path.suffix in (".rs",".toml",".sql",".html",".css",".js"))
