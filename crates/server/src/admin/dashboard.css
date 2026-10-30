@@ -8,7 +8,7 @@ button:disabled { opacity:.5; cursor:wait; }
 button.quiet { background:transparent; color:var(--ink); border-color:var(--line); }
 button:hover:not(:disabled) { filter:brightness(.93); }
 button:has(svg) { display:inline-flex; align-items:center; justify-content:center; gap:8px; }
-svg { width:20px; height:20px; fill:currentColor; stroke:none; flex-shrink:0; }
+svg { width:20px; height:22px; fill:currentColor; stroke:none; flex-shrink:0; }
 input,select { border:1px solid #bdcccc; background:white; color:var(--ink); padding:9px 11px; min-width:0; width:100%; }
 input:focus,select:focus,button:focus-visible,a:focus-visible { outline:3px solid #83d5ca; outline-offset:2px; }
 label { display:grid; gap:6px; font-size:var(--secondary); color:var(--muted); }

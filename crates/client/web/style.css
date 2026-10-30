@@ -195,7 +195,7 @@ input[type=checkbox] { accent-color:var(--accent); }
 }
 @media (prefers-reduced-motion:reduce) { *,*::after { animation:none !important; transition:none !important; } }
 
-svg { width:20px; height:20px; fill:currentColor; stroke:none; }
+svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 .icon-definitions { position:absolute; width:0; height:0; overflow:hidden; }
 #new { display:inline-flex; align-items:center; gap:8px; }
 .credit-balance { color:var(--accent); background:var(--accent-soft); border-color:transparent; font-size:16px; font-weight:600; white-space:nowrap; }
