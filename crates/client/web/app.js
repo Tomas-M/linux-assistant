@@ -70,7 +70,7 @@ function render()
     elements['balance-note'].hidden=!depleted;
     if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
     else setIcon(elements['settings-open'],'user');
-    for (const id of ['new','credits','logout','approve','deny','retry'])
+    for (const id of ['new','credits','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     elements['buy-inline'].disabled=buying || !state.account;
     for (const button of elements['credit-packs'].querySelectorAll('button')) button.disabled=buying || !state.account || elements['credit-packs'].dataset.development==='true';
@@ -493,14 +493,16 @@ async function loadPurchases()
     {
         const result=await api('purchases');
         if (state.account?.email!==email) return;
+        const rows=document.createDocumentFragment();
         for (const purchase of result.purchases)
         {
             const row=document.createElement('li'),credits=document.createElement('strong'),time=document.createElement('time');
             credits.textContent='+'+purchase.credits.toLocaleString()+' credits';
             time.dateTime=new Date(purchase.paid_at*1000).toISOString();
             time.textContent=new Date(purchase.paid_at*1000).toLocaleString();
-            row.append(credits,time); elements.purchases.append(row);
+            row.append(credits,time); rows.append(row);
         }
+        elements.purchases.replaceChildren(rows);
         elements['purchase-status'].textContent=result.purchases.length?'':'No completed purchases yet.';
     }
     catch (error) { if (state.account?.email===email) elements['purchase-status'].textContent=error.message; }
@@ -532,17 +534,26 @@ async function loadCreditPacks()
     catch (error) { if (state.account?.email===email) elements['credit-packs-status'].textContent=error.message; }
 }
 
-// Both header controls open the same credit overview and load recent purchases.
+// Each opening starts with the credit overview; purchase history is loaded only when expanded.
 function openSettings()
 {
     elements['settings-status'].textContent='';
+    elements['purchase-history'].hidden=true;
+    elements['toggle-purchases'].setAttribute('aria-expanded','false');
     elements['settings-dialog'].showModal();
-    loadPurchases();
     loadCreditPacks();
 }
 elements['settings-open'].addEventListener('click',openSettings);
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
 elements['credit-balance'].addEventListener('click',openSettings);
+// Derive the toggle state from the section instead of keeping a separate visibility flag.
+elements['toggle-purchases'].addEventListener('click',()=>
+{
+    const expanded=elements['purchase-history'].hidden;
+    elements['purchase-history'].hidden=!expanded;
+    elements['toggle-purchases'].setAttribute('aria-expanded',String(expanded));
+    if (expanded) loadPurchases();
+});
 const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 
 // Keep the sign-in form local, including resend timing and development-only delivery hints.
@@ -909,8 +920,16 @@ for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
     if (id==='approve') selectedProcess=proposalId;
     action(()=>api('command',{id:proposalId,approve:id==='approve'}));
 });
-for (const [id,path] of [['new','new'],['credits','account'],['logout','logout'],['retry','retry']])
-    elements[id].addEventListener('click',()=>action(async()=>{await api(path,{}); if (id==='credits') { await loadPurchases(); await loadCreditPacks(); } if (id==='logout') elements['settings-dialog'].close();}));
+for (const [id,path] of [['new','new'],['credits','account'],['retry','retry']])
+    elements[id].addEventListener('click',()=>action(async()=>
+    {
+        await api(path,{});
+        if (id==='credits')
+        {
+            if (!elements['purchase-history'].hidden) await loadPurchases();
+            await loadCreditPacks();
+        }
+    }));
 elements['buy-inline'].addEventListener('click',openSettings);
 elements['credit-packs'].addEventListener('click',async event=>
 {

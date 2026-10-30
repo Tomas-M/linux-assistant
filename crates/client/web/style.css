@@ -144,7 +144,6 @@ dialog::backdrop { background:#14261b38; backdrop-filter:blur(3px); }
 #purchases time { color:var(--muted); }
 #settings-status:empty { display:none; }
 input[type=checkbox] { accent-color:var(--accent); }
-.settings-footer { display:flex; justify-content:space-between; margin-top:24px; padding-top:16px; border-top:1px solid var(--border); font-size:13px; }
 #process-toggle { position:fixed; right:24px; bottom:26px; z-index:3; display:flex; align-items:center; gap:10px; border-radius:12px; box-shadow:var(--shadow); font-size:14px; }
 #process-count { color:var(--muted); font-size:13px; }
 #process-panel { position:fixed; right:24px; bottom:88px; z-index:4; width:850px; max-width:calc(100% - 32px); max-height:calc(100dvh - 120px); overflow:auto; padding:24px; border:1px solid var(--border); border-radius:18px; background:var(--bg); box-shadow:var(--shadow); }

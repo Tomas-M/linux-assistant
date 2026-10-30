@@ -122,10 +122,9 @@
             <div class="account-balance"><span class="muted">Available credits</span><strong id="settings-balance">Loading…</strong></div>
             <h3>Buy credits</h3>
             <div id="credit-packs" class="credit-packs"></div><p id="credit-packs-status" class="muted" role="status"></p>
-            <div class="button-row"><button id="credits">Refresh balance</button></div>
+            <div class="button-row"><button id="credits">Refresh balance</button><button id="toggle-purchases" type="button" aria-controls="purchase-history" aria-expanded="false">Recent purchases</button></div>
             <p id="settings-status" role="status" aria-live="polite"></p>
-            <section class="purchase-history" aria-label="Recent credit purchases"><h3>Recent purchases</h3><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></section>
-            <div class="settings-footer"><button id="logout" class="quiet">Sign out</button></div>
+            <section id="purchase-history" class="purchase-history" aria-label="Recent credit purchases" hidden><h3>Recent purchases</h3><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></section>
         </div>
     </dialog>
     <aside id="process-panel" aria-label="Task manager" hidden>
