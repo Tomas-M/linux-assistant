@@ -888,7 +888,7 @@ elements['cancel-edit'].addEventListener('click',async()=>
 for (const id of ['approve','deny']) elements[id].addEventListener('click',()=>
 {
     const proposalId=state.pending.id;
-    if (id==='approve') { selectedProcess=proposalId; toggleProcesses(true); }
+    if (id==='approve') selectedProcess=proposalId;
     action(()=>api('command',{id:proposalId,approve:id==='approve'}));
 });
 for (const [id,path] of [['new','new'],['credits','account'],['logout','logout'],['retry','retry']])
