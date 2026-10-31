@@ -23,6 +23,8 @@ function escapeHtml(value)
 
 // Keep unknown provider measurements visibly distinct from zero.
 function count(value) { return value===null || value===undefined ? 'Unknown' : number.format(value); }
+// Credits are displayed as ordinary numbers without locale grouping.
+function creditCount(value) { return value===null || value===undefined ? 'Unknown' : String(value); }
 // Keep missing usage and very small positive estimates distinct from zero cost.
 function money(value)
 {
@@ -155,7 +157,7 @@ async function loadAccounts()
 }
 
 // Draw a small dependency-free chart, retaining gaps for unknown measurements.
-function chart(id,points,color)
+function chart(id,points,color,format=count)
 {
     const canvas=document.getElementById(id);
     const width=canvas.clientWidth,height=230,ratio=devicePixelRatio || 1;
@@ -166,7 +168,7 @@ function chart(id,points,color)
     ctx.scale(ratio,ratio);
     ctx.font='13px system-ui';
     ctx.fillStyle='#61777b';
-    canvas.setAttribute('aria-label',points.length?points.map(point=>point.time+': '+count(point.value)).join('; '):'No records in this period.');
+    canvas.setAttribute('aria-label',points.length?points.map(point=>point.time+': '+format(point.value)).join('; '):'No records in this period.');
     if (!points.length) { ctx.fillText('No records in this period.',16,105); return; }
     const values=points.filter(point=>point.value!==null).map(point=>point.value);
     const high=Math.max(1,...values),low=Math.min(0,...values);
@@ -179,7 +181,7 @@ function chart(id,points,color)
         const value=low+(high-low)*i/3;
         ctx.strokeStyle='#e3ebea';
         ctx.beginPath();ctx.moveTo(55,y(value));ctx.lineTo(width-12,y(value));ctx.stroke();
-        ctx.fillText(new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(value),2,y(value)+4);
+        ctx.fillText(format===creditCount?creditCount(Math.round(value)):new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(value),2,y(value)+4);
     }
     ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
     let pen=false;
@@ -216,10 +218,10 @@ async function loadReport()
     const summary=data.summary,credits=data.credits;
     document.getElementById('coverage').textContent=data.coverage.since?'Token recording began '+utc(data.coverage.since)+'. Earlier token consumption is unknown.':'No provider usage recorded yet.';
     document.getElementById('applied-filters').textContent='Showing '+new Date(Number(filters.get('from'))*1000).toLocaleString()+' – '+new Date(Number(filters.get('to'))*1000).toLocaleString()+' · '+(filters.has('user')?'User '+filters.get('user'):'All users')+' · '+(filters.get('account') || 'All accounts')+' · '+(filters.get('purpose') || 'All purposes');
-    const metrics=[['Measured tokens',summary.total_tokens,count(summary.measured)+' of '+count(summary.attempts)+' attempts measured'],['Provider attempts',summary.attempts,count(summary.running || 0)+' running · '+count(summary.failed || 0)+' failed'],['AI credits used',credits.debited-credits.refunded,'All accounts and purposes · '+count(credits.refunded)+' refunded'],['Credits added',credits.added,'Grants, payments and positive adjustments']];
-    document.getElementById('metrics').innerHTML=metrics.map(([title,value,note])=>'<article class="metric"><span>'+title+'</span><strong>'+count(value)+'</strong><small>'+escapeHtml(note)+'</small></article>').join('');
+    const metrics=[['Measured tokens',summary.total_tokens,count(summary.measured)+' of '+count(summary.attempts)+' attempts measured'],['Provider attempts',summary.attempts,count(summary.running || 0)+' running · '+count(summary.failed || 0)+' failed'],['AI credits used',credits.debited-credits.refunded,'All accounts and purposes · '+creditCount(credits.refunded)+' refunded',creditCount],['Credits added',credits.added,'Grants, payments and positive adjustments',creditCount]];
+    document.getElementById('metrics').innerHTML=metrics.map(([title,value,note,format=count])=>'<article class="metric"><span>'+title+'</span><strong>'+format(value)+'</strong><small>'+escapeHtml(note)+'</small></article>').join('');
     chart('token-chart',data.timeline.map(row=>({time:row.time,value:row.total_tokens})),'#087e74');
-    chart('credit-chart',data.credit_timeline.map(row=>({time:row.time,value:row.debited-row.refunded})),'#6178ac');
+    chart('credit-chart',data.credit_timeline.map(row=>({time:row.time,value:row.debited-row.refunded})),'#6178ac',creditCount);
     document.getElementById('current-pricing').textContent='Current USD rates per million tokens: input '+money(data.pricing.input)+', cached input '+money(data.pricing.cached)+', output '+money(data.pricing.output)+'. Costs below reprice recorded tokens at these rates; they are not historical charges. Cached input is excluded from input cost. Missing usage is not estimated; mixed rows show measured usage only.';
     for (const [id,rows] of [['account-breakdown',data.accounts],['purpose-breakdown',data.purposes],['model-breakdown',data.models]])
         table(id,['Source','Attempts','Credits charged','Input','Cached input','Output','Reasoning','Total tokens','Input USD','Cached USD','Output USD','Total USD'],rows.map(row=>
@@ -228,14 +230,14 @@ async function loadReport()
             const cached=row.cached_tokens===null?null:row.cached_tokens*data.pricing.cached/1000000;
             const output=row.output_tokens===null?null:row.output_tokens*data.pricing.output/1000000;
             const total=[input,cached,output].includes(null)?null:input+cached+output;
-            return [escapeHtml(row.name || 'Not reported'),count(row.attempts),count(row.credits_charged),count(row.input_tokens),count(row.cached_tokens),count(row.output_tokens),count(row.reasoning_tokens),count(row.total_tokens),...[input,cached,output,total].map(value=>escapeHtml(money(value)))];
+            return [escapeHtml(row.name || 'Not reported'),count(row.attempts),creditCount(row.credits_charged),count(row.input_tokens),count(row.cached_tokens),count(row.output_tokens),count(row.reasoning_tokens),count(row.total_tokens),...[input,cached,output,total].map(value=>escapeHtml(money(value)))];
         }));
     table('activity',['Started (UTC)','User / purpose','Account / model','Result','Credits','Tokens','Input / cached / output / reasoning','Request / conversation'],data.activity.map(row=>[
         utc(row.started_at),escapeHtml(row.email || 'Operator')+'<br>'+escapeHtml(row.purpose),escapeHtml(row.account_home)+'<br>'+escapeHtml(row.model || 'Not reported'),
-        '<span class="badge '+(row.error ? 'error' : '')+'">'+(row.error ? 'Failed' : row.finished_at ? 'Completed' : 'Running')+'</span><br>'+escapeHtml(row.error || ''),count(row.credits_charged),count(row.total_tokens),[row.input_tokens,row.cached_tokens,row.output_tokens,row.reasoning_tokens].map(count).join(' / '),
+        '<span class="badge '+(row.error ? 'error' : '')+'">'+(row.error ? 'Failed' : row.finished_at ? 'Completed' : 'Running')+'</span><br>'+escapeHtml(row.error || ''),creditCount(row.credits_charged),count(row.total_tokens),[row.input_tokens,row.cached_tokens,row.output_tokens,row.reasoning_tokens].map(count).join(' / '),
         '<details><summary>Identifiers</summary><p>Request<br><code>'+escapeHtml(row.request_id)+'</code></p><p>Conversation<br><code>'+escapeHtml(row.conversation_id)+'</code></p></details>'
     ]));
-    table('ledger',['Time (UTC)','User','Credit change','Reference','Reason'],data.ledger.map(row=>[utc(row.created_at),escapeHtml(row.email),count(row.delta),escapeHtml(row.reference),escapeHtml(row.note || '')]));
+    table('ledger',['Time (UTC)','User','Credit change','Reference','Reason'],data.ledger.map(row=>[utc(row.created_at),escapeHtml(row.email),creditCount(row.delta),escapeHtml(row.reference),escapeHtml(row.note || '')]));
     table('quota-history',['Time (UTC)','Account','Primary used','Secondary used'],data.quotas.map(row=>
     {
         const limits=JSON.parse(row.limits);
@@ -263,7 +265,7 @@ async function loadUsers()
         if (user.credits<=0) { access='No credits'; style='warn'; }
         if (user.blocked) { access='Blocked'; style='error'; }
         const gaps=user.unknown_attempts+user.unmeasured_requests;
-        return [user.id,escapeHtml(user.email),'<span class="badge '+style+'">'+access+'</span>',count(user.credits),count(user.tokens),
+        return [user.id,escapeHtml(user.email),'<span class="badge '+style+'">'+access+'</span>',creditCount(user.credits),count(user.tokens),
             gaps?'<details><summary>'+count(gaps)+(gaps===1?' gap':' gaps')+'</summary><p>'+count(user.unknown_attempts)+' unknown attempts<br>'+count(user.unmeasured_requests)+' unmeasured requests</p></details>':'None',count(user.requests),'<button class="quiet" data-user="'+user.id+'">Manage</button>'];
     }));
     document.getElementById('user-page').textContent='Page '+(state.userPage+1)+' · '+count(data.matching)+' matching users';
@@ -396,13 +398,13 @@ document.getElementById('user-table').addEventListener('click',event=>
     state.selected=state.users.find(user=>user.id===Number(button.dataset.user));
     state.adjustment=null;
     document.getElementById('selected-email').textContent=state.selected.email;
-    document.getElementById('selected-user').textContent='User '+state.selected.id+' · '+count(state.selected.credits)+' credits';
+    document.getElementById('selected-user').textContent='User '+state.selected.id+' · '+creditCount(state.selected.credits)+' credits';
     document.getElementById('block-user').textContent=state.selected.blocked ? 'Unblock user' : 'Block user';
     document.getElementById('credit-form').reset();
     document.getElementById('user-result').textContent='';
     document.getElementById('checkout-url').hidden=true;
     document.getElementById('create-checkout').disabled=!state.report?.payments.stripe || !state.report.payments.packs.length;
-    document.getElementById('checkout-pack').innerHTML=(state.report?.payments.packs || []).map(pack=>'<option value="'+escapeHtml(pack.price_id)+'">'+count(pack.credits)+' credits — '+money(Number(pack.usd))+'</option>').join('');
+    document.getElementById('checkout-pack').innerHTML=(state.report?.payments.packs || []).map(pack=>'<option value="'+escapeHtml(pack.price_id)+'">'+creditCount(pack.credits)+' credits — '+money(Number(pack.usd))+'</option>').join('');
     document.getElementById('user-dialog').showModal();
 });
 document.getElementById('credit-form').addEventListener('submit',async event=>
@@ -419,8 +421,8 @@ document.getElementById('credit-form').addEventListener('submit',async event=>
         user.credits=result.credits;
         state.adjustment=null;
         event.target.reset();
-        document.getElementById('user-result').textContent='Adjustment saved. Balance: '+count(result.credits)+' credits.';
-        document.getElementById('selected-user').textContent='User '+state.selected.id+' · '+count(result.credits)+' credits';
+        document.getElementById('user-result').textContent='Adjustment saved. Balance: '+creditCount(result.credits)+' credits.';
+        document.getElementById('selected-user').textContent='User '+state.selected.id+' · '+creditCount(result.credits)+' credits';
         await refresh();
     }
     catch (error) { if (state.selected===user) document.getElementById('user-result').textContent=error.message; }
@@ -474,7 +476,7 @@ window.addEventListener('resize',()=>
 {
     if (!state.report) return;
     chart('token-chart',state.report.timeline.map(row=>({time:row.time,value:row.total_tokens})),'#087e74');
-    chart('credit-chart',state.report.credit_timeline.map(row=>({time:row.time,value:row.debited-row.refunded})),'#6178ac');
+    chart('credit-chart',state.report.credit_timeline.map(row=>({time:row.time,value:row.debited-row.refunded})),'#6178ac',creditCount);
 });
 // Keep drafts separate from the applied query until the operator explicitly applies or resets filters.
 function resetFilters()

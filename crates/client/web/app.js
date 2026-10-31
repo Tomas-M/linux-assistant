@@ -72,14 +72,14 @@ function render()
     elements['permission-note'].textContent=state.full_access?'Commands run automatically':state.settings.commands_enabled?'You approve every command':'Local commands are off';
     elements.platform.textContent=(state.platform==='windows'?'Windows · PowerShell':'Linux · sh')+' · Local workspace';
     elements.account.textContent=state.account?.email || 'Sign in to your assistant account';
-    elements['settings-balance'].textContent=state.account?state.account.credits.toLocaleString():'Loading…';
+    elements['settings-balance'].textContent=state.account?state.account.credits:'Loading…';
     if (elements.purchases.dataset.email!==state.account?.email)
     {
         elements.purchases.replaceChildren();
         elements.purchases.dataset.email=state.account?.email || '';
         elements['purchase-status'].textContent='';
     }
-    elements['credit-balance'].textContent=state.account?state.account.credits.toLocaleString()+' credits':'Credits…';
+    elements['credit-balance'].textContent=state.account?state.account.credits+' credits':'Credits…';
     const depleted=state.account && state.account.credits<=0;
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
@@ -357,7 +357,7 @@ function renderCompletions()
             status.textContent=run.error || 'Completed'; status.title='Worked for '+duration;
             const credits=document.createElement('span');
             credits.className='completion-cost';
-            credits.textContent=run.credits==null?'Credits unavailable':run.credits.toLocaleString()+' '+(run.credits===1?'credit':'credits');
+            credits.textContent=run.credits==null?'Credits unavailable':run.credits+' '+(run.credits===1?'credit':'credits');
             footer.append(copy,time,status,credits); element.append(footer);
             if (row) row.element.replaceWith(element);
             completionRows[index]=row={element,work,body,answer,notes,key};
@@ -537,7 +537,7 @@ async function loadPurchases()
         for (const purchase of result.purchases)
         {
             const row=document.createElement('li'),credits=document.createElement('strong'),time=document.createElement('time');
-            credits.textContent='+'+purchase.credits.toLocaleString()+' credits';
+            credits.textContent='+'+purchase.credits+' credits';
             time.dateTime=new Date(purchase.paid_at*1000).toISOString();
             time.textContent=new Date(purchase.paid_at*1000).toLocaleString();
             row.append(credits,time); rows.append(row);
