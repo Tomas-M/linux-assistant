@@ -564,7 +564,7 @@ async function loadCreditPacks()
         {
             const button=document.createElement('button'),credits=document.createElement('strong'),price=document.createElement('span');
             button.type='button'; button.className='credit-pack'; button.dataset.priceId=pack.price_id;
-            credits.textContent=pack.credits.toLocaleString()+' credits';
+            credits.textContent=pack.credits+' credits';
             price.textContent=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(Number(pack.usd))+' USD';
             button.append(credits,price); elements['credit-packs'].append(button);
         }
