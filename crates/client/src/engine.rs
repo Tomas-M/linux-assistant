@@ -236,7 +236,9 @@ impl Engine {
         let expected=self.saved.messages.len()+result.steering.len()+1;
         ensure!(result.revision==expected,"Backend returned an unexpected conversation revision");
         // Completion is authoritative even if the separate steering acknowledgement was lost.
-        for input in &result.steering { self.controls.remove(input.id).await?; }
+        let steering_ids:Vec<_>=result.steering.iter().map(|input|input.id).collect();
+        let steering_start=self.saved.messages.len();
+        for id in &steering_ids { self.controls.remove(*id).await?; }
         self.saved.messages.extend(result.steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
         self.saved.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
         self.saved.committed=result.revision;
@@ -247,6 +249,7 @@ impl Engine {
             self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
         }
         if let Some(account) = &mut self.account { account.credits = result.credits; }
+        if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
         if self.saved.pending.is_none() {
             self.saved.task_id=None;
             self.finish_activity(None)?;
@@ -277,11 +280,14 @@ impl Engine {
                         if let Some(progress)=progress { self.live.activity("Thinking…",Some(progress)); }
                         if let (Some(account),Some(credits))=(&mut self.account,credits) { account.credits=credits; }
                         if settled {
-                            for input in &steering { self.controls.remove(input.id).await?; }
+                            let steering_ids:Vec<_>=steering.iter().map(|input|input.id).collect();
+                            let steering_start=self.saved.messages.len();
+                            for id in &steering_ids { self.controls.remove(*id).await?; }
                             self.saved.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
                             let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
                             self.saved.request=None;
                             self.saved.task_id=None;
+                            if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
                             if !self.controls.stopped.load(Ordering::SeqCst) { self.prepare(cwd,Uuid::new_v4())?; }
                             self.save()?;
                         }

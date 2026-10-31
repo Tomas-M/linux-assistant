@@ -21,6 +21,12 @@ impl std::fmt::Display for Interrupted {
 }
 impl std::error::Error for Interrupted {}
 
+/// Frame live and recovered steering identically while keeping the stored user text unchanged.
+pub fn steering_message(input:Steering)->protocol::Message {
+    protocol::Message { role:protocol::Role::User,attachments:input.attachments,
+        text:format!("Additional user instructions for the task currently in progress. Supplement the existing objective and keep unfinished requirements; replace or cancel earlier work only when explicitly requested.\n\nUser message:\n{}",input.text) }
+}
+
 /// Steering addresses an application request owned by the signed-in user, never an arbitrary Codex turn.
 pub async fn steer(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>,Json(input):Json<Steering>)->ApiResult<Json<serde_json::Value>> {
     let user=app.user(&headers)?;

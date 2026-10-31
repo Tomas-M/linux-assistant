@@ -10,7 +10,9 @@ mod tests;
 
 use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock}};
 use anyhow::{ensure, Context, Result};
-use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform, Role};
+use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform};
+#[cfg(test)]
+use protocol::Role;
 use serde_json::Value;
 use tokio::sync::{Mutex,RwLock as AsyncRwLock};
 use crate::{config::Config, db::{now, Db}};
@@ -128,7 +130,7 @@ impl Pool {
                 let mut attempt=crate::usage::Attempt::start(db,Some(user),request,&account.home,purpose)?;
                 let mut reporter=progress::Reporter::new(events,tried.len());
                 let mut current=request.clone();
-                current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(|input|protocol::Message { attachments:input.attachments, role:Role::User,text:input.text }));
+                current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(crate::turns::steering_message));
                 let result=rpc.answer(config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
                 let failure=result.as_ref().err().map(|error|crate::diagnostics::clean(&format!("{error:#}")));
                 if let Some(message)=&failure { crate::diagnostics::record("error","generation",Some(&request.request_id.to_string()),Some(&account.home),message); }

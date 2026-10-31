@@ -8,10 +8,22 @@ pub struct Live(pub watch::Sender<Value>);
 
 impl Live {
     /// Keep one current view independently of the conversation lock for reconnecting browsers.
-    pub fn new() -> Self { Self(watch::channel(json!({"state":null,"busy":false,"activity":null,"error":null,"steps":[],"runs":[],"commands":[],"connections":{}})).0) }
+    pub fn new() -> Self { Self(watch::channel(json!({"state":null,"busy":false,"activity":null,"error":null,"steps":[],"runs":[],"commands":[],"steering":[],"connections":{}})).0) }
 
     /// Publish durable conversation state without credentials or duplicated output logs.
     pub fn state(&self, state: Value) { self.0.send_modify(|view|view["state"]=state); }
+
+    /// Publish committed steering atomically; late acknowledgements cannot re-add the pending bubble.
+    pub fn committed_steering(&self,state:Value,ids:&[uuid::Uuid],start:usize) {
+        self.0.send_modify(|view| {
+            let inputs=view["steering"].as_array_mut().unwrap();
+            for (offset,id) in ids.iter().enumerate() {
+                if let Some(input)=inputs.iter_mut().find(|input|input["id"]==id.to_string()) { input["message_index"]=json!(start+offset); }
+                else { inputs.push(json!({"id":id,"message_index":start+offset})); }
+            }
+            view["state"]=state;
+        });
+    }
 
     /// Update operation status while leaving the latest saved conversation available.
     pub fn activity(&self, label: &str, progress: Option<protocol::Progress>) {

@@ -393,14 +393,15 @@ function renderCompletions()
 }
 
 // Copy the final response, or its interrupted preview, without commands or progress chatter.
-elements.messages.addEventListener('click',async event=>
+elements.workspace.addEventListener('click',async event=>
 {
-    const copy=event.target.closest('[data-copy],[data-copy-prompt]'), process=event.target.closest('[data-process]');
+    const copy=event.target.closest('[data-copy],[data-copy-prompt],[data-copy-steering]'), process=event.target.closest('[data-process]');
     if (copy)
     {
-        const prompt=copy.hasAttribute('data-copy-prompt'), label=prompt?'Copy message':'Copy response';
+        const prompt=copy.hasAttribute('data-copy-prompt') || copy.hasAttribute('data-copy-steering'), label=prompt?'Copy message':'Copy response';
         let text;
-        if (prompt) text=state.messages[Number(copy.dataset.copyPrompt)].text;
+        if (copy.hasAttribute('data-copy-steering')) text=view.steering.find(input=>input.id===copy.dataset.copySteering).text;
+        else if (prompt) text=state.messages[Number(copy.dataset.copyPrompt)].text;
         else
         {
             const run=view.runs.filter(run=>run.finished_at)[Number(copy.dataset.copy)];
@@ -819,16 +820,21 @@ function renderComposer()
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
     elements.send.disabled=!state.authenticated || queueAction || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
     renderAttachments();
-    const steering=JSON.stringify(view.steering || []);
+    const inputs=(view.steering || []).filter(input=>input.message_index===undefined), steering=JSON.stringify(inputs);
     if (steering!==steeringKey)
     {
         steeringKey=steering;
         elements['steering-messages'].replaceChildren();
-        for (const input of view.steering || [])
+        for (const input of inputs)
         {
-            const message=document.createElement('p');
-            message.textContent='You · '+[input.text,...(input.attachments || []).map(file=>file.name)].filter(Boolean).join(' · ');
-            elements['steering-messages'].append(message);
+            const group=document.createElement('div'), message=document.createElement('article'), text=document.createElement('div');
+            group.className='user-message'; message.className='user'; text.className='answer'; text.textContent=input.text;
+            message.append(text);
+            for (const file of input.attachments || []) { const chip=document.createElement('span'); chip.className='attachment sent-attachment'; chip.textContent=file.name; message.append(chip); }
+            const actions=document.createElement('div'), copy=document.createElement('button');
+            actions.className='prompt-actions'; copy.className='icon-button copy-prompt'; copy.dataset.copySteering=input.id;
+            copy.title='Copy message'; copy.setAttribute('aria-label','Copy message'); setIcon(copy,'copy');
+            actions.append(copy); group.append(message,actions); elements['steering-messages'].append(group);
         }
     }
     elements['queued-messages'].hidden=!queue.some(input=>!input.editing);

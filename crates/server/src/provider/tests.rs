@@ -525,7 +525,7 @@ async fn integration_provider_controls() -> Result<()> {
             tokio::join!(pool.answer_stream(&config,&db,user,&chat,None,Some(&mut receiver)),controller)
         }).await?;
         if stop { assert!(result.err().unwrap().downcast_ref::<crate::turns::Interrupted>().is_some()); }
-        else { assert_eq!(result?.reply.text,"Steered: Switch to 世界"); assert_eq!(db.steering(user,chat.request_id)?.len(),1); }
+        else { assert!(result?.reply.text.ends_with("Switch to 世界")); assert_eq!(db.steering(user,chat.request_id)?.len(),1); }
     }
     Ok(())
 }
