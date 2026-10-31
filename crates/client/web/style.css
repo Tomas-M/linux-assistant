@@ -158,11 +158,7 @@ dialog::backdrop { background:#14261b38; backdrop-filter:blur(0.1875rem); }
 .account-balance strong { font-size:2rem; line-height:1.2; color:var(--accent); }
 .account-balance strong.depleted { color:var(--warning); }
 .purchase-history { margin:0.75rem 0; }
-.purchase-history>summary { display:flex; align-items:center; gap:0.5rem; width:fit-content; list-style:none; cursor:pointer; color:var(--muted); font-size:0.875rem; }
-.purchase-history>summary::-webkit-details-marker { display:none; }
-.purchase-history>summary:hover { color:var(--text); }
-.purchase-history>summary svg { width:0.625rem; height:0.75rem; transition:transform .15s; }
-.purchase-history[open]>summary svg { transform:rotate(90deg); }
+.purchase-history>h3 { margin:0; color:var(--muted); font-size:0.875rem; font-weight:500; }
 #purchases { list-style:none; padding:0; margin:0; }
 #purchases li { display:flex; justify-content:space-between; gap:1rem; padding:0.625rem 0; border-bottom:0.0625rem solid var(--border); font-size:0.875rem; }
 #purchases time { color:var(--muted); }

@@ -102,7 +102,7 @@ function render()
     {
         elements.purchases.replaceChildren();
         elements.purchases.dataset.email=state.account?.email || '';
-        elements['purchase-status'].textContent='';
+        elements['purchase-history'].hidden=true;
     }
     elements['credit-balance'].textContent=state.account?state.account.credits+' credits':'Credits…';
     const depleted=state.account && state.account.credits<=0;
@@ -459,19 +459,19 @@ elements.theme.addEventListener('click',()=>
     setIcon(elements.theme,dark?'sun':'moon');
     elements.theme.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
 });
-// Keep purchase history authoritative and scoped to the account that opened Settings.
+// Show only the latest three purchases, and keep empty history out of Settings.
 async function loadPurchases()
 {
     const email=state.account?.email;
     if (!email) return;
-    elements['purchase-status'].textContent='Loading purchases…';
+    elements['purchase-history'].hidden=true;
     elements.purchases.replaceChildren();
     try
     {
         const result=await api('purchases');
         if (state.account?.email!==email) return;
         const rows=document.createDocumentFragment();
-        for (const purchase of result.purchases)
+        for (const purchase of result.purchases.slice(0,3))
         {
             const row=document.createElement('li'),credits=document.createElement('strong'),time=document.createElement('time');
             credits.textContent='+'+purchase.credits+' credits';
@@ -480,9 +480,9 @@ async function loadPurchases()
             row.append(credits,time); rows.append(row);
         }
         elements.purchases.replaceChildren(rows);
-        elements['purchase-status'].textContent=result.purchases.length?'':'No completed purchases yet.';
+        elements['purchase-history'].hidden=!result.purchases.length;
     }
-    catch (error) { if (state.account?.email===email) elements['purchase-status'].textContent=error.message; }
+    catch (error) { if (state.account?.email===email) elements['settings-status'].textContent=error.message; }
 }
 
 // Fetch purchase choices whenever Settings opens so administrator changes appear without restarting the client.
@@ -515,21 +515,16 @@ async function loadCreditPacks()
     catch (error) { if (state.account?.email===email) elements['credit-packs-status'].textContent=error.message; }
 }
 
-// Each opening starts with the credit overview; purchase history is loaded only when expanded.
+// Fetch the credit overview and recent purchases whenever Settings opens.
 function openSettings()
 {
     elements['settings-status'].textContent='';
-    elements['purchase-history'].open=false;
     elements['settings-dialog'].showModal();
     loadCreditPacks();
+    loadPurchases();
 }
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
 elements['credit-balance'].addEventListener('click',openSettings);
-// Native disclosure state keeps mouse and keyboard purchase-history toggling consistent.
-elements['purchase-history'].addEventListener('toggle',()=>
-{
-    if (elements['purchase-history'].open) loadPurchases();
-});
 elements.credits.addEventListener('click',()=>elements.credits.querySelector('svg').animate([{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}],{duration:600,easing:'ease-in-out'}));
 const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 
@@ -948,11 +943,7 @@ for (const [id,path] of [['new','new'],['credits','account'],['retry','retry']])
     elements[id].addEventListener('click',()=>action(async()=>
     {
         await api(path,{});
-        if (id==='credits')
-        {
-            if (elements['purchase-history'].open) await loadPurchases();
-            await loadCreditPacks();
-        }
+        if (id==='credits') await Promise.all([loadPurchases(),loadCreditPacks()]);
     }));
 elements['buy-inline'].addEventListener('click',openSettings);
 elements['credit-packs'].addEventListener('click',async event=>
