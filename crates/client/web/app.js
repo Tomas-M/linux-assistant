@@ -428,8 +428,9 @@ elements.workspace.addEventListener('click',async event=>
 // Show a way back to the latest output whenever the reader is away from the end.
 function renderScrollButton()
 {
-    setIcon(elements['scroll-bottom'],view.busy?'ellipsis':'send');
-    elements['scroll-bottom'].hidden=!state?.authenticated || document.body.classList.contains('empty-chat') || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
+    const button=elements['scroll-bottom'];
+    setIcon(button,view.busy && !button.matches(':hover,:focus-visible')?'ellipsis':'send');
+    button.hidden=!state?.authenticated || document.body.classList.contains('empty-chat') || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
 }
 
 // Explicit jumps and submitted prompts resume following subsequent streamed updates.
@@ -446,6 +447,7 @@ window.addEventListener('scroll',()=>
     renderScrollButton();
 },{passive:true});
 elements['scroll-bottom'].addEventListener('click',scrollToEnd);
+for (const event of ['pointerenter','pointerleave','focus','blur']) elements['scroll-bottom'].addEventListener(event,renderScrollButton);
 window.addEventListener('resize',()=>{if (followOutput) scrollToEnd(); else renderScrollButton();});
 
 // Shared snapshots restore an active conversation after refresh without posting another request.
@@ -865,6 +867,7 @@ function renderComposer()
     for (const input of queue.filter(input=>!input.editing))
     {
         const row=document.createElement('div'), text=document.createElement('span');
+        row.innerHTML='<svg aria-hidden="true"><use href="#icon-list-ul"/></svg>';
         text.textContent=[input.text,...(input.attachments || []).map(file=>file.name)].filter(Boolean).join(' · ');
         text.title=text.textContent;
         row.append(text);
