@@ -41,7 +41,7 @@
                         <p>{{APP_NAME}} can run commands<br>on your computer</p>
                     </div>
                     <div class="auth-card">
-                        <div class="auth-offer"><div><strong>100 free credits</strong><small>Try {{APP_NAME}} on real tasks</small></div><svg aria-hidden="true"><use href="#icon-gift"/></svg></div>
+                        <div class="auth-offer"><div><strong>100 free credits</strong><small>Sign in and give {{APP_NAME}} a try</small></div><svg aria-hidden="true"><use href="#icon-gift"/></svg></div>
                         <form id="email-form">
                             <div id="email-sign-in" hidden>
                                 <label for="email" class="sr-only">Email address</label>
@@ -128,12 +128,11 @@
         <div class="settings-scroll">
             <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings" autofocus><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
             <p id="account" class="muted"></p>
-            <div class="account-balance"><span class="muted">Available credits</span><strong id="settings-balance">Loading…</strong></div>
+            <div class="account-balance"><span class="muted">Available credits</span><div class="account-balance-value"><strong id="settings-balance">Loading…</strong><button id="credits" type="button" class="icon-button" aria-label="Refresh balance" title="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
             <h3>Buy credits</h3>
             <div id="credit-packs" class="credit-packs"></div><p id="credit-packs-status" class="muted" role="status"></p>
-            <div class="button-row"><button id="credits">Refresh balance</button><button id="toggle-purchases" type="button" aria-controls="purchase-history" aria-expanded="false">Recent purchases</button></div>
+            <details id="purchase-history" class="purchase-history"><summary>Recent purchases<svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></details>
             <p id="settings-status" role="status" aria-live="polite"></p>
-            <section id="purchase-history" class="purchase-history" aria-label="Recent credit purchases" hidden><h3>Recent purchases</h3><p id="purchase-status" class="muted" role="status"></p><ul id="purchases"></ul></section>
         </div>
     </dialog>
     <aside id="process-panel" aria-label="Task manager" hidden>

@@ -580,21 +580,18 @@ async function loadCreditPacks()
 function openSettings()
 {
     elements['settings-status'].textContent='';
-    elements['purchase-history'].hidden=true;
-    elements['toggle-purchases'].setAttribute('aria-expanded','false');
+    elements['purchase-history'].open=false;
     elements['settings-dialog'].showModal();
     loadCreditPacks();
 }
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
 elements['credit-balance'].addEventListener('click',openSettings);
-// Derive the toggle state from the section instead of keeping a separate visibility flag.
-elements['toggle-purchases'].addEventListener('click',()=>
+// Native disclosure state keeps mouse and keyboard purchase-history toggling consistent.
+elements['purchase-history'].addEventListener('toggle',()=>
 {
-    const expanded=elements['purchase-history'].hidden;
-    elements['purchase-history'].hidden=!expanded;
-    elements['toggle-purchases'].setAttribute('aria-expanded',String(expanded));
-    if (expanded) loadPurchases();
+    if (elements['purchase-history'].open) loadPurchases();
 });
+elements.credits.addEventListener('click',()=>elements.credits.querySelector('svg').animate([{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}],{duration:600,easing:'ease-in-out'}));
 const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 
 // Keep the sign-in form local, including resend timing and development-only delivery hints.
@@ -1018,7 +1015,7 @@ for (const [id,path] of [['new','new'],['credits','account'],['retry','retry']])
         await api(path,{});
         if (id==='credits')
         {
-            if (!elements['purchase-history'].hidden) await loadPurchases();
+            if (elements['purchase-history'].open) await loadPurchases();
             await loadCreditPacks();
         }
     }));
