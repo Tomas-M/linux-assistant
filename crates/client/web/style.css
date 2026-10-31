@@ -15,7 +15,7 @@ h2 { font-size:20px; font-weight:600; line-height:1.2; }
 .muted,small { color:var(--muted); font-size:13px; }
 .eyebrow { font-size:13px; letter-spacing:1.5px; color:var(--muted); }
 .topbar { position:sticky; top:0; z-index:3; height:88px; display:flex; align-items:center; gap:24px; padding:0 40px; border-bottom:1px solid var(--border); background:var(--bg); }
-.brand { display:flex; gap:12px; align-items:center; text-decoration:none; color:var(--text); font-weight:600; white-space:nowrap; }
+.brand { display:flex; gap:12px; align-items:center; text-decoration:none; color:var(--text); font-size:20px; font-weight:600; white-space:nowrap; }
 .brand-mark { display:flex; align-items:center; justify-content:center; height:34px; width:34px; background:var(--accent-soft); color:var(--accent); border-radius:11px; }
 .topbar nav { margin-left:auto; display:flex; align-items:center; gap:16px; }
 .quiet,.icon-button { border-color:transparent; background:transparent; }
@@ -247,5 +247,5 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 @media (max-width:480px) { .brand-name { display:none; } .topbar { gap:8px; } .topbar nav { gap:2px; } .credit-balance { padding:8px 10px; font-size:14px; } .auth-card { padding:24px 18px; } .code-digits { gap:6px; } .code-digits input:nth-of-type(4) { margin-left:6px; } }
 
 #brand-logo { display:block; width:auto; max-width:220px; height:40px; object-fit:contain; }
-#brand-logo.brand-mark-image { width:34px; height:34px; max-width:none; flex-shrink:0; }
+#brand-logo.brand-mark-image { width:48px; height:48px; max-width:none; flex-shrink:0; }
 @media (max-width:480px) { #brand-logo { max-width:120px; height:32px; } }
