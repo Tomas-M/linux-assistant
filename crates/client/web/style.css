@@ -1,6 +1,6 @@
 /* Fixed UI lengths use rem so the root font scales the entire client to 90%. */
-:root { color-scheme:light; --bg:#fff; --surface:#f6f7f6; --text:#242a27; --muted:#66716a; --border:#e7ebe8; --accent:#23764e; --accent-soft:#edf5ef; --warning:#a34b20; --shadow:0 0.75rem 3.75rem #182c2114; --composer-height:15rem; font:90%/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-:root[data-theme=dark] { color-scheme:dark; --bg:#171b19; --surface:#202622; --text:#e7ede8; --muted:#a1ada5; --border:#343e37; --accent:#8bc8a3; --accent-soft:#253a2c; --shadow:0 0.75rem 3.75rem #0005; }
+:root { color-scheme:light; --bg:#fcfcfc; --card:#fff; --surface:#f6f7f6; --text:#242a27; --muted:#66716a; --border:#e7ebe8; --accent:#23764e; --accent-soft:#edf5ef; --warning:#a34b20; --shadow:0 0.75rem 3.75rem #182c2114; --composer-height:15rem; --topbar-height:5rem; font:90%/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+:root[data-theme=dark] { color-scheme:dark; --bg:#171b19; --card:#202622; --surface:#202622; --text:#e7ede8; --muted:#a1ada5; --border:#343e37; --accent:#8bc8a3; --accent-soft:#253a2c; --shadow:0 0.75rem 3.75rem #0005; }
 :root[data-theme=dark] { --warning:#efb58c; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); }
@@ -17,15 +17,20 @@ h1 { font-size:2.25rem; font-weight:550; letter-spacing:-0.075rem; line-height:1
 h2 { font-size:1.25rem; font-weight:600; line-height:1.2; }
 .muted,small { color:var(--muted); font-size:0.8125rem; }
 .eyebrow { font-size:0.8125rem; letter-spacing:0.09375rem; color:var(--muted); }
-.topbar { position:sticky; top:0; z-index:3; height:5rem; display:flex; align-items:center; gap:1.5rem; padding:0 2.5rem; border-bottom:0.0625rem solid var(--border); background:var(--bg); }
-.brand { display:flex; gap:0.75rem; align-items:center; text-decoration:none; color:var(--text); font-size:1.25rem; font-weight:600; white-space:nowrap; }
+.topbar { position:sticky; top:0; z-index:3; height:var(--topbar-height); display:flex; align-items:center; gap:1.5rem; padding:0 2.5rem; border-bottom:0.0625rem solid var(--border); background:var(--bg); }
+.brand { min-width:0; display:flex; gap:0.75rem; align-items:center; text-decoration:none; color:var(--text); font-size:1.25rem; font-weight:600; white-space:nowrap; }
 .brand-mark { display:flex; align-items:center; justify-content:center; height:2.125rem; width:2.125rem; background:var(--accent-soft); color:var(--accent); border-radius:0.6875rem; }
-.topbar nav { margin-left:auto; display:flex; align-items:center; gap:1rem; }
+.brand-name { overflow:hidden; text-overflow:ellipsis; }
+.topbar nav { flex-shrink:0; margin-left:auto; display:flex; align-items:center; gap:1rem; }
 .quiet,.icon-button { border-color:transparent; background:transparent; }
 .icon-button { width:2.5rem; height:2.5rem; padding:0; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }
-.avatar { width:2.25rem; height:2.25rem; padding:0; border-radius:50%; background:var(--surface); font-size:0.875rem; }
 main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--composer-height) + 2rem); }
-.welcome { padding-top:clamp(1.5rem,9vh,6.875rem); text-align:center; }
+.welcome { margin:0 0 25px; text-align:center; user-select:none; }
+.welcome h1 { margin:0; }
+/* Center the empty chat as one group; active conversations keep the composer docked below messages. */
+.empty-chat main { display:flex; flex-direction:column; justify-content:center; width:100%; min-height:calc(100dvh - var(--topbar-height)); padding:20px 1.75rem; }
+.empty-chat #workspace { width:100%; }
+.empty-chat .composer-wrap { position:static; left:auto; bottom:auto; transform:none; width:100%; padding:0; background:none; }
 #messages article { margin:1.125rem 0 2.125rem; }
 #messages .user { margin:1rem 0 2.125rem auto; padding:0.9375rem 1.25rem; width:fit-content; max-width:88%; border-radius:1.125rem 1.125rem 0.25rem 1.125rem; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; }
 #messages .user-message .user { margin-bottom:0.375rem; }
@@ -85,8 +90,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 @keyframes pulse { 50% { opacity:.35; } }
 #scroll-bottom { position:fixed; left:50%; bottom:calc(var(--composer-height) + 0.75rem); transform:translateX(-50%); z-index:3; display:grid; place-items:center; width:2.5rem; height:2.5rem; padding:0; border-radius:50%; box-shadow:var(--shadow); }
 .composer-wrap { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:min(53.125rem,100%); padding:1.625rem 1.75rem 1.625rem; background:linear-gradient(transparent,var(--bg) 15%); z-index:2; }
-.composer { border:0.0625rem solid var(--border); box-shadow:0 0.25rem 1.5625rem #152b2010; border-radius:1.25rem; background:var(--bg); padding:1rem 1.125rem 0.875rem; }
-.composer:focus-within { border-color:var(--muted); }
+.composer { border:0.0625rem solid var(--border); box-shadow:0 0.125rem 0.3125rem #00000006,0 0.5rem 1.5rem #00000005; border-radius:1.75rem; background:var(--card); padding:1rem 1.125rem 0.875rem; outline:none; }
 textarea { display:block; width:100%; border:0; background:transparent; outline:none; resize:none; min-height:4rem; max-height:11.25rem; line-height:1.6; padding:0 0.125rem; }
 textarea::placeholder { color:var(--muted); }
 .composer-bottom { display:flex; align-items:center; gap:0.75rem; margin-top:0.625rem; }
@@ -151,10 +155,15 @@ dialog::backdrop { background:#14261b38; backdrop-filter:blur(0.1875rem); }
 #purchases time { color:var(--muted); }
 #settings-status:empty { display:none; }
 input[type=checkbox] { accent-color:var(--accent); }
-#process-toggle { position:fixed; right:1.5rem; bottom:1.625rem; z-index:3; display:flex; align-items:center; gap:0.625rem; border-radius:0.75rem; box-shadow:var(--shadow); font-size:0.875rem; }
+#process-toggle { display:inline-flex; align-items:center; gap:0.5rem; }
+#process-toggle[aria-expanded=true] { background:var(--surface); border-color:var(--border); }
 #process-count { color:var(--muted); font-size:0.8125rem; }
-#process-panel { position:fixed; right:1.5rem; bottom:5.5rem; z-index:4; width:53.125rem; max-width:calc(100% - 2rem); max-height:calc(100dvh - 7.5rem); overflow:auto; padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1.125rem; background:var(--bg); box-shadow:var(--shadow); }
-.process-heading { margin-bottom:1rem; }
+#process-panel { position:fixed; top:var(--topbar-height); right:0; bottom:0; z-index:4; display:flex; flex-direction:column; width:var(--tasks-width,32rem); max-width:100vw; border-left:0.0625rem solid var(--border); background:var(--card); box-shadow:-0.5rem 0 2rem #182c2114; container-type:inline-size; }
+.process-content { flex:1; min-height:0; overflow:auto; padding:1.5rem; }
+#process-resize { position:absolute; top:0; bottom:0; left:-0.3125rem; width:0.625rem; z-index:2; cursor:col-resize; touch-action:none; }
+#process-resize:hover,#process-resize:focus-visible { background:var(--accent-soft); outline:none; }
+.resizing-tasks { cursor:col-resize; user-select:none; }
+.process-heading { flex-shrink:0; padding:1rem 1.5rem; border-bottom:0.0625rem solid var(--border); }
 .process-heading h2 { margin:0.3125rem 0 0; }
 .task-table-wrap { overflow:auto; }
 .task-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.875rem; }
@@ -190,9 +199,9 @@ input[type=checkbox] { accent-color:var(--accent); }
 #process-detail button { font-size:0.8125rem; padding:0.3125rem 0.625rem; }
 .sr-only { position:absolute; width:0.0625rem; height:0.0625rem; padding:0; margin:-0.0625rem; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 [hidden] { display:none !important; }
-@media (max-width:78.125rem) { #process-toggle { bottom:auto; top:6.75rem; right:1.25rem; } #process-panel { bottom:auto; top:10rem; max-height:calc(100dvh - 11.25rem); } #process-count { display:none; } }
-@media (max-width:43.75rem) { .topbar { height:4.5rem; padding:0 1.125rem; gap:0.75rem; } .topbar nav { gap:0.25rem; } .topbar #new span { display:none; } main { padding:4.0625rem 1.25rem calc(var(--composer-height) + 1.5rem); } h1 { font-size:1.875rem; } .welcome { padding-top:1.5rem; } .composer-wrap { padding:1.375rem 1rem max(1.125rem,env(safe-area-inset-bottom)); } #permission-note { display:none; } #process-toggle { top:5.375rem; right:1.125rem; padding:0.375rem 0.625rem; font-size:0.8125rem; } #process-panel { top:8.125rem; right:1rem; max-height:calc(100dvh - 9.375rem); padding:1.25rem; } .brand { font-size:0.875rem; gap:0.5rem; } }
-@media (max-width:43.75rem) {
+@media (max-width:78.125rem) { #process-count { display:none; } }
+@media (max-width:43.75rem) { :root { --topbar-height:4.5rem; } .topbar { height:var(--topbar-height); padding:0 1.125rem; gap:0.75rem; } .topbar nav { gap:0.25rem; } .topbar #new span { display:none; } main { padding:4.0625rem 1.25rem calc(var(--composer-height) + 1.5rem); } h1 { font-size:1.875rem; } .composer-wrap { padding:1.375rem 1rem max(1.125rem,env(safe-area-inset-bottom)); } #permission-note { display:none; } #process-toggle { padding:0.375rem 0.5rem; } #process-toggle .task-label { display:none; } .brand { font-size:0.875rem; gap:0.5rem; } }
+@container (max-width:30rem) {
     .task-table,.task-table tbody { display:block; }
     .task-table thead { display:none; }
     .task-table tr { display:grid; grid-template-columns:1fr 1fr auto; align-items:center; border-bottom:0.0625rem solid var(--border); padding:0.5rem 0; }

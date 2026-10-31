@@ -22,17 +22,14 @@
         <a id="brand" class="brand" href="/" aria-label="{{APP_NAME}} home"><img id="brand-logo" alt="" hidden><span id="brand-mark" class="brand-mark" aria-hidden="true"><svg><use href="#icon-terminal"/></svg></span><span id="brand-name" class="brand-name">{{APP_NAME}}</span></a>
         <nav aria-label="Workspace">
             <button id="new" class="quiet" aria-label="New chat"><svg aria-hidden="true"><use href="#icon-plus"/></svg><span>New chat</span></button>
+            <button id="process-toggle" class="quiet" type="button" aria-controls="process-panel" aria-expanded="false" aria-label="Tasks" hidden><svg aria-hidden="true"><use href="#icon-terminal"/></svg><span class="task-label">Tasks</span><span id="process-count" hidden></span></button>
             <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme"><svg aria-hidden="true"><use href="#icon-moon"/></svg></button>
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
-            <button id="settings-open" class="avatar" aria-label="Open settings and account"><svg aria-hidden="true"><use href="#icon-user"/></svg></button>
         </nav>
     </header>
     <main>
         <div id="status" role="status" aria-live="polite"></div>
         <section id="workspace">
-            <section id="welcome" class="welcome" hidden>
-                <h1>What can I help you with?</h1>
-            </section>
             <section id="setup" class="auth-layout" hidden aria-label="Sign in">
                 <header class="auth-heading">
                     <h1>Get things done with {{APP_NAME}}</h1>
@@ -103,6 +100,7 @@
                 <p id="queue-heading" class="queue-heading" hidden></p>
                 <div id="queued-messages" class="queued-messages" hidden></div>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
+                <section id="welcome" class="welcome" hidden><h1>What should we work on?</h1></section>
                 <form id="chat-form" class="composer">
                     <div id="attachments" class="attachments" hidden></div>
                     <input id="attachment-input" type="file" multiple hidden>
@@ -138,19 +136,21 @@
         </div>
     </dialog>
     <aside id="process-panel" aria-label="Task manager" hidden>
+        <div id="process-resize" role="separator" tabindex="0" aria-label="Resize Tasks panel" aria-orientation="vertical"></div>
         <header class="process-heading"><div><span class="eyebrow">ON YOUR COMPUTER</span><h2>Task manager</h2></div><button id="process-close" class="icon-button" aria-label="Close task manager"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
-        <p class="muted">Running commands on your computer. Stop kills the selected command and its child processes.</p>
-        <p id="process-status" role="status"></p>
-        <div class="task-table-wrap"><table class="task-table"><thead><tr><th>Command</th><th>PID</th><th>Elapsed</th><th></th></tr></thead><tbody id="process-list"></tbody></table></div>
-        <details class="recent-commands"><summary id="history-heading">Completed commands</summary><div id="process-history"></div></details>
-        <section id="process-detail" hidden aria-label="Selected process details">
-            <dl id="process-metadata"></dl>
-            <details open><summary>Command</summary><pre id="process-command"></pre></details>
-            <details><summary>Executable and arguments</summary><pre id="process-arguments"></pre></details>
-            <details open><summary id="stdout-label">Standard output</summary><pre id="process-stdout"></pre><button id="download-stdout">Save stdout</button></details>
-            <details><summary id="stderr-label">Standard error</summary><pre id="process-stderr"></pre><button id="download-stderr">Save stderr</button></details>
-        </section>
+        <div class="process-content">
+            <p class="muted">Running commands on your computer. Stop kills the selected command and its child processes.</p>
+            <p id="process-status" role="status"></p>
+            <div class="task-table-wrap"><table class="task-table"><thead><tr><th>Command</th><th>PID</th><th>Elapsed</th><th></th></tr></thead><tbody id="process-list"></tbody></table></div>
+            <details class="recent-commands"><summary id="history-heading">Completed commands</summary><div id="process-history"></div></details>
+            <section id="process-detail" hidden aria-label="Selected process details">
+                <dl id="process-metadata"></dl>
+                <details open><summary>Command</summary><pre id="process-command"></pre></details>
+                <details><summary>Executable and arguments</summary><pre id="process-arguments"></pre></details>
+                <details open><summary id="stdout-label">Standard output</summary><pre id="process-stdout"></pre><button id="download-stdout">Save stdout</button></details>
+                <details><summary id="stderr-label">Standard error</summary><pre id="process-stderr"></pre><button id="download-stderr">Save stderr</button></details>
+            </section>
+        </div>
     </aside>
-    <button id="process-toggle" aria-controls="process-panel" aria-expanded="false"><svg aria-hidden="true"><use href="#icon-terminal"/></svg> Tasks <span id="process-count">0 running</span></button>
 </body>
 </html>

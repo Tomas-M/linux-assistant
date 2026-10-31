@@ -47,12 +47,25 @@ function render()
         }
     }
     document.body.classList.toggle('signed-out',!state.authenticated);
+    const emptyChat=state.authenticated && !state.messages.length && !view.busy;
+    document.body.classList.toggle('empty-chat',emptyChat);
     elements.setup.hidden=state.authenticated;
     elements['composer-wrap'].hidden=!state.authenticated;
-    elements['settings-open'].hidden=!state.authenticated;
     elements['credit-balance'].hidden=!state.authenticated;
     elements['process-toggle'].hidden=!state.authenticated;
-    elements.welcome.hidden=!state.authenticated || state.messages.length>0;
+    elements.welcome.hidden=!emptyChat;
+    if (!state.authenticated) toggleProcesses(false);
+    // Command IDs are scoped to this chat, so a new empty chat immediately clears the task display.
+    if (!view.commands.length)
+    {
+        selectedProcess=null; processRecord=null; historyKey='';
+        elements['process-list'].replaceChildren(); processRows.clear();
+        elements['process-history'].replaceChildren();
+        elements['process-detail'].hidden=true;
+        elements['process-count'].hidden=true;
+        elements['process-status'].textContent='No commands in this chat yet.';
+        elements['history-heading'].textContent='Completed commands · 0';
+    }
     elements['full-access'].checked=state.full_access;
     elements['full-access'].disabled=!state.authenticated || (busy && !state.full_access);
     elements['permission-note'].textContent=state.full_access?'Commands run automatically':state.settings.commands_enabled?'You approve every command':'Local commands are off';
@@ -69,8 +82,6 @@ function render()
     const depleted=state.account && state.account.credits<=0;
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
-    if (state.account) { elements['settings-open'].textContent=Array.from(state.account.email)[0].toUpperCase(); delete elements['settings-open'].dataset.icon; }
-    else setIcon(elements['settings-open'],'user');
     for (const id of ['new','credits','logout','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     elements['buy-inline'].disabled=buying || !state.account;
@@ -390,7 +401,7 @@ elements.messages.addEventListener('click',async event=>
 // Show a way back to the latest output whenever the reader is away from the end.
 function renderScrollButton()
 {
-    elements['scroll-bottom'].hidden=!state?.authenticated || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
+    elements['scroll-bottom'].hidden=!state?.authenticated || document.body.classList.contains('empty-chat') || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
 }
 
 // Explicit jumps and submitted prompts resume following subsequent streamed updates.
@@ -544,7 +555,6 @@ function openSettings()
     elements['settings-dialog'].showModal();
     loadCreditPacks();
 }
-elements['settings-open'].addEventListener('click',openSettings);
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
 elements['credit-balance'].addEventListener('click',openSettings);
 // Derive the toggle state from the section instead of keeping a separate visibility flag.
@@ -973,7 +983,7 @@ elements['credit-packs'].addEventListener('click',async event=>
 let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
 const processRows=new Map();
 
-// Keep the floating panel usable while conversation requests are waiting on commands or AI.
+// The menu toggles a side panel without moving the conversation or blocking process controls.
 function toggleProcesses(open)
 {
     elements['process-panel'].hidden=!open;
@@ -1024,7 +1034,7 @@ async function pollProcesses()
     lastProcessPoll=Date.now();
     try
     {
-        const records=await api('processes');
+        const records=(await api('processes')).filter(record=>view.commands.some(command=>command.id===record.id));
         if (selectedProcess && !records.some(record=>record.id===selectedProcess))
         {
             processRecord=null;
@@ -1033,9 +1043,11 @@ async function pollProcesses()
         }
         const running=records.filter(record=>!record.finished_at);
         elements['process-count'].textContent=running.length+' running';
+        elements['process-count'].hidden=!running.length;
         elements['process-toggle'].title='Task manager · '+running.length+' running';
         if (elements['process-panel'].hidden) return;
-        elements['process-status'].textContent=running.length?'':'No commands are running.';
+        elements['process-status'].textContent=records.length?'No commands are running.':'No commands in this chat yet.';
+        if (running.length) elements['process-status'].textContent='';
         elements['process-list'].closest('.task-table-wrap').hidden=!running.length;
         const runningIds=new Set(running.map(record=>record.id));
         for (const [id,row] of processRows)
@@ -1091,6 +1103,43 @@ async function pollProcesses()
     finally { processPolling=false; }
 }
 
+// Resize from the sidebar's left edge and retain the preferred width between visits.
+function resizeTasks(value)
+{
+    const width=Math.round(Math.min(window.innerWidth,Math.max(288,value)));
+    document.documentElement.style.setProperty('--tasks-width',width+'px');
+    elements['process-resize'].setAttribute('aria-valuemin',String(Math.min(288,window.innerWidth)));
+    elements['process-resize'].setAttribute('aria-valuemax',String(window.innerWidth));
+    elements['process-resize'].setAttribute('aria-valuenow',String(width));
+}
+let taskDrag;
+resizeTasks(Number(localStorage.getItem('assistant-tasks-width')) || 32*parseFloat(getComputedStyle(document.documentElement).fontSize));
+elements['process-resize'].addEventListener('pointerdown',event=>
+{
+    if (event.button!==0) return;
+    event.preventDefault();
+    taskDrag={x:event.clientX,width:elements['process-panel'].getBoundingClientRect().width};
+    elements['process-resize'].setPointerCapture(event.pointerId);
+    document.body.classList.add('resizing-tasks');
+});
+elements['process-resize'].addEventListener('pointermove',event=>
+{
+    if (taskDrag) resizeTasks(taskDrag.width+taskDrag.x-event.clientX);
+});
+elements['process-resize'].addEventListener('lostpointercapture',()=>
+{
+    taskDrag=null;
+    document.body.classList.remove('resizing-tasks');
+    localStorage.setItem('assistant-tasks-width',elements['process-resize'].getAttribute('aria-valuenow'));
+});
+elements['process-resize'].addEventListener('keydown',event=>
+{
+    if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    resizeTasks(elements['process-panel'].getBoundingClientRect().width+(event.key==='ArrowLeft'?32:-32));
+    localStorage.setItem('assistant-tasks-width',elements['process-resize'].getAttribute('aria-valuenow'));
+});
+window.addEventListener('resize',()=>resizeTasks(elements['process-panel'].getBoundingClientRect().width || Number(elements['process-resize'].getAttribute('aria-valuenow'))));
 elements['process-toggle'].addEventListener('click',()=>toggleProcesses(elements['process-panel'].hidden));
 elements['process-close'].addEventListener('click',()=>{toggleProcesses(false); elements['process-toggle'].focus();});
 elements['process-panel'].addEventListener('keydown',event=>{if (event.key==='Escape') { toggleProcesses(false); elements['process-toggle'].focus(); }});
