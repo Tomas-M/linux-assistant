@@ -67,6 +67,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .tool-result summary:hover,.past-progress summary:hover { color:var(--text); background:var(--surface); }
 .tool-result summary:focus-visible,.past-progress summary:focus-visible { outline:0.125rem solid var(--accent); outline-offset:0.1875rem; }
 .tool-result summary svg,.past-progress summary svg { width:1rem; height:1rem; flex-shrink:0; }
+.tool-result summary>svg:first-child { width:calc(1rem + 1px); height:calc(1rem + 1px); }
 .tool-result .disclosure-arrow,.past-progress summary svg { opacity:.5; transition:transform .15s; }
 .tool-result[open] .disclosure-arrow,.past-progress[open] summary svg { transform:rotate(90deg); }
 .tool-result pre { max-height:20rem; overflow:auto; margin:0.75rem 0; }
