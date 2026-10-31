@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod changes;
+mod files;
 mod backend;
 mod controls;
 mod command;

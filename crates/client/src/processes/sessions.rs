@@ -4,7 +4,7 @@ use tokio::io::AsyncWriteExt;
 use std::time::{Duration,Instant};
 
 #[derive(Serialize,Deserialize)]
-pub(crate) struct OperationOutput { pub cwd:String,pub text:String }
+pub(crate) struct OperationOutput { pub cwd:String,pub text:String,pub success:bool }
 
 impl Processes {
     /// Read the durable acknowledgement, never repeat an operation whose response was lost.
@@ -17,7 +17,7 @@ impl Processes {
         std::fs::create_dir_all(&directory)?;
         let path=directory.join(format!("{id}.json"));
         if path.exists() { return Ok(()); }
-        storage::write(&path,&OperationOutput { cwd:cwd.into(),text:"This operation's outcome is unknown because it was interrupted before acknowledgement. Do not repeat the command or stdin automatically; inspect the session or ask the user.".into() })?;
+        storage::write(&path,&OperationOutput { success:false,cwd:cwd.into(),text:"This operation's outcome is unknown because it was interrupted before acknowledgement. Do not repeat the command or stdin automatically; inspect the session or ask the user.".into() })?;
         let result:Result<()>=async {
             let session=action.session_id(id);
             if let LocalAction::ExecCommand { cmd,workdir,reason,files,yield_time_ms,timeout_ms }=action {
@@ -46,6 +46,7 @@ impl Processes {
                     5_000
                 }
                 LocalAction::ExecCommand { .. }=>0,
+                _=>anyhow::bail!("Not a process operation"),
             };
             let deadline=Instant::now()+Duration::from_millis(wait);
             loop {
@@ -92,11 +93,11 @@ impl Processes {
                 }
                 (output,(next[0],next[1]),record.proposal.cwd.clone())
             };
-            storage::write(&path,&OperationOutput { cwd,text })?;
+            storage::write(&path,&OperationOutput { cwd,text,success:true })?;
             *cursor=next;
             Ok(())
         }.await;
-        if let Err(error)=result { storage::write(&path,&OperationOutput { cwd:cwd.into(),text:format!("Local operation failed: {error:#}") })?; }
+        if let Err(error)=result { storage::write(&path,&OperationOutput { success:false,cwd:cwd.into(),text:format!("Local operation failed: {error:#}") })?; }
         Ok(())
     }
 }

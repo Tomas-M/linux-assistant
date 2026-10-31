@@ -81,7 +81,7 @@ fn main() -> Result<()> {
             }
             if method=="turn/steer" {
                 let text=request["params"]["input"][0]["text"].as_str().unwrap();
-                println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"type":"agentMessage","text":json!({"text":format!("Steered: {text}"),"command":null}).to_string()}}}));
+                println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"type":"agentMessage","text":json!({"text":format!("Steered: {text}")}).to_string()}}}));
             }
             println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":if method=="turn/interrupt" { "interrupted" } else { "completed" },"error":null}}}));
             io::stdout().flush()?;
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
                 println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turnId":turn_id,"turn":{"id":turn_id,"status":"failed","error":{"codexErrorInfo":error,"message":settings["error_message"]}}}}));
             } else {
                 let text=format!("Fixture reply from {}",home.file_name().unwrap().to_string_lossy());
-                let mut answer=json!({"text":text,"command":null});
+                let mut answer=json!({"text":text});
                 if request["params"]["outputSchema"]["properties"]["checkpoint"].is_object() { answer["checkpoint"]=json!("Fixture recovery summary: keep IMPORTANT_GOAL and completed command results."); }
                 if settings["stream"]==true {
                     let serialized=answer.to_string();

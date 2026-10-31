@@ -2,7 +2,7 @@ use super::*;
 
 /// Local display metadata never changes the protocol transcript or gets sent to the model.
 impl Engine {
-    /// Keep command follow-ups in one task, with an independent record for a resumed failed attempt.
+    /// Keep native tool calls in one task, with an independent record for a resumed failed attempt.
     pub(super) fn begin_activity(&self,start:usize) {
         self.live.0.send_modify(|view| {
             let runs=view["runs"].as_array_mut().unwrap();
@@ -46,7 +46,7 @@ mod tests {
         let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
         engine.saved.messages.push(Message { attachments:None, role:Role::User,text:"Check the logs".into() });
         engine.begin_activity(0);
-        engine.live.activity("Checking logs…",Some(protocol::Progress { text:"Partial response 世界".into(),summaries:vec![protocol::ProgressText { id:"summary".into(),item_id:"summary".into(),kind:protocol::ProgressKind::Reasoning,completed:false,text:"Looking for repeated failures.".into() }],..Default::default() }));
+        engine.live.activity("Checking logs…",Some(protocol::Progress { text:"Partial response 世界".into(),summaries:vec![protocol::ProgressText { id:"summary".into(),item_id:"summary".into(),kind:protocol::ProgressKind::Reasoning,completed:false,data:None,text:"Looking for repeated failures.".into() }],..Default::default() }));
         engine.controls.stopped.store(true,Ordering::SeqCst);
         engine.finish_activity(Some("Stopped".into()))?;
         let run=engine.live.0.borrow()["runs"][0].clone();

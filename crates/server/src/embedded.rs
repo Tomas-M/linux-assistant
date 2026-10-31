@@ -11,7 +11,7 @@ pub async fn run(paths: codex_arg0::Arg0DispatchPaths) -> Result<()> {
         "code_mode","code_mode_host","code_mode_only","request_permissions_tool","shell_snapshot","skill_search"] {
         overrides.raw_overrides.push(format!("features.{flag}=false"));
     }
-    overrides.raw_overrides.extend(["cli_auth_credentials_store=\"file\"","web_search=\"disabled\"",
+    overrides.raw_overrides.extend(["cli_auth_credentials_store=\"file\"","web_search=\"live\"","features.default_mode_request_user_input=true","tools.experimental_request_user_input.enabled=true","tools.update_plan.enabled=true",
         "skills.bundled.enabled=false","skills.include_instructions=false","project_doc_max_bytes=0"].map(str::to_owned));
     let loader = LoaderOverrides { ignore_user_config:true,ignore_project_config:true,ignore_user_and_project_exec_policy_rules:true,..Default::default() };
     codex_app_server::run_main_with_transport_options(paths,overrides,loader,false,false,

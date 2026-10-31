@@ -22,6 +22,18 @@ pub fn secret() -> String { format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v
 pub fn hash(value: &str) -> String { hex::encode(Sha256::digest(value.as_bytes())) }
 
 impl Db {
+    /// Failover receives recent operation evidence; unanswered calls have unknown outcomes and must not be replayed.
+    pub fn tool_history(&self,user:i64,request:Uuid)->anyhow::Result<serde_json::Value> {
+        let conn=self.0.lock().unwrap();
+        // Include this attempt and unresolved failed work after the last success, avoiding repeated normal history.
+        let mut statement=conn.prepare("SELECT t.interaction,t.answer FROM tool_calls t JOIN requests r ON r.id=t.request_id AND r.user_id=t.user_id WHERE t.user_id=?1 AND r.conversation_id=(SELECT conversation_id FROM requests WHERE user_id=?1 AND id=?2) AND (r.id=?2 OR (r.error IS NOT NULL AND r.rowid>COALESCE((SELECT MAX(done.rowid) FROM requests done WHERE done.user_id=r.user_id AND done.conversation_id=r.conversation_id AND done.response IS NOT NULL),0))) ORDER BY t.rowid DESC LIMIT 32")?;
+        let mut rows=statement.query_map(params![user,request.to_string()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(serde_json::json!({"note":"Recent operations from an interrupted turn; older operations may be omitted. Completed operations must not be repeated; a missing answer means unknown outcome, inspect before acting.","operations":rows.into_iter().map(|(interaction,answer)| {
+            serde_json::json!({"request":interaction.chars().take(1500).collect::<String>(),"answer":answer.map(|answer|answer.chars().take(1000).collect::<String>())})
+        }).collect::<Vec<_>>()}))
+    }
+
     /// Create the initial schema; early development databases can be recreated.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -169,7 +181,7 @@ impl Db {
         let changed = tx.execute("UPDATE requests SET response=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL",
             params![response,user,request.request_id.to_string()])?;
         ensure!(changed==1,"Request was already settled");
-        crate::billing::settle(&tx,user,&request.request_id.to_string(),true,reply.command.is_none())?;
+        crate::billing::settle(&tx,user,&request.request_id.to_string(),true,true)?;
         tx.execute("INSERT INTO conversations(user_id,id,account_home,thread_id,messages,checkpoint,checkpoint_at) VALUES(?1,?2,?3,?4,?5,?6,?7)
             ON CONFLICT(user_id,id) DO UPDATE SET account_home=excluded.account_home,thread_id=excluded.thread_id,messages=excluded.messages,checkpoint=excluded.checkpoint,checkpoint_at=excluded.checkpoint_at",
             params![user,request.conversation_id.to_string(),home,thread,history,checkpoint.unwrap_or(&session.checkpoint),(if checkpoint.is_some() { messages.len() } else { session.checkpoint_at }) as i64])?;
@@ -274,7 +286,7 @@ mod tests {
         let pricing=crate::config::Config::default().pricing;
         db.reserve(user,&request,"first",&pricing)?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
-        db.complete(user,&request,&AssistantReply { text:"Hi".into(),command:None },Some("account-a"),Some("thread-a"),None)?;
+        db.complete(user,&request,&AssistantReply { text:"Hi".into() },Some("account-a"),Some("thread-a"),None)?;
         let committed=db.conversation(user,request.conversation_id)?.messages;
         request.request_id=Uuid::new_v4();
         request.task_id=request.request_id;

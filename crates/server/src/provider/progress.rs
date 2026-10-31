@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context,Result};
 use protocol::{ChatEvent, Progress, ProgressText,ProgressKind};
 use serde_json::Value;
 use tokio::sync::watch;
@@ -25,6 +25,21 @@ impl Reporter {
     pub fn event(&mut self, event: &Value) -> Result<()> {
         let params=&event["params"];
         match event["method"].as_str() {
+            Some("turn/plan/updated")=> {
+                let id=format!("plan:{}",params["turnId"].as_str().unwrap_or_default());
+                let part=self.part(&id,&id,ProgressKind::Plan)?;
+                part.text="Plan".into(); part.data=Some(params.clone());
+                part.completed=params["plan"].as_array().is_some_and(|steps|steps.iter().all(|step|step["status"]=="completed"));
+            }
+            Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch"))=> {
+                let item=&params["item"]; let id=item["id"].as_str().unwrap_or_default();
+                let kind=if item["type"]=="webSearch" { ProgressKind::WebSearch } else { ProgressKind::Action };
+                let part=self.part(id,id,kind)?;
+                part.text=if kind==ProgressKind::WebSearch { format!("{}: {}",if event["method"]=="item/completed" { "Searched the web" } else { "Searching the web" },item["query"].as_str().unwrap_or_default()) } else { item["arguments"]["reason"].as_str().unwrap_or("Working on your computer").into() };
+                let arguments=&item["arguments"];
+                part.data=Some(serde_json::json!({"tool":item["tool"],"status":item["status"],"action":item["action"],"arguments":{"cmd":arguments["cmd"],"path":arguments["path"],"workdir":arguments["workdir"],"session_id":arguments["session_id"]}}));
+                part.completed=event["method"]=="item/completed";
+            }
             Some("item/started"|"item/completed") if params["item"]["type"]=="contextCompaction" => {
                 self.snapshot.activity=(event["method"]=="item/started").then(||"Compacting context…".into());
                 if event["method"]=="item/completed" {
@@ -90,13 +105,16 @@ impl Reporter {
     /// Preserve native item identity, kind and section ordering instead of flattening commentary into reasoning.
     fn part(&mut self,id:&str,item:&str,kind:ProgressKind)->Result<&mut ProgressText> {
         if let Some(index)=self.snapshot.summaries.iter().position(|part|part.id==id) { return Ok(&mut self.snapshot.summaries[index]); }
-        ensure!(self.snapshot.summaries.len()<128,"Too many progress summaries");
-        self.snapshot.summaries.push(ProgressText { id:id.into(),item_id:item.into(),kind,completed:false,text:String::new() });
+        if self.snapshot.summaries.len()>=128 {
+            let index=self.snapshot.summaries.iter().position(|part|part.completed && part.kind!=ProgressKind::Plan).context("Too many active progress items")?;
+            self.snapshot.summaries.remove(index);
+        }
+        self.snapshot.summaries.push(ProgressText { id:id.into(),item_id:item.into(),kind,completed:false,data:None,text:String::new() });
         Ok(self.snapshot.summaries.last_mut().unwrap())
     }
 
     /// Coalesce token bursts to ten snapshots per second; stage changes bypass the delay.
-    fn publish(&mut self,force:bool) {
+    pub(super) fn publish(&mut self,force:bool) {
         if !force && self.published.elapsed()<Duration::from_millis(100) { return; }
         if let Some(sender)=&self.sender { sender.send_replace(ChatEvent::Progress { progress:self.snapshot.clone() }); }
         self.published=Instant::now();

@@ -1,7 +1,7 @@
 mod parallel;
 use super::*;
 
-use protocol::Message;
+use protocol::{Message,Platform};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -159,20 +159,6 @@ async fn integration_streams_before_completion() -> Result<()> {
     Ok(())
 }
 
-/// A backend on either platform must propose commands for the client's shell.
-#[test]
-fn demo_uses_client_platform() {
-    for (platform,prefix) in [(Platform::Linux,"printf"),(Platform::Windows,"Write-Output")] {
-        let mut request = request();
-        request.platform=platform;
-        request.commands_enabled=true;
-        request.messages[0].text="demo command".into();
-        assert!(demo(&request).command.unwrap().description().starts_with(prefix));
-        request.commands_enabled=false;
-        assert!(demo(&request).command.is_none());
-    }
-}
-
 /// Verify least-used selection, sticky threads, restart persistence, user isolation and preflight failover.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
@@ -315,7 +301,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let endpoint=format!("http://{}/v1",listener.local_addr()?);
     let requests=std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let app=axum::Router::new().route("/v1/responses",axum::routing::post(|axum::extract::State(requests):axum::extract::State<std::sync::Arc<std::sync::Mutex<Vec<Value>>>>,axum::Json(body):axum::Json<Value>|async move {
-        let mut answer=json!({"text":"Embedded reply","command":null});
+        let mut answer=json!({"text":"Embedded reply"});
         if body.to_string().contains("\"checkpoint\"") { answer["checkpoint"]=json!("Embedded recovery checkpoint"); }
         requests.lock().unwrap().push(body);
         tokio::time::sleep(Duration::from_millis(200)).await;

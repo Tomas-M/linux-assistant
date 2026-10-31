@@ -125,7 +125,7 @@ fn router(app: App) -> Router {
         .route("/auth/{provider}/{device}",get(auth::social::begin)).route("/auth/{provider}/callback",get(auth::social::callback))
         .route("/auth/complete.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("auth/complete.js")) }))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
-        .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop))
+        .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop)).route("/v1/chat/{id}/respond",post(turns::respond))
         .route("/v1/credit-packs",get(payments::packs)).route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
         .route("/payment/success",get(||async { Html(auth::document("<h1>Payment submitted</h1><p>Credits appear after the payment is confirmed. Return to Linux Assistant and refresh your balance.</p>")) }))
         .route("/payment/cancel",get(||async { Html(auth::document("<h1>Checkout cancelled</h1><p>Return to Linux Assistant to continue.</p>")) }))
@@ -217,13 +217,18 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
             events.send_replace(ChatEvent::Error { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
-        Reservation::Pending => return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into())),
+        Reservation::Pending => {
+            if streaming {
+                if let Some(active)=app.turns.lock().unwrap().get(&(user,input.request_id)) { return Ok(chat_stream(active.events.clone())); }
+            }
+            return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into()));
+        },
         Reservation::Insufficient => return Err(ApiError(StatusCode::PAYMENT_REQUIRED,"No application credits remaining".into())),
         Reservation::Stale => return Err(ApiError::bad("Conversation revision changed; start a new chat after a server reset")),
         Reservation::New => {
             let (controls,mut control_receiver)=tokio::sync::mpsc::channel(16);
             let (cancel,mut cancellation)=tokio::sync::watch::channel(false);
-            app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls,cancel });
+            app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls,cancel,events:receiver.clone() });
             let task_app = app.clone();
             let task_events=events.clone();
             let task=tokio::spawn(async move {

@@ -45,22 +45,25 @@ pub struct CommandProposal { pub command: String, pub cwd: String, pub reason: S
 #[derive(Clone,Debug,Deserialize,Serialize)]
 #[serde(tag="type",rename_all="snake_case",deny_unknown_fields)]
 pub enum LocalAction {
+    ReadFile { path:String,offset:u64,limit:u64,reason:String },
+    ListDirectory { path:String,offset:usize,limit:usize,reason:String },
+    SearchFiles { path:String,pattern:String,case_sensitive:bool,recursive:bool,reason:String },
+    ApplyPatch { path:String,old_text:String,new_text:String,reason:String },
+    WriteFile { path:String,content:String,reason:String },
     ExecCommand { cmd:String,workdir:String,reason:String,files:Vec<String>,yield_time_ms:u64,timeout_ms:Option<u64> },
     WriteStdin { session_id:Uuid,chars:String,close_stdin:bool,yield_time_ms:u64,reason:String },
     StopProcess { session_id:Uuid,reason:String },
-}
-
-impl From<CommandProposal> for LocalAction {
-    /// Internal command producers share the same initial wait and unlimited runtime as model proposals.
-    fn from(command:CommandProposal)->Self {
-        Self::ExecCommand { cmd:command.command,workdir:command.cwd,reason:command.reason,files:command.files.unwrap_or_default(),yield_time_ms:10_000,timeout_ms:None }
-    }
 }
 
 impl LocalAction {
     /// Show the exact proposed input in the permission UI before it can be delivered.
     pub fn description(&self)->String {
         match self {
+            Self::ReadFile { path,offset,limit,.. }=>format!("Read {path}, bytes {offset}..{}",offset.saturating_add(*limit)),
+            Self::ListDirectory { path,.. }=>format!("List {path}"),
+            Self::SearchFiles { path,pattern,.. }=>format!("Search {path} for {pattern}"),
+            Self::ApplyPatch { path,old_text,new_text,.. }=>format!("Edit {path}\n\nReplace:\n{old_text}\n\nWith:\n{new_text}"),
+            Self::WriteFile { path,content,.. }=>format!("Create {path}\n\n{content}"),
             Self::ExecCommand { cmd,.. }=>cmd.clone(),
             Self::WriteStdin { session_id,chars,close_stdin,.. }=> {
                 if self.is_poll() { format!("Wait for session {session_id}") }
@@ -72,11 +75,12 @@ impl LocalAction {
     /// Polling only reads an already-authorized local session and needs no new execution approval.
     pub fn is_poll(&self)->bool { matches!(self,Self::WriteStdin { chars,close_stdin:false,.. } if chars.is_empty()) }
     /// Session identities are native-owned UUIDs; an execution's approval ID becomes its session ID.
-    pub fn session_id(&self,id:Uuid)->Uuid { match self { Self::ExecCommand { .. }=>id,Self::WriteStdin { session_id,.. }|Self::StopProcess { session_id,.. }=>*session_id } }
+    pub fn session_id(&self,id:Uuid)->Uuid { match self { Self::ExecCommand { .. }=>id,Self::WriteStdin { session_id,.. }|Self::StopProcess { session_id,.. }=>*session_id,_=>id } }
     /// Keep the permission UI and provider validation on the same explanation.
-    pub fn reason(&self)->&str { match self { Self::ExecCommand { reason,.. }|Self::WriteStdin { reason,.. }|Self::StopProcess { reason,.. }=>reason } }
+    pub fn reason(&self)->&str { match self { Self::ExecCommand { reason,.. }|Self::WriteStdin { reason,.. }|Self::StopProcess { reason,.. }|Self::ReadFile { reason,.. }|Self::ListDirectory { reason,.. }|Self::SearchFiles { reason,.. }|Self::ApplyPatch { reason,.. }|Self::WriteFile { reason,.. }=>reason } }
     /// Validate operation-specific limits before either frontend can cause local side effects.
     pub fn validate(&self)->anyhow::Result<()> {
+        anyhow::ensure!(serde_json::to_vec(self)?.len()<=128_000,"Local operation arguments exceed 128 KB");
         anyhow::ensure!(self.reason().len()<=4_000,"Command instructions are too long");
         match self {
             Self::ExecCommand { cmd,workdir,files,timeout_ms,.. }=> {
@@ -86,6 +90,7 @@ impl LocalAction {
                 anyhow::ensure!(timeout_ms.is_none_or(|timeout|timeout>0),"Execution timeout must be positive or null");
             }
             Self::WriteStdin { chars,.. }=>anyhow::ensure!(chars.len()<=16_000,"Session input is too long"),
+            Self::ReadFile { path,.. }|Self::ListDirectory { path,.. }|Self::SearchFiles { path,.. }|Self::ApplyPatch { path,.. }|Self::WriteFile { path,.. }=>anyhow::ensure!(!path.is_empty() && path.len()<=4096 && !path.contains('\0'),"Invalid file path"),
             Self::StopProcess { .. }=>{},
         }
         Ok(())
@@ -94,7 +99,7 @@ impl LocalAction {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssistantReply { pub text: String, pub command: Option<LocalAction> }
+pub struct AssistantReply { pub text: String }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatResponse { pub reply: AssistantReply, pub credits: i64, pub task_credits:Option<i64>, pub revision: usize, pub steering: Vec<Steering>, pub progress:Option<Progress> }
@@ -109,13 +114,17 @@ pub struct Progress {
     pub summaries: Vec<ProgressText>,
     pub text: String,
     pub compacted: Option<Vec<String>>,
+    pub requests: Vec<Interaction>,
+    pub credits:Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ProgressText { pub id:String,pub item_id:String,pub kind:ProgressKind,pub completed:bool,pub text:String }
+pub struct ProgressText { pub id:String,pub item_id:String,pub kind:ProgressKind,pub completed:bool,pub text:String,pub data:Option<serde_json::Value> }
 #[derive(Clone,Copy,Debug,Deserialize,Serialize,PartialEq)]
 #[serde(rename_all="snake_case")]
-pub enum ProgressKind { Reasoning,Commentary }
+pub enum ProgressKind { Reasoning,Commentary,Action,Plan,WebSearch }
+mod tools;
+pub use tools::*;
 
 /// Snapshots let slow or reconnecting consumers catch up without an unbounded event queue.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -180,24 +189,7 @@ pub struct VerifyEmail { pub device_id: String, pub poll_secret: String, pub cod
 #[derive(Deserialize, Serialize)]
 pub struct EmailChallenge { pub expires_at: i64, pub development_code: Option<String> }
 
-/// Constrain model output to an answer and at most one proposed local command.
+/// Only the final answer uses the output schema; actions run through native dynamic tools.
 pub fn reply_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type":"object", "additionalProperties":false, "required":["text","command"],
-        "properties":{
-            "text":{"type":"string"},
-            "command":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,
-                "required":["type","cmd","workdir","reason","files","yield_time_ms","timeout_ms"],"properties":{
-                    "type":{"type":"string","enum":["exec_command"]},"cmd":{"type":"string"},"workdir":{"type":"string"},"reason":{"type":"string"},
-                    "files":{"type":"array","items":{"type":"string"}},"yield_time_ms":{"type":"integer","description":"Wait for initial output, default 10000 ms; yields a running session without killing it."},
-                    "timeout_ms":{"anyOf":[{"type":"null"},{"type":"integer"}],"description":"Optional hard runtime limit; null means no automatic timeout."}
-                }},{"type":"object","additionalProperties":false,"required":["type","session_id","chars","close_stdin","yield_time_ms","reason"],"properties":{
-                    "type":{"type":"string","enum":["write_stdin"]},"session_id":{"type":"string"},"chars":{"type":"string","description":"Empty to poll. Otherwise sends exactly these characters to stdin; include newline when required."},
-                    "close_stdin":{"type":"boolean","description":"Close the input pipe after sending characters to deliver EOF. False for normal polling."},
-                    "yield_time_ms":{"type":"integer","description":"Wait duration, not a kill timeout; up to 300000 ms for polling."},"reason":{"type":"string"}
-                }},{"type":"object","additionalProperties":false,"required":["type","session_id","reason"],"properties":{
-                    "type":{"type":"string","enum":["stop_process"]},"session_id":{"type":"string"},"reason":{"type":"string"}
-                }}]}
-        }
-    })
+    serde_json::json!({"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}})
 }

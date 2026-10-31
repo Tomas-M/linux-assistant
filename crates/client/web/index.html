@@ -8,6 +8,7 @@
     <script src="/markdown-it.min.js" defer></script>
     <script src="/markdown.js" defer></script>
     <script src="/attachments.js" defer></script>
+    <script src="/native.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
 <body class="initializing">
@@ -84,13 +85,7 @@
                 <div id="summaries" class="summaries"></div>
                 <div id="stream-text" class="answer streaming"></div>
             </section>
-            <section id="proposal" class="proposal" hidden>
-                <div class="eyebrow">YOUR PERMISSION IS NEEDED</div>
-                <h2 id="proposal-title">Run this on your computer?</h2>
-                <p id="reason"></p><pre id="command"></pre>
-                <p class="muted">In <code id="cwd"></code></p>
-                <div class="button-row"><button id="approve" class="primary">Run command <svg aria-hidden="true"><use href="#icon-terminal"/></svg></button><button id="deny">Decline</button></div>
-            </section>
+            <section id="interactions" aria-live="polite" hidden></section>
             <button id="retry" hidden>Retry unfinished request</button>
             <div id="scroll-anchor"></div>
             <button id="scroll-bottom" type="button" aria-label="Jump to latest message" title="Jump to latest message" hidden><svg aria-hidden="true"><use href="#icon-ellipsis"/></svg></button>

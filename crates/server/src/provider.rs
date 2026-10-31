@@ -1,4 +1,5 @@
 mod rpc;
+mod interactions;
 mod transport;
 mod progress;
 mod monitor;
@@ -10,7 +11,7 @@ mod tests;
 
 use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock,atomic::{AtomicI64,Ordering}}};
 use anyhow::{ensure, Context, Result};
-use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform};
+use protocol::{AssistantReply, ChatRequest};
 #[cfg(test)]
 use protocol::Role;
 use serde_json::Value;
@@ -72,7 +73,7 @@ impl Pool {
         if config.dev {
             let reply=demo(request);
             if let Some(events)=events {
-                let mut progress=protocol::Progress { compacted:None,attempt:1,activity:None,summaries:vec![protocol::ProgressText { id:"demo".into(),item_id:"demo".into(),kind:protocol::ProgressKind::Reasoning,completed:false,text:"Simulated progress: preparing a development response.".into() }],text:String::new() };
+                let mut progress=protocol::Progress { credits:None,requests:vec![],compacted:None,attempt:1,activity:None,summaries:vec![protocol::ProgressText { id:"demo".into(),item_id:"demo".into(),kind:protocol::ProgressKind::Reasoning,completed:false,data:None,text:"Simulated progress: preparing a development response.".into() }],text:String::new() };
                 events.send_replace(protocol::ChatEvent::Progress { progress:progress.clone() });
                 for chunk in reply.text.chars().collect::<Vec<_>>().chunks(12) {
                     let delay=tokio::time::sleep(Duration::from_millis(40));
@@ -90,6 +91,7 @@ impl Pool {
                                         })().map_err(|error:anyhow::Error|error.to_string());
                                         let _=reply.send(result);
                                     }
+                                    Some(crate::turns::Control::Respond(_,reply))=> { let _=reply.send(Err("No development interaction is pending".into())); }
                                     None=>controls=None,
                                 }
                             }
@@ -101,11 +103,11 @@ impl Pool {
             }
             return Ok(Answer { reply,account_home:None,thread_id:None,checkpoint:None });
         }
-        tokio::time::timeout(Duration::from_secs(600),async {
+        async {
             let session = db.conversation(user,request.conversation_id)?;
             ensure!(request.base==session.messages.len(),"Conversation revision changed");
             let recovery=serde_json::json!({"summary":session.checkpoint,"messages":protocol::recovery_messages(&session.messages[session.checkpoint_at..])});
-            let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000 || request.messages.iter().any(|message|message.attachments.is_some());
+            let checkpoint=recovery.to_string().len()+serde_json::to_vec(&request.messages)?.len()>=64_000 || request.messages.iter().any(|message|message.attachments.is_some()) || db.tool_history(user,request.request_id)?.to_string().len()>=64_000;
             let mut tried = Vec::new();
             let mut assigned = match &session.account_home {
                 Some(home) => self.accounts().into_iter().find(|account|&account.home==home),
@@ -132,6 +134,8 @@ impl Pool {
                 let mut reporter=progress::Reporter::new(events,tried.len());
                 let mut current=request.clone();
                 current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(crate::turns::steering_message));
+                let mut recovery=recovery.clone();
+                recovery["local_operations"]=db.tool_history(user,request.request_id)?;
                 let result=rpc.answer(config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
                 let failure=result.as_ref().err().map(|error|crate::diagnostics::clean(&format!("{error:#}")));
                 if let Some(message)=&failure { crate::diagnostics::record("error","generation",Some(&request.request_id.to_string()),Some(&account.home),message); }
@@ -156,7 +160,7 @@ impl Pool {
                     Err(error) => return Err(error),
                 }
             }
-        }).await.context("AI request timed out")?
+        }.await
     }
 
     /// Rank fresh quota snapshots by the most depleted window, then spread ties across conversations.
@@ -225,9 +229,5 @@ impl Limits {
 /// Deterministic development replies exercise local approval without consuming provider usage.
 fn demo(request: &ChatRequest) -> AssistantReply {
     let last = request.messages.last().unwrap();
-    let command = (request.commands_enabled && last.text.to_lowercase().contains("demo command")).then(|| CommandProposal { files:None,
-        command:match request.platform { Platform::Linux => "printf 'Linux Assistant command test\\n'", Platform::Windows => "Write-Output 'Linux Assistant command test'" }.into(),
-        cwd:request.cwd.clone(),reason:"Print a harmless test message on your computer.".into(),
-    });
-    AssistantReply { text:format!("Development mode (no AI connected). You said: {}\nEnable commands and ask for ‘demo command’ to test local approval.",last.text),command:command.map(Into::into) }
+    AssistantReply { text:format!("Development mode (no AI connected). You said: {}",last.text) }
 }

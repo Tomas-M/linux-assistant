@@ -69,7 +69,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .tool-result summary svg,.past-progress summary svg,.work-summary>summary svg { width:1rem; height:1rem; flex-shrink:0; }
 
 .tool-result .disclosure-arrow,.past-progress summary svg,.work-summary>summary svg { opacity:.5; transition:transform .15s; }
-.tool-result[open] .disclosure-arrow,.past-progress[open] summary svg,.work-summary[open]>summary svg { transform:rotate(90deg); }
+.tool-result[open] > summary .disclosure-arrow,.past-progress[open] > summary svg,.work-summary[open]>summary svg { transform:rotate(90deg); }
 .tool-result pre { max-height:20rem; overflow:auto; margin:0.75rem 0; }
 .tool-result button { font-size:0.8125rem; padding:0.375rem 0; text-decoration:underline; text-underline-offset:0.1875rem; }
 .command-activity { margin:0.75rem 0; padding-left:0.875rem; border-left:0.0625rem solid var(--border); overflow-wrap:anywhere; }
@@ -218,6 +218,29 @@ input[type=checkbox] { accent-color:var(--accent); }
 #process-detail pre { max-height:15rem; overflow:auto; }
 #process-detail button { font-size:0.8125rem; padding:0.3125rem 0.625rem; }
 .sr-only { position:absolute; width:0.0625rem; height:0.0625rem; padding:0; margin:-0.0625rem; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.native-request { margin:1.5rem 0; padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1.125rem; background:var(--card); }
+.native-request h2 { margin-bottom:1.25rem; }
+.native-request fieldset { padding:0; border:0; margin:0 0 1.25rem; min-width:0; }
+.native-request legend { margin-bottom:0.75rem; font-weight:600; font-size:1rem; }
+.native-request label { display:flex; align-items:flex-start; gap:0.75rem; border:0.0625rem solid var(--border); border-radius:0.625rem; padding:0.75rem; margin:0.5rem 0; cursor:pointer; }
+.native-request label:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); }
+.native-request input[type=radio] { flex-shrink:0; width:1rem; height:1rem; margin:0.25rem 0 0; accent-color:var(--accent); }
+.native-request label>span { flex:1; min-width:0; }
+.native-request label strong,.native-request label small { display:block; }
+.native-request label strong { font-size:1rem; font-weight:500; }
+.native-request label textarea,.native-request input[type=password] { flex:1; min-width:0; padding:0; border:0; outline:none; background:transparent; resize:vertical; font-size:1rem; }
+.native-request pre { max-height:18rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:0.875rem; }
+.native-request form p:empty,.native-request>p:empty { display:none; }
+.native-request>p:last-child { color:var(--warning); margin:0.75rem 0 0; }
+.live-plan { margin:1rem 0 1.5rem; padding:1rem 1.25rem; border:0.0625rem solid var(--border); border-radius:0.75rem; }
+.live-plan p { margin:0.5rem 0; font-size:0.875rem; color:var(--muted); }
+.live-plan ol { list-style:none; margin:0.75rem 0 0; padding:0; }
+.live-plan li { display:flex; align-items:flex-start; gap:0.625rem; margin:0.5rem 0; font-size:0.875rem; }
+.plan-state { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:1.5rem; height:1.5rem; border:0.0625rem solid var(--border); border-radius:50%; color:var(--muted); font-size:0.8125rem; }
+.plan-state svg { width:0.75rem; height:0.75rem; }
+.live-plan li[data-status=inProgress] { font-weight:600; }
+.live-plan li[data-status=inProgress] .plan-state { border-color:var(--accent); color:var(--accent); }
+.live-plan li[data-status=completed] { color:var(--muted); }
 [hidden] { display:none !important; }
 @media (max-width:78.125rem) { #process-count { display:none; } }
 @media (max-width:43.75rem) { :root { --topbar-height:4.5rem; } .topbar { height:var(--topbar-height); padding:0 1.125rem; gap:0.75rem; } .topbar nav { gap:0.25rem; } .topbar #new span { display:none; } main { padding:4.0625rem 1.25rem calc(var(--composer-height) + 1.5rem); } h1 { font-size:1.875rem; } .composer-wrap { padding:1.375rem 1rem max(1.125rem,env(safe-area-inset-bottom)); } #permission-note { display:none; } #process-toggle { padding:0.375rem 0.5rem; } #process-toggle .task-label { display:none; } .brand { font-size:0.875rem; gap:0.5rem; } }

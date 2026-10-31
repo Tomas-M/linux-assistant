@@ -38,7 +38,7 @@ impl Connection {
         let mut request = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?
             .request(method,format!("{}{path}",self.url));
         // Approved commands can run indefinitely while the terminal waits for their result.
-        if !matches!(path,"/api/command"|"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(1800)); }
+        if !matches!(path,"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(1800)); }
         if let Some(body) = body { request = request.json(&body); }
         let response = request.send().await?;
         let status = response.status();
@@ -128,6 +128,7 @@ fn router(state: Local) -> Router {
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
         .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
+        .route("/native.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/native.js")) }))
         .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
         .route("/logo.png",get(|State(state):State<Local>|async move { match &state.brand.logo { Some(bytes)=>([(header::CONTENT_TYPE,"image/png")],bytes.clone()).into_response(),None=>StatusCode::NOT_FOUND.into_response() } }))
@@ -141,7 +142,7 @@ fn router(state: Local) -> Router {
         .route("/api/login/poll",post(social_poll)).route("/api/login/cancel",post(social_cancel))
         .route("/api/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/steer",post(steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
         .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
-        .route("/api/command",post(decide)).route("/api/credit-packs",get(credit_packs)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/stop",post(stop))
+        .route("/api/respond",post(respond)).route("/api/credit-packs",get(credit_packs)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/stop",post(stop))
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
         .route("/api/processes/{id}/stop",post(process_stop))
         .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
@@ -177,8 +178,6 @@ struct SocialInput { provider:protocol::AuthProvider }
 struct LoginId { id:String }
 #[derive(Deserialize)]
 struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid>, attachments:Option<Vec<protocol::Attachment>> }
-#[derive(Deserialize)]
-struct Decision { id: Uuid, approve: bool }
 
 /// Read the same assistant state in either interface.
 async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live.0.borrow()["state"].clone()) }
@@ -200,15 +199,13 @@ async fn events(State(state): State<Local>) -> Response { state.live.response() 
 /// Revoking automatic execution is immediate, even during a long command or provider request.
 async fn access(State(state): State<Local>, Json(input): Json<Value>) -> LocalResult {
     let enabled=input["enabled"].as_bool().context("Expected an execution permission")?;
-    let mut pending=None;
     if enabled {
-        let engine=state.engine.try_lock().context("Wait for the current operation before enabling full access")?;
-        if engine.saved.token.is_none() || !engine.saved.settings.commands_enabled { return Err(anyhow::anyhow!("Enable local commands first").into()); }
-        pending=engine.saved.pending.as_ref().map(|pending|pending.id);
+        let view=state.live.0.borrow();
+        if view["state"]["authenticated"]!=true || view["state"]["settings"]["commands_enabled"]!=true { return Err(anyhow::anyhow!("Enable local access first").into()); }
     }
     state.full_access.store(enabled,std::sync::atomic::Ordering::SeqCst);
     state.live.0.send_modify(|view|view["state"]["full_access"]=json!(enabled));
-    if let Some(id)=pending { return run(state,Operation::Decide(id,true)).await; }
+    if enabled { state.controls.approve_waiting(); }
     Ok(Json(state.live.0.borrow()["state"].clone()))
 }
 /// Persist execution permission shared by the browser and terminal.
@@ -236,7 +233,7 @@ async fn logout(State(state): State<Local>) -> LocalResult {
 async fn chat(State(state): State<Local>, Json(input): Json<ChatInput>) -> LocalResult {
     let cwd = match input.cwd { Some(path) => path,None => dirs::home_dir().context("Home directory not found")?.to_string_lossy().into_owned() };
     state.controls.enqueue(crate::controls::Queued { attachments:input.attachments, id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
-    if state.live.0.borrow()["busy"]==true || !state.live.0.borrow()["state"]["pending"].is_null() { return Ok(Json(state.live.0.borrow()["state"].clone())); }
+    if state.live.0.borrow()["busy"]==true { return Ok(Json(state.live.0.borrow()["state"].clone())); }
     run(state,Operation::Next).await
 }
 /// Retry the stored idempotent request after a transport or provider failure.
@@ -247,9 +244,10 @@ async fn new_chat(State(state): State<Local>) -> LocalResult {
     engine.new_chat().await?;
     Ok(Json(engine.state()))
 }
-/// Execute only the exact proposal identified by the one-use approval ID.
-async fn decide(State(state): State<Local>, Json(input): Json<Decision>) -> LocalResult {
-    run(state,Operation::Decide(input.id,input.approve)).await
+/// Answer a native question or approve its exact displayed local operation without locking the engine.
+async fn respond(State(state):State<Local>,Json(input):Json<protocol::InteractionResponse>)->LocalResult {
+    state.controls.respond(input)?;
+    Ok(Json(json!({"ok":true})))
 }
 /// Steering bypasses the engine lock and uses the backend's active-turn protocol.
 async fn steer(State(state):State<Local>,Json(input):Json<protocol::Steering>)->LocalResult {
@@ -309,11 +307,11 @@ async fn steer_queued(State(state):State<Local>,axum::extract::Path(id):axum::ex
 /// Continue after a held queue entry is released, but respect explicit stops and pending approvals.
 fn wake_queue(state:Local) {
     let view=state.live.0.borrow().clone();
-    let waiting=view["busy"]==true || !view["state"]["pending"].is_null() || view["state"]["retry_available"]==true;
+    let waiting=view["busy"]==true || view["state"]["retry_available"]==true;
     if waiting || state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { return; }
     tokio::spawn(async move { let _=run(state,Operation::Next).await; });
 }
-enum Operation { Next, Retry, Decide(Uuid,bool) }
+enum Operation { Next, Retry }
 
 /// Own the task independently of browser connections; consume every approved proposal exactly once.
 async fn run(state: Local, operation: Operation) -> LocalResult {
@@ -329,15 +327,9 @@ async fn run(state: Local, operation: Operation) -> LocalResult {
             match operation {
                 Operation::Next=> { engine.next().await?; }
                 Operation::Retry=> { engine.retry().await?; }
-                Operation::Decide(id,approve)=> { engine.decide(id,approve).await?; }
             }
             loop {
                 if state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { break; }
-                if let Some(pending)=engine.saved.pending.clone() {
-                    if !state.full_access.load(std::sync::atomic::Ordering::SeqCst) && !pending.proposal.is_poll() { break; }
-                    engine.decide(pending.id,true).await?;
-                    continue;
-                }
                 if !engine.next().await? { break; }
             }
             Ok::<_,anyhow::Error>(engine.state())
@@ -400,52 +392,6 @@ async fn stop(State(state): State<Local>) -> Json<Value> { state.stop.notify_one
 mod tests {
     use super::*;
     use tower::ServiceExt;
-
-    /// A disconnected caller cannot repeat a command; revoking full access works while the shell runs.
-    #[tokio::test]
-    async fn streaming_task_survives_disconnect_and_revokes_automatic_execution() -> Result<()> {
-        let directory=tempfile::tempdir()?;
-        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let backend=format!("http://{}",listener.local_addr()?);
-        let provider=Router::new().route("/v1/chat",post(|Json(request):Json<protocol::ChatRequest>|async move {
-            let proposal=protocol::CommandProposal { files:None, cwd:request.cwd,reason:"Write one marker".into(),
-                command:if cfg!(windows) { "Add-Content -Encoding UTF8 -LiteralPath 'runs.txt' -Value 'once'; Start-Sleep -Milliseconds 700" }
-                    else { "printf 'once\\n' >> runs.txt; sleep 0.7" }.into() };
-            let response=protocol::ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal.into()) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
-            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
-        }));
-        let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });
-        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        engine.set_backend(backend.clone()).await?;
-        engine.saved.token=Some("fixture".into());
-        engine.settings(true)?;
-        engine.full_access.store(true,std::sync::atomic::Ordering::SeqCst);
-        let live=engine.live.clone();
-        let processes=engine.processes.clone();
-        let app=router(Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),full_access:engine.full_access.clone(),live:live.clone(),processes:processes.clone(),engine:Arc::new(Mutex::new(engine)),
-            connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) });
-        let request=Request::builder().method("POST").uri("/api/chat").header("host","127.0.0.1:1234").header("content-type","application/json")
-            .body(Body::from(json!({"text":"Write a marker","cwd":directory.path()}).to_string()))?;
-        let caller=tokio::spawn(app.clone().oneshot(request));
-        tokio::time::timeout(Duration::from_secs(10),async {
-            while processes.list().as_array().unwrap().is_empty() { tokio::time::sleep(Duration::from_millis(10)).await; }
-        }).await?;
-        caller.abort();
-        for (method,path,body) in [("POST","/api/access","{\"enabled\":false}"),("GET","/api/state",""),("GET","/api/events","")] {
-            let request=Request::builder().method(method).uri(path).header("host","127.0.0.1:1234").header("content-type","application/json").body(Body::from(body))?;
-            assert_eq!(tokio::time::timeout(Duration::from_secs(1),app.clone().oneshot(request)).await??.status(),StatusCode::OK);
-        }
-        tokio::time::timeout(Duration::from_secs(10),async {
-            while live.0.borrow()["busy"]==true { tokio::time::sleep(Duration::from_millis(20)).await; }
-        }).await?;
-        assert!(live.0.borrow()["error"].is_null(),"{}",*live.0.borrow());
-        assert_eq!(std::fs::read_to_string(directory.path().join("runs.txt"))?.lines().count(),1);
-        assert_eq!(processes.list().as_array().unwrap().len(),1);
-        assert!(!live.0.borrow()["state"]["pending"].is_null());
-        assert_eq!(live.0.borrow()["state"]["full_access"],false);
-        provider.abort();
-        Ok(())
-    }
 
     /// Process polling and tree cancellation must work while a command holds the conversation lock.
     #[tokio::test]

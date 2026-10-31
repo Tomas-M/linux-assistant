@@ -33,3 +33,6 @@ CREATE INDEX IF NOT EXISTS usage_request ON usage(user_id,request_id);
 CREATE INDEX IF NOT EXISTS usage_account ON usage(account_home);
 CREATE TABLE IF NOT EXISTS quota_history(id INTEGER PRIMARY KEY, account_home TEXT NOT NULL, checked_at INTEGER NOT NULL, limits TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS quota_history_time ON quota_history(checked_at);
+
+CREATE TABLE IF NOT EXISTS tool_calls(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, request_id TEXT NOT NULL, interaction TEXT NOT NULL, answer TEXT);
+CREATE INDEX IF NOT EXISTS tool_calls_request ON tool_calls(user_id,request_id);

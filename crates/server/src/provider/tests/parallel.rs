@@ -106,7 +106,7 @@ async fn embedded_account_runs_parallel_threads()->Result<()> {
         let body=body.to_string();
         let text=(0..100).map(|index|format!("THREAD_{index}_END")).find(|text|body.contains(text)).unwrap();
         let events=[json!({"type":"response.created","response":{"id":text}}),
-            json!({"type":"response.output_item.done","item":{"id":text,"type":"message","role":"assistant","content":[{"type":"output_text","text":json!({"text":text,"command":null}).to_string()}]}}),
+            json!({"type":"response.output_item.done","item":{"id":text,"type":"message","role":"assistant","content":[{"type":"output_text","text":json!({"text":text}).to_string()}]}}),
             json!({"type":"response.completed","response":{"id":text,"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}})];
         ([("content-type","text/event-stream")],events.iter().map(|event|format!("event: {}\ndata: {event}\n\n",event["type"].as_str().unwrap())).collect::<String>())
     })).with_state(Arc::new(tokio::sync::Barrier::new(100)));

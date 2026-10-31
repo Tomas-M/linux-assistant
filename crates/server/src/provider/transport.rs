@@ -4,7 +4,7 @@ use serde_json::{json,Value};
 use tokio::{io::{AsyncBufReadExt,AsyncReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStderr,ChildStdout},sync::{broadcast,mpsc,oneshot}};
 use uuid::Uuid;
 
-enum Outbound { Call(Value,Uuid,Option<oneshot::Sender<Value>>), Subscribe(String,Uuid,mpsc::Sender<Value>,oneshot::Sender<bool>), Release(String,Uuid), Shutdown(oneshot::Sender<()>) }
+enum Outbound { Respond(String,Uuid,Value,Value), Call(Value,Uuid,Option<oneshot::Sender<Value>>), Subscribe(String,Uuid,mpsc::Sender<Value>,oneshot::Sender<bool>), Release(String,Uuid), Shutdown(oneshot::Sender<()>) }
 pub(super) struct Transport {
     sender:mpsc::UnboundedSender<Outbound>,
     pub(super) threads:Arc<Mutex<HashMap<String,(Uuid,mpsc::Sender<Value>)>>>,
@@ -124,6 +124,9 @@ impl Transport {
                                 }
                                 vec![value]
                             }
+                            Outbound::Respond(thread,owner,id,result)=> {
+                                if routes.lock().unwrap().get(&thread).is_some_and(|route|route.0==owner) { vec![json!({"id":id,"result":result})] } else { Vec::new() }
+                            }
                             Outbound::Release(thread,owner)=> {
                                 // A cancelled or rejected subscriber cannot release a later or existing owner.
                                 if routes.lock().unwrap().get(&thread).is_some_and(|route|route.0!=owner) { continue; }
@@ -141,7 +144,14 @@ impl Transport {
                         message=read(&mut output,&mut line)=> {
                             let message=message?;
                             if message.get("method").is_some() && message.get("id").is_some() {
-                                // Reject host tools without exposing another conversation to the request.
+                                // Route approved request kinds only to the owner of their provider thread.
+                                let allowed=matches!(message["method"].as_str(),Some("item/tool/call"|"item/tool/requestUserInput"));
+                                if allowed {
+                                    if let Some(thread)=message["params"]["threadId"].as_str() {
+                                        let route=routes.lock().unwrap().get(thread).cloned();
+                                        if let Some((_,route))=route { if route.try_send(message.clone()).is_ok() { continue; } }
+                                    }
+                                }
                                 if let Some(thread)=message["params"]["threadId"].as_str() {
                                     if let Some((owner,_))=routes.lock().unwrap().get(thread) { let _=cleanup.send(Outbound::Release(thread.into(),*owner)); }
                                 }
@@ -209,6 +219,12 @@ impl Transport {
         self.sender.send(Outbound::Subscribe(thread,owner,sender,reply))?;
         ensure!(result.await?,"This provider conversation is already active");
         Ok(receiver)
+    }
+
+    /// Respond only on the still-owned thread; callers never accept provider RPC IDs from a user.
+    pub(super) fn respond(&self,thread:&str,owner:Uuid,id:Value,result:Value)->Result<()> {
+        self.sender.send(Outbound::Respond(thread.into(),owner,id,result))?;
+        Ok(())
     }
 
     /// Send initialization or release a subscription without holding a conversation's generation lock.

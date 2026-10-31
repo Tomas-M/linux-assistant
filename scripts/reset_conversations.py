@@ -21,6 +21,7 @@ def reset(path):
             db.backup(copy)
             with db:
                 db.execute("UPDATE usage SET finished_at=?,error='Conversation reset; token counts may be partial' WHERE finished_at IS NULL",(int(time.time()),))
+                db.execute('DROP TABLE IF EXISTS tool_calls')
                 db.execute('DROP TABLE requests')
                 db.execute('DROP TABLE conversations')
                 db.execute('DROP TABLE IF EXISTS billing_tasks')

@@ -23,9 +23,9 @@ pub async fn run(connection: Connection) -> Result<()> {
         let line = line.trim();
         if line.is_empty() { continue; }
         if matches!(line,"/quit"|"/exit") { break; }
-        let result = handle(&connection,line,&state).await;
+        let result = handle(&connection,line).await;
         match result {
-            Ok(Some(next)) => { state=next; display(&state,line.starts_with('/') && !matches!(line,"/approve"|"/deny"|"/retry")); }
+            Ok(Some(next)) => { state=next; display(&state,line.starts_with('/') && line!="/retry"); }
             Ok(None) => {}
             Err(error) => {
                 println!("Error: {}",safe(&error.to_string()));
@@ -39,11 +39,11 @@ pub async fn run(connection: Connection) -> Result<()> {
 }
 
 /// Keep command approval explicit and separate from ordinary conversational text.
-async fn handle(connection: &Connection, line: &str, state: &Value) -> Result<Option<Value>> {
+async fn handle(connection: &Connection, line: &str) -> Result<Option<Value>> {
     let (name,arg) = line.split_once(' ').unwrap_or((line,""));
     let next = match name {
         "/help" => {
-            println!("/login  /logout  /commands on|off\n/full on|off  /approve  /deny  /credits  /buy  /new  /retry  /history\n/stop (stop daemon)  /quit (leave prompt)");
+            println!("/login  /logout  /commands on|off\n/full on|off  /credits  /buy  /new  /retry  /history\n/stop (stop daemon)  /quit (leave prompt)");
             return Ok(None);
         }
         "/login" => {
@@ -67,10 +67,6 @@ async fn handle(connection: &Connection, line: &str, state: &Value) -> Result<Op
         "/full" => {
             anyhow::ensure!(["on","off"].contains(&arg),"Use /full on or /full off; enable commands first");
             live_post(connection,"/api/access",json!({"enabled":arg=="on"})).await?
-        }
-        "/approve"|"/deny" => {
-            anyhow::ensure!(!state["pending"].is_null(),"No pending command; use /history to refresh shared state");
-            live_post(connection,"/api/command",json!({"id":state["pending"]["id"],"approve":name=="/approve"})).await?
         }
         "/credits" => connection.post("/api/account",json!({})).await?,
         "/buy" => {
@@ -110,11 +106,6 @@ fn display(state: &Value, show_text: bool) {
     if let Some(last)=state["messages"].as_array().and_then(|messages|messages.last()).filter(|_|show_text) {
         println!("\n{}: {}\n",last["role"].as_str().unwrap_or("assistant"),safe(last["text"].as_str().unwrap_or_default()));
     }
-    if !state["pending"].is_null() {
-        let proposal=&state["pending"]["proposal"];
-        println!("Proposed local command:\n{}\nDirectory: {}\nReason: {}\nType /approve to run or /deny to decline.",
-            safe(proposal["command"].as_str().unwrap()),safe(proposal["cwd"].as_str().unwrap()),safe(proposal["reason"].as_str().unwrap()));
-    }
     let permission=if state["full_access"]==true { "full access" } else if state["settings"]["commands_enabled"]==true { "approval required" } else { "off" };
     if let Some(credits)=state["account"]["credits"].as_i64() { println!("Credits: {credits} | commands: {permission}"); }
 }
@@ -130,6 +121,7 @@ async fn live_post(connection: &Connection, path: &str, body: Value) -> Result<V
     let mut decoder=crate::stream::Decoder::local();
     let (mut label,mut text,mut turn)=(String::new(),String::new(),String::new());
     let mut summaries=std::collections::HashMap::<String,String>::new();
+    let mut answered=std::collections::HashSet::new();
     loop {
         tokio::select! {
             result=&mut operation => {
@@ -144,6 +136,36 @@ async fn live_post(connection: &Connection, path: &str, body: Value) -> Result<V
                 let Some(bytes)=chunk? else { return operation.await; };
                 for view in decoder.push(&bytes)? {
                     if view["busy"]!=true { continue; }
+                    for request in view["interactions"].as_array().into_iter().flatten() {
+                        let request:protocol::Interaction=serde_json::from_value(request.clone())?;
+                        if !answered.insert(request.id) { continue; }
+                        let answer=match &request.kind {
+                            protocol::InteractionKind::Tool { action }=> {
+                                println!("\n{}\n{}",safe(action.reason()),safe(&action.description()));
+                                let input=read_line("Allow this operation? [y/N]: ")?.unwrap_or_default();
+                                protocol::InteractionAnswer::Approval { approve:input.trim().eq_ignore_ascii_case("y") }
+                            }
+                            protocol::InteractionKind::Questions { questions }=> {
+                                let mut answers=std::collections::HashMap::new();
+                                for question in questions {
+                                    println!("\n{}",safe(&question.question));
+                                    let options=question.options.as_deref().unwrap_or_default();
+                                    for (index,option) in options.iter().enumerate() { println!("{}. {} - {}",index+1,safe(&option.label),safe(&option.description)); }
+                                    if question.is_secret { anyhow::bail!("Answer this private question in the browser at {}",connection.url); }
+                                    loop {
+                                        let input=read_line(if question.is_other { "Choose a number or type your own answer: " } else { "Choose a number: " })?;
+                                        let Some(input)=input else { connection.post("/api/interrupt",json!({})).await?; anyhow::bail!("Task stopped after terminal input closed"); };
+                                        let input=input.trim();
+                                        let selected=input.parse::<usize>().ok().and_then(|index|index.checked_sub(1)).and_then(|index|options.get(index));
+                                        if let Some(option)=selected { answers.insert(question.id.clone(),vec![option.label.clone()]); break; }
+                                        if (question.is_other || options.is_empty()) && !input.is_empty() { answers.insert(question.id.clone(),vec![input.to_owned()]); break; }
+                                    }
+                                }
+                                protocol::InteractionAnswer::Questions { answers }
+                            }
+                        };
+                        connection.post("/api/respond",json!(protocol::InteractionResponse { id:request.id,answer })).await?;
+                    }
                     let activity=&view["activity"];
                     let current=activity["label"].as_str().unwrap_or_default();
                     if current!=label { println!("\n{}",safe(current)); label=current.into(); }
@@ -153,10 +175,12 @@ async fn live_post(connection: &Connection, path: &str, body: Value) -> Result<V
                     if let Some(parts)=progress["summaries"].as_array() {
                         for part in parts {
                             let id=part["id"].as_str().unwrap_or_default().to_owned();
-                            let value=part["text"].as_str().unwrap_or_default();
+                            let value=if part["kind"]=="plan" {
+                                part["data"]["plan"].as_array().into_iter().flatten().map(|step|format!("\n[{}] {}",match step["status"].as_str() { Some("completed")=>"x",Some("inProgress")=>">",_=>" " },step["step"].as_str().unwrap_or_default())).collect::<String>()
+                            } else { part["text"].as_str().unwrap_or_default().to_owned() };
                             let previous=summaries.entry(id).or_default();
-                            print!("{}",safe(value.strip_prefix(previous.as_str()).unwrap_or(value)));
-                            *previous=value.into();
+                            print!("{}",safe(value.strip_prefix(previous.as_str()).unwrap_or(&value)));
+                            *previous=value;
                         }
                     }
                     let value=progress["text"].as_str().unwrap_or_default();

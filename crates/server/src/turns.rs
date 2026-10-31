@@ -7,8 +7,9 @@ use crate::{App,ApiError,ApiResult};
 
 pub type Active=Mutex<HashMap<(i64,Uuid),ActiveTurn>>;
 #[derive(Clone)]
-pub struct ActiveTurn { pub sender:mpsc::Sender<Control>,pub cancel:tokio::sync::watch::Sender<bool> }
+pub struct ActiveTurn { pub sender:mpsc::Sender<Control>,pub cancel:tokio::sync::watch::Sender<bool>,pub events:tokio::sync::watch::Receiver<protocol::ChatEvent> }
 pub enum Control {
+    Respond(protocol::InteractionResponse,oneshot::Sender<Result<(),String>>),
     Steer(Steering,oneshot::Sender<Result<(),String>>),
     Stop(oneshot::Sender<Result<(),String>>),
 }
@@ -54,5 +55,20 @@ pub async fn stop(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>)->
         let interrupt=async { if sender.sender.send(Control::Stop(reply)).await.is_ok() { let _=result.await; } };
         if tokio::time::timeout(std::time::Duration::from_secs(3),interrupt).await.is_err() { sender.cancel.send_replace(true); }
     }
+    Ok(Json(serde_json::json!({"ok":true})))
+}
+
+/// Tool results and question answers belong to this signed-in user's exact active request.
+pub async fn respond(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>,Json(input):Json<protocol::InteractionResponse>)->ApiResult<Json<serde_json::Value>> {
+    let user=app.user(&headers)?;
+    let turn=app.turns.lock().unwrap().get(&(user,id)).cloned();
+    let Some(turn)=turn else {
+        let previous:Option<String>=app.db.0.lock().unwrap().query_row("SELECT answer FROM tool_calls WHERE id=?1 AND user_id=?2 AND request_id=?3",rusqlite::params![input.id.to_string(),user,id.to_string()],|row|row.get(0)).map_err(|_|ApiError::bad("This task is no longer running"))?;
+        if previous.as_deref().and_then(|answer|serde_json::from_str::<protocol::InteractionAnswer>(answer).ok()).as_ref()!=Some(&input.answer) { return Err(ApiError::bad("This task is no longer running or received a different answer")); }
+        return Ok(Json(serde_json::json!({"ok":true})));
+    };
+    let (reply,result)=oneshot::channel();
+    turn.sender.send(Control::Respond(input,reply)).await.map_err(|_|ApiError::bad("This task has finished"))?;
+    result.await.map_err(|_|ApiError::bad("Answer was not acknowledged; retry the same answer"))?.map_err(|error|ApiError::bad(&error))?;
     Ok(Json(serde_json::json!({"ok":true})))
 }

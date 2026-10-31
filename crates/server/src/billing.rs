@@ -1,7 +1,9 @@
 use anyhow::{ensure, Result};
 use serde::{Deserialize,Serialize};
 use rusqlite::{params, Connection, OptionalExtension};
-use protocol::{ChatRequest, Role};
+use protocol::ChatRequest;
+#[cfg(test)]
+use protocol::Role;
 use crate::db::now;
 
 const SCALE: i64=1_000_000;
@@ -60,19 +62,12 @@ impl Pricing {
 /// Round the combined token cost up once; successful tasks cost at least one credit.
 fn credits(cost:i128)->Result<i64> { Ok(i64::try_from(((cost+DENOMINATOR-1)/DENOMINATOR).max(1))?) }
 
-/// Admit new tasks using the balance, while validated command follow-ups retain their original rates.
+/// Admit one native turn per task using the positive balance and a fixed pricing snapshot.
 pub fn admit(conn:&Connection,user:i64,request:&ChatRequest,pricing:&Pricing)->Result<bool> {
     let task=request.task_id.to_string();
     let conversation=request.conversation_id.to_string();
     let existing:Option<(String,Option<i64>)>=conn.query_row("SELECT conversation_id,finished_at FROM billing_tasks WHERE user_id=?1 AND id=?2",params![user,task],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-    if let Some((stored,finished))=existing {
-        ensure!(stored==conversation && finished.is_none(),"Task is already finished or belongs to another conversation");
-        ensure!(request.messages.iter().all(|message|message.role==Role::Tool),"Only command results may continue an existing task");
-        let response:Option<String>=conn.query_row("SELECT response FROM requests WHERE user_id=?1 AND task_id=?2 ORDER BY rowid DESC LIMIT 1",params![user,task],|r|r.get(0))?;
-        let completed:crate::db::Completed=serde_json::from_str(response.as_deref().ok_or_else(||anyhow::anyhow!("Previous request has not completed"))?)?;
-        ensure!(completed.reply.command.is_some(),"Task has no command awaiting a result");
-        return Ok(true);
-    }
+    ensure!(existing.is_none(),"Task is already running or finished; retry its original request ID");
     ensure!(request.task_id==request.request_id,"A new task must start with a new request ID");
     let balance:i64=conn.query_row("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE user_id=?1",[user],|r|r.get(0))?;
     if balance<=0 { return Ok(false); }
@@ -82,7 +77,7 @@ pub fn admit(conn:&Connection,user:i64,request:&ChatRequest,pricing:&Pricing)->R
     Ok(true)
 }
 
-/// Report the exact debits recorded for a whole task, including command follow-ups and minimum charges.
+/// Report the exact debits recorded for a whole task, including partial usage and minimum charges.
 pub fn charged(conn:&Connection,user:i64,task:&str)->Result<i64> {
     let minimum=format!("task:{user}:{task}");
     Ok(conn.query_row("SELECT COALESCE(-SUM(delta),0) FROM ledger WHERE user_id=?1 AND (reference=?3 OR reference IN (SELECT 'usage:'||x.id FROM usage x JOIN requests r ON r.user_id=x.user_id AND r.id=x.request_id WHERE r.user_id=?1 AND r.task_id=?2))",params![user,task,minimum],|r|r.get(0))?)
@@ -105,7 +100,7 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
         let minimum_due=success && index+1==attempts.len();
         let target=if cost>0 || minimum_due { credits(cost)? } else { 0 };
         if target>charged {
-            conn.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,?2,?3,?4)",params![user,charged-target,format!("usage:{id}"),now()])?;
+            conn.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT(reference) DO UPDATE SET delta=ledger.delta+excluded.delta",params![user,charged-target,format!("usage:{id}"),now()])?;
             charged=target;
         }
     }
@@ -120,7 +115,7 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
 mod tests {
     use super::*;
 
-    use protocol::{AssistantReply, CommandProposal, Message, Platform};
+    use protocol::{AssistantReply, Message, Platform};
     use uuid::Uuid;
     use crate::db::{Db,Reservation};
 
@@ -158,52 +153,7 @@ mod tests {
     }
 
     /// A negative balance blocks new prompts, while the admitted command chain shares one rounded bill.
-    #[test]
-    fn command_chain_survives_overdraft_restart_and_rate_changes()->Result<()> {
-        let directory=tempfile::tempdir()?;
-        let path=directory.path().join("billing.db");
-        let db=Db::open(&path)?;
-        let pricing=crate::config::Config::default().pricing;
-        let user=db.user("chain@example.test",None,1)?;
-        let mut input=request();
-        let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { files:None, command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }.into()) };
-        assert!(matches!(db.reserve(user,&input,"one",&pricing)?,Reservation::New));
-        assert_eq!(db.balance(user)?,1);
-        measured(&db,user,&input,6000,0,0)?;
-        input.base=db.complete(user,&input,&command,None,None,None)?.revision;
-        assert_eq!(db.balance(user)?,-1);
-        assert!(matches!(db.reserve(user,&input,"one",&pricing)?,Reservation::Cached(_)));
-        assert!(matches!(db.reserve(user,&request(),"blocked",&pricing)?,Reservation::Insufficient));
-        drop(db);
-        let db=Db::open(&path)?;
-        db.recover()?;
-        let changed=crate::config::Config { pricing:Pricing { input_credits_per_million:Rate(1_000_000_000),..crate::config::Config::default().pricing },..crate::config::Config::default() }.pricing;
-        let mut stale=request();
-        stale.conversation_id=input.conversation_id;
-        assert!(matches!(db.reserve(user,&stale,"stale",&changed)?,Reservation::Stale));
-        input.request_id=Uuid::new_v4();
-        assert!(db.reserve(user,&input,"not-a-tool",&changed).is_err());
-        input.messages=vec![Message { attachments:None, role:Role::Tool,text:"Linux".into() }];
-        assert!(matches!(db.reserve(user,&input,"two",&changed)?,Reservation::New));
-        measured(&db,user,&input,3000,0,0)?;
-        input.base=db.complete(user,&input,&command,None,None,None)?.revision;
-        assert_eq!(db.balance(user)?,-1);
-        input.request_id=Uuid::new_v4();
-        assert!(matches!(db.reserve(user,&input,"three",&changed)?,Reservation::New));
-        measured(&db,user,&input,0,0,1000)?;
-        input.base=db.complete(user,&input,&AssistantReply { text:"Done".into(),command:None },None,None,None)?.revision;
-        assert_eq!(db.balance(user)?,-2);
-        assert!(matches!(db.reserve(user,&input,"three",&changed)?,Reservation::Cached(_)));
-        input.request_id=Uuid::new_v4();
-        assert!(db.reserve(user,&input,"closed",&changed).is_err());
-        db.0.lock().unwrap().execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(?1,100,'purchase:test',?2)",params![user,now()])?;
-        let next=request();
-        db.reserve(user,&next,"new-price",&changed)?;
-        measured(&db,user,&next,3000,0,0)?;
-        db.settle(user,&next.request_id.to_string(),Ok("reply".into()))?;
-        assert_eq!(db.balance(user)?,95);
-        Ok(())
-    }
+
 
     /// Failover, interruption and restart bill measured work once; missing counters are never estimated.
     #[test]
