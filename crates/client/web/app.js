@@ -562,6 +562,8 @@ function renderLogin()
 {
     const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));
     const waiting=!!socialLogin && !socialLogin.verification;
+    // Keep the form visibly locked after the popup closes until polling confirms completion or cancellation.
+    elements['setup'].classList.toggle('finishing-sign-in',waiting && !!socialLogin.popup?.closed);
     const emailAllowed=emailEnabled || !!socialLogin?.verification;
     elements['email-sign-in'].hidden=!emailAllowed;
     elements['auth-divider'].hidden=!emailAllowed;
@@ -569,15 +571,12 @@ function renderLogin()
     elements['code-digits'].disabled=loginBusy;
     elements.resend.disabled=loginBusy || remaining>0;
     elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
-    elements.login.textContent=loginBusy?'Signing in…':'Sign in with email';
     elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification || !elements['code-form'].hidden;
     for (const button of document.querySelectorAll('[data-provider]'))
     {
         button.hidden=!enabledProviders.includes(button.dataset.provider);
         button.disabled=loginBusy || !!socialLogin;
     }
-    elements['cancel-sign-in'].hidden=!socialLogin;
-    elements['cancel-sign-in'].disabled=loginBusy;
 }
 
 // Email and social sign-in share one success transition, including clearing old session errors.
@@ -620,7 +619,7 @@ async function pollSocial()
         // Check completion first because successful sign-in also closes the popup.
         if (attempt.popup?.closed)
         {
-            elements['cancel-sign-in'].click();
+            await cancelSocial();
             return;
         }
     }
@@ -629,7 +628,7 @@ async function pollSocial()
         if (socialLogin!==attempt) return;
         attempt.popup?.close();
         try { await api('login/cancel',{id:attempt.id}); if (socialLogin===attempt) socialLogin=undefined; }
-        catch { /* Keep Cancel available if the backend is temporarily unreachable. */ }
+        catch { if (socialLogin===attempt) setTimeout(pollSocial,2000); }
         elements['auth-status'].textContent=error.message;
         renderLogin();
         return;
@@ -646,7 +645,7 @@ document.querySelectorAll('[data-provider]').forEach(button=>button.addEventList
     const attempt={provider:button.dataset.provider,popup};
     socialLogin=attempt;
     loginBusy=true;
-    elements['auth-status'].textContent='Continue with '+providerNames[attempt.provider]+' in the sign-in window…';
+    elements['auth-status'].textContent='';
     renderLogin();
     try
     {
@@ -658,7 +657,8 @@ document.querySelectorAll('[data-provider]').forEach(button=>button.addEventList
     finally { loginBusy=false; renderLogin(); }
     pollSocial();
 }));
-elements['cancel-sign-in'].addEventListener('click',async()=>
+// Closing a provider popup cancels its pending sign-in without adding controls to the form.
+async function cancelSocial()
 {
     if (loginBusy || !socialLogin?.id) return;
     loginBusy=true; renderLogin();
@@ -670,9 +670,9 @@ elements['cancel-sign-in'].addEventListener('click',async()=>
         elements['auth-status'].textContent='';
         elements.email.focus();
     }
-    catch (error) { elements['auth-status'].textContent=error.message; }
+    catch (error) { elements['auth-status'].textContent=error.message; setTimeout(pollSocial,2000); }
     finally { loginBusy=false; renderLogin(); }
-});
+}
 
 // Both the initial request and resend use the same email and never navigate away.
 async function requestCode()
@@ -1159,7 +1159,6 @@ const initialState=api('state').then(async current=>
     if (!state.authenticated && state.sign_in)
     {
         socialLogin={...state.sign_in};
-        elements['auth-status'].textContent='Waiting for '+providerNames[socialLogin.provider]+' sign-in…';
         renderLogin(); pollSocial();
     }
     if (state.authenticated && !view.busy)
