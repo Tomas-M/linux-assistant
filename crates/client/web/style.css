@@ -207,14 +207,15 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 .credit-balance.depleted { color:var(--warning); background:var(--surface); }
 .auth-layout { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:24px auto; border:1px solid var(--border); border-radius:24px; overflow:hidden; background:var(--bg); box-shadow:var(--shadow); }
 .auth-intro { padding:32px; background:var(--surface); border-right:1px solid var(--border); }
-.auth-intro h1 { font-size:32px; margin:0 0 16px; }
+.auth-intro-heading { display:flex; align-items:flex-start; gap:16px; margin-bottom:16px; }
+.auth-intro h1 { flex:1; min-width:0; font-size:32px; margin:0; }
 .auth-intro p { color:var(--text); margin:0 0 16px; }
 .auth-intro .auth-permissions { font-size:14px; color:var(--muted); margin-bottom:24px; }
-.auth-character { display:block; width:128px; height:128px; object-fit:contain; margin-bottom:24px; }
+.auth-character { display:block; width:80px; height:80px; object-fit:contain; flex-shrink:0; }
 .welcome-credits { display:inline-block; padding:7px 13px; border-radius:24px; background:var(--accent-soft); color:var(--accent); font-size:14px; font-weight:600; }
-.auth-card { min-width:0; padding:32px; align-self:center; }
+.auth-card { min-width:0; padding:32px; align-self:start; }
 .signed-out main { max-width:1000px; padding-bottom:48px; }
-@media (max-width:760px) { .signed-out main { padding:24px 18px 48px; } .auth-layout { grid-template-columns:1fr; max-width:440px; margin:0 auto; } .auth-intro { padding:24px; border-right:0; border-bottom:1px solid var(--border); text-align:center; } .auth-character { width:96px; height:96px; margin:0 auto 16px; } .auth-intro h1 { font-size:30px; } }
+@media (max-width:900px) { .signed-out main { padding:24px 18px 48px; } .auth-layout { grid-template-columns:1fr; max-width:440px; margin:0 auto; } .auth-intro { padding:24px; border-right:0; border-bottom:1px solid var(--border); text-align:center; } .auth-intro-heading { flex-direction:column-reverse; align-items:center; } .auth-character { width:96px; height:96px; } .auth-intro h1 { font-size:30px; } }
 .auth-card h2 { margin:0 0 16px; }
 .auth-card p { color:var(--muted); font-size:14px; }
 .auth-card input { width:100%; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
