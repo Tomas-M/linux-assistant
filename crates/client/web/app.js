@@ -1150,21 +1150,29 @@ new ResizeObserver(()=>
     else renderScrollButton();
 }).observe(elements['composer-wrap']);
 watch();
-// Either startup request may finish first; focus when the email field becomes available.
-api('state').then(async current=>
+// Initial sign-in rendering waits for both local state and available authentication methods.
+const initialState=api('state').then(async current=>
 {
     state=current;
     render();
+    if (state.authenticated) document.body.classList.remove('initializing');
     if (!state.authenticated && state.sign_in)
     {
         socialLogin={...state.sign_in};
         elements['auth-status'].textContent='Waiting for '+providerNames[socialLogin.provider]+' sign-in…';
         renderLogin(); pollSocial();
     }
-    if (!state.authenticated && emailEnabled) elements.email.focus();
     if (state.authenticated && !view.busy)
     {
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
     }
 }).catch(error=>{elements.status.textContent=error.message;});
-api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (emailEnabled && !state?.authenticated) elements.email.focus(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
+const initialProviders=api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
+
+// Reveal the complete sign-in screen and focus without shifting its centered position.
+Promise.allSettled([initialState,initialProviders]).then(()=>
+{
+    render();
+    document.body.classList.remove('initializing');
+    if (emailEnabled && !state?.authenticated) elements.email.focus({preventScroll:true});
+});

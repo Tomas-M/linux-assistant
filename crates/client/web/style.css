@@ -4,6 +4,8 @@
 :root[data-theme=dark] { --warning:#efb58c; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); }
+/* Populate the initial layout before showing it, including asynchronous sign-in methods. */
+.initializing main { visibility:hidden; }
 button,input,select,textarea { font:inherit; color:inherit; }
 button { cursor:pointer; border:0.0625rem solid var(--border); background:var(--bg); padding:0.5625rem 0.9375rem; border-radius:0.625rem; transition:background .15s,border-color .15s; }
 button:hover { background:var(--surface); border-color:var(--muted); }
