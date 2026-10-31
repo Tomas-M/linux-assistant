@@ -1150,6 +1150,7 @@ new ResizeObserver(()=>
     else renderScrollButton();
 }).observe(elements['composer-wrap']);
 watch();
+// Either startup request may finish first; focus when the email field becomes available.
 api('state').then(async current=>
 {
     state=current;
@@ -1160,9 +1161,10 @@ api('state').then(async current=>
         elements['auth-status'].textContent='Waiting for '+providerNames[socialLogin.provider]+' sign-in…';
         renderLogin(); pollSocial();
     }
+    if (!state.authenticated && emailEnabled) elements.email.focus();
     if (state.authenticated && !view.busy)
     {
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
     }
 }).catch(error=>{elements.status.textContent=error.message;});
-api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
+api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (emailEnabled && !state?.authenticated) elements.email.focus(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});

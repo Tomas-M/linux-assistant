@@ -226,7 +226,7 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 .auth-card .primary { width:100%; margin-top:20px; font-weight:600; }
 #email-sign-in { display:grid; gap:12px; }
 #email { border-color:var(--muted); }
-#email:focus { border-color:var(--accent); }
+#email:focus { border-color:var(--accent); outline:none; }
 #email-sign-in .primary { margin-top:0; min-height:48px; }
 .auth-actions { display:flex; align-items:center; justify-content:space-between; margin-top:16px; font-size:13px; }
 .auth-actions button { padding:6px 0; }
