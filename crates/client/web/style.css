@@ -228,7 +228,7 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 .code-digits { display:flex; gap:8px; border:0; padding:0; margin:24px 0 0; min-width:0; }
 .code-digits input { min-width:0; flex:1; padding:12px 0; text-align:center; font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
 .code-digits input:nth-of-type(4) { margin-left:10px; }
-#auth-status { margin:16px 0 0; color:#ad5628; }
+#auth-status { margin:16px 0 0; color:#ad5628; text-align:center; }
 #auth-status:empty { display:none; }
 #development-code { margin:16px 0 0; }
 .editing-message { display:flex; align-items:center; justify-content:space-between; padding:0 8px 8px; color:var(--muted); font-size:13px; }
