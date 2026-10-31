@@ -497,13 +497,17 @@ async function loadCreditPacks()
         const result=await api('credit-packs');
         if (state.account?.email!==email) return;
         elements['credit-packs'].dataset.development=String(result.development);
-        for (const pack of result.packs)
+        for (const [index,pack] of result.packs.entries())
         {
-            const button=document.createElement('button'),credits=document.createElement('strong'),price=document.createElement('span');
+            const button=document.createElement('button'),icon=document.createElement('span'),amount=document.createElement('span'),credits=document.createElement('strong'),label=document.createElement('span'),price=document.createElement('span'),currency=document.createElement('span');
             button.type='button'; button.className='credit-pack'; button.dataset.priceId=pack.price_id;
-            credits.textContent=pack.credits+' credits';
-            price.textContent=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(Number(pack.usd))+' USD';
-            button.append(credits,price); elements['credit-packs'].append(button);
+            icon.className='credit-pack-icon'; setIcon(icon,['coins','layer-group','gem','rocket'][index%4]);
+            credits.textContent=pack.credits; label.textContent='credits';
+            amount.className='credit-pack-amount'; amount.append(credits,label);
+            price.className='credit-pack-price'; price.textContent=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(Number(pack.usd));
+            currency.textContent=' USD'; price.append(currency);
+            button.setAttribute('aria-label','Buy '+pack.credits+' credits for '+price.textContent);
+            button.append(icon,amount,price); elements['credit-packs'].append(button);
         }
         elements['credit-packs-status'].textContent=result.development?'Purchases are disabled in development mode.':result.packs.length?'Choose a pack to open checkout.':'No credit packs are currently available.';
         render();
