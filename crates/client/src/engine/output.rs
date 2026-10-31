@@ -18,13 +18,13 @@ fn preview(text: &str) -> String {
 impl Engine {
     /// Send one bounded result in the original conversation; retry never executes the command again.
     pub(super) fn finish_output(&mut self) -> Result<()> {
-        let record=self.processes.get(self.saved.pending_output.unwrap())?;
-        ensure!(record.finished_at.is_some() || record.background_pids.is_some(),"Command is still running");
-        self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:preview(&record.result()) });
+        let id=self.saved.pending_output.unwrap();
+        let output=self.processes.output(id)?;
+        self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:preview(&output.text) });
         self.saved.pending_output=None;
-        if let Err(error)=self.prepare(record.proposal.cwd.clone(),Uuid::new_v4()) {
+        if let Err(error)=self.prepare(output.cwd,Uuid::new_v4()) {
             self.saved.messages.pop();
-            self.saved.pending_output=Some(record.id);
+            self.saved.pending_output=Some(id);
             self.save()?;
             return Err(error);
         }
@@ -72,7 +72,7 @@ mod tests {
                         else { "printf 'run\\n' >> runs.txt; printf 'HEAD_MARKER\\n'; i=0; while [ $i -lt 10000 ]; do printf '世界🙂 '; i=$((i+1)); done; printf 'TAIL_ERROR\\n' >&2" }.into(),
                 });
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete {
-                    response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Fixture response".into(),command },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
+                    response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Fixture response".into(),command:command.map(Into::into) },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
                 }).unwrap())).into_response()
             }
         }));

@@ -166,7 +166,7 @@ mod tests {
         let pricing=crate::config::Config::default().pricing;
         let user=db.user("chain@example.test",None,1)?;
         let mut input=request();
-        let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { files:None, command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }) };
+        let command=AssistantReply { text:"Inspect a file".into(),command:Some(CommandProposal { files:None, command:"cat /etc/os-release".into(),cwd:"/tmp".into(),reason:"Identify OS".into() }.into()) };
         assert!(matches!(db.reserve(user,&input,"one",&pricing)?,Reservation::New));
         assert_eq!(db.balance(user)?,1);
         measured(&db,user,&input,6000,0,0)?;

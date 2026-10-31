@@ -1,10 +1,11 @@
 use std::{io::Read,path::{Path,PathBuf},time::Duration};
 use serde_json::{json,Value};
 
-pub struct Snapshot { path:PathBuf, before:Option<Option<Vec<u8>>> }
+#[derive(Clone)]
+pub struct Snapshot { path:PathBuf, before:Option<Option<std::sync::Arc<Vec<u8>>>> }
 
 /// Unknown/unreadable files stay unknown; absence is distinct from an empty file.
-fn contents(path:&Path)->Option<Option<Vec<u8>>> {
+fn contents(path:&Path)->Option<Option<std::sync::Arc<Vec<u8>>>> {
     let metadata=match std::fs::metadata(path) {
         Ok(metadata)=>metadata,
         Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Some(None),
@@ -13,7 +14,7 @@ fn contents(path:&Path)->Option<Option<Vec<u8>>> {
     if !metadata.is_file() || metadata.len()>1024*1024 { return None; }
     let mut bytes=Vec::new();
     std::fs::File::open(path).ok()?.take(1024*1024+1).read_to_end(&mut bytes).ok()?;
-    (bytes.len()<=1024*1024).then_some(Some(bytes))
+    (bytes.len()<=1024*1024).then_some(Some(std::sync::Arc::new(bytes)))
 }
 
 /// Inspect only the declared paths, with bounded reads and no recursive filesystem scan.

@@ -1,6 +1,8 @@
 use std::{path::{Path, PathBuf}, sync::{Arc,atomic::{AtomicBool,Ordering}}};
 use anyhow::{bail, ensure, Context, Result};
-use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, CommandProposal, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES};
+use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, LocalAction, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES};
+#[cfg(test)]
+use protocol::CommandProposal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -8,11 +10,12 @@ use crate::{processes::Processes, storage};
 mod output;
 mod presentation;
 mod social;
+mod commands;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Settings { pub backend: String, pub commands_enabled: bool }
 #[derive(Clone, Deserialize, Serialize)]
-pub struct PendingCommand { pub id: Uuid, pub proposal: CommandProposal }
+pub struct PendingCommand { pub id: Uuid, pub proposal: LocalAction, pub cwd:String }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Saved {
     pub conversation_id: Uuid,
@@ -59,7 +62,9 @@ impl Engine {
     /// Never expose authentication tokens or pending request internals to browser state.
     pub fn state(&self) -> Value {
         json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":protocol::display_messages(&self.saved.messages),
-            "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),"pending":self.saved.pending,"retry_available":self.saved.request.is_some() || self.saved.pending_output.is_some(),"account":self.account})
+            "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),
+            "pending":self.saved.pending.as_ref().map(|pending|json!({"id":pending.id,"proposal":{"type":match pending.proposal { LocalAction::ExecCommand { .. }=>"exec_command",LocalAction::WriteStdin { .. }=>"write_stdin",LocalAction::StopProcess { .. }=>"stop_process" },"command":pending.proposal.description(),"cwd":pending.cwd,"reason":pending.proposal.reason()}})),
+            "retry_available":self.saved.request.is_some() || self.saved.pending_output.is_some(),"account":self.account})
     }
 
     /// Keep all state transitions durable before performing external side effects.
@@ -242,8 +247,15 @@ impl Engine {
         self.saved.messages.extend(result.steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
         self.saved.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
         self.saved.committed=result.revision;
-        self.saved.pending = result.reply.command.filter(|_|self.saved.settings.commands_enabled)
-            .map(|proposal|PendingCommand { id:Uuid::new_v4(),proposal });
+        let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
+        self.saved.pending = result.reply.command.filter(|action|self.saved.settings.commands_enabled || action.is_poll())
+            .map(|proposal| {
+                let cwd=match &proposal {
+                    LocalAction::ExecCommand { workdir,.. }=>workdir.clone(),
+                    LocalAction::WriteStdin { session_id,.. }|LocalAction::StopProcess { session_id,.. }=>self.processes.get(*session_id).map(|record|record.proposal.cwd).unwrap_or(cwd),
+                };
+                PendingCommand { id:Uuid::new_v4(),proposal,cwd }
+            });
         self.saved.request = None;
         if self.controls.stopped.load(Ordering::SeqCst) && self.saved.pending.take().is_some() {
             self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:"The user stopped the task; the proposed command was not executed.".into() });
@@ -299,41 +311,6 @@ impl Engine {
         bail!("Connection ended before completion. Retry to recover the same request.")
     }
 
-    /// Consume the exact displayed proposal once; callers never supply executable text.
-    pub async fn decide(&mut self, id: Uuid, approve: bool) -> Result<Value> {
-        let pending = self.saved.pending.as_ref().context("No command awaiting approval")?;
-        ensure!(pending.id==id,"This approval is stale");
-        ensure!(!approve || self.saved.settings.commands_enabled,"Command execution is disabled");
-        let pending = self.saved.pending.take().unwrap();
-        if approve {
-            self.live.0.send_modify(|view|view["commands"].as_array_mut().unwrap().push(json!({"after":self.saved.messages.len(),"id":pending.id,"command":pending.proposal.command,"cwd":pending.proposal.cwd})));
-        }
-        self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:if approve {
-            format!("User approved command: {}\nDirectory: {}\nExecution started. If no result follows, its outcome is unknown; do not automatically rerun.",pending.proposal.command,pending.proposal.cwd)
-        } else { "The user declined the command. It was not executed.".into() } });
-        if approve {
-            self.saved.pending_output=Some(pending.id);
-            self.save()?;
-            self.live.activity(&format!("Running a local command: {}",pending.proposal.reason),None);
-            let proposal=pending.proposal.clone();
-            let before=tokio::task::spawn_blocking(move ||crate::changes::capture(&proposal.cwd,proposal.files.as_deref().unwrap_or_default())).await?;
-            self.processes.run(pending.id,&pending.proposal).await?;
-            let changes=tokio::task::spawn_blocking(move ||crate::changes::compare(before)).await?;
-            self.live.0.send_modify(|view| {
-                if let Some(command)=view["commands"].as_array_mut().unwrap().iter_mut().find(|command|command["id"]==pending.id.to_string()) { command["changes"]=json!(changes); }
-            });
-            self.save()?;
-        } else {
-            self.prepare(pending.proposal.cwd,Uuid::new_v4())?;
-        }
-        if self.controls.stopped.load(Ordering::SeqCst) {
-            if self.saved.pending_output.is_some() { self.finish_output()?; }
-            self.saved.request=None;
-            self.save()?;
-            return Ok(self.state());
-        }
-        self.retry().await
-    }
 
 }
 
@@ -475,7 +452,7 @@ mod tests {
                     Platform::Windows => "Add-Content -Encoding UTF8 -LiteralPath 'approval.txt' -Value 'approved'",
                 }.into(),cwd:request.cwd,reason:"Write a test marker".into(),
             });
-            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Test reply".into(),command },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
+            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Test reply".into(),command:command.map(Into::into) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
         }));
         let server = tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         engine.saved.token = Some("test-session".into());
@@ -515,7 +492,7 @@ mod tests {
     async fn disabling_commands_invalidates_proposals() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let mut engine = Engine::open(dir.path(),"http://127.0.0.1:8787").await?;
-        engine.saved.pending = Some(PendingCommand { id:Uuid::new_v4(),proposal:CommandProposal { files:None,  command:"true".into(),cwd:"/tmp".into(),reason:"test".into() } });
+        engine.saved.pending = Some(PendingCommand { id:Uuid::new_v4(),cwd:"/tmp".into(),proposal:CommandProposal { files:None,  command:"true".into(),cwd:"/tmp".into(),reason:"test".into() }.into() });
         engine.settings(false)?;
         assert!(engine.saved.pending.is_none());
         assert!(!engine.state().to_string().contains("poll_secret"));

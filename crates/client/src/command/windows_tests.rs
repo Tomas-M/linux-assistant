@@ -66,7 +66,7 @@ async fn kills_process_tree_on_stop_and_cancellation() -> Result<()> {
         let record=Arc::new(Mutex::new(Record::new(uuid::Uuid::new_v4(),proposal.clone())));
         let running=record.clone();
         let (stop,receiver)=tokio::sync::watch::channel(false);
-        let task=tokio::spawn(async move { execute(&proposal,running,receiver,24_000,None).await });
+        let task=tokio::spawn(async move { execute(&proposal,running,receiver,24_000,None,Arc::new(Default::default()),None).await });
         let child = match descendant(dir.path()).await {
             Ok(child) => child,
             Err(error) => { task.abort(); let _ = task.await; return Err(error); }

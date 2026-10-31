@@ -12,7 +12,7 @@ mod windows_tests;
 
 /// Refuse unsupported hosts rather than executing with a guessed shell.
 #[cfg(not(any(target_os = "linux",windows)))]
-pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize, _completed:Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
+pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize, _completed:Option<tokio::sync::oneshot::Sender<()>>, _input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, _timeout_ms:Option<u64>) -> Result<()> {
     anyhow::bail!("Local command execution requires Linux or Windows")
 }
 
@@ -21,7 +21,7 @@ pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _
 pub async fn run(proposal: &CommandProposal) -> Result<String> {
     let record=Arc::new(Mutex::new(Record::new(uuid::Uuid::new_v4(),proposal.clone())));
     let (_cancel,receiver)=tokio::sync::watch::channel(false);
-    execute(proposal,record.clone(),receiver,24_000,None).await?;
+    execute(proposal,record.clone(),receiver,24_000,None,Arc::new(Default::default()),None).await?;
     let mut output=record.lock().unwrap().result();
     if record.lock().unwrap().stdout_bytes>24_000 { output.push_str("\n[output truncated]"); }
     if record.lock().unwrap().stderr_bytes>24_000 { output.push_str("\n[output truncated]"); }
@@ -30,10 +30,11 @@ pub async fn run(proposal: &CommandProposal) -> Result<String> {
 
 /// Stream into the independent process record while retaining native process-tree ownership.
 #[cfg(any(target_os = "linux",windows))]
-pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize, completed:Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
+pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize, completed:Option<tokio::sync::oneshot::Sender<()>>, input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, timeout_ms:Option<u64>) -> Result<()> {
     use std::{process::Stdio, time::Duration};
     use tokio::process::Command;
     anyhow::ensure!(std::path::Path::new(&proposal.cwd).is_absolute(),"Command directory must be absolute");
+    let deadline=timeout_ms.map(|timeout|std::time::Instant::now().checked_add(Duration::from_millis(timeout)).ok_or_else(||anyhow::anyhow!("Execution timeout is too large"))).transpose()?;
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = Command::new("/bin/sh");
@@ -51,7 +52,7 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
             .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         command
     };
-    command.current_dir(&proposal.cwd).stdin(Stdio::null())
+    command.current_dir(&proposal.cwd).stdin(Stdio::piped())
         .stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     for (key,_) in std::env::vars_os() {
         if key.to_string_lossy().to_ascii_uppercase().starts_with("LINUX_ASSISTANT_") { command.env_remove(key); }
@@ -62,6 +63,7 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
         record.arguments=command.as_std().get_args().map(|arg|arg.to_string_lossy().into_owned()).collect();
     }
     let mut child = command.spawn()?;
+    *input.lock().await=child.stdin.take();
     record.lock().unwrap().pid=child.id();
     #[cfg(target_os = "linux")]
     let mut group = linux::ProcessGroup::contain(&child)?;
@@ -76,6 +78,10 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
     captures.spawn(async move { capture(stderr,err_record,true,output_limit).await });
     let status = tokio::select! {
         status=child.wait() => Some(status),
+        _=async { match deadline { Some(deadline)=>tokio::time::sleep_until(deadline.into()).await,None=>std::future::pending().await } }=> {
+            record.lock().unwrap().error=Some(format!("Execution timed out after {} ms; command process tree terminated.",timeout_ms.unwrap()));
+            None
+        }
         _=stopped(&mut cancel) => {
             record.lock().unwrap().error=Some("Stopped by user; command process tree terminated.".into());
             None
@@ -146,6 +152,11 @@ async fn capture(mut stream: impl tokio::io::AsyncRead + Unpin, record: Arc<Mute
         let keep = count.min(limit.saturating_sub(saved.len()));
         saved.extend_from_slice(&buffer[..keep]);
         let mut record=record.lock().unwrap();
+        // A separate rolling tail lets session polling see fresh output after the UI prefix reaches its cap.
+        let tail=&mut record.tails[usize::from(stderr)];
+        tail.extend(&buffer[..count]);
+        let excess=tail.len().saturating_sub(64*1024);
+        tail.drain(..excess);
         if stderr {
             if keep>0 { record.stderr=String::from_utf8_lossy(&saved).into_owned(); }
             record.stderr_bytes+=count;

@@ -167,7 +167,7 @@ fn demo_uses_client_platform() {
         request.platform=platform;
         request.commands_enabled=true;
         request.messages[0].text="demo command".into();
-        assert!(demo(&request).command.unwrap().command.starts_with(prefix));
+        assert!(demo(&request).command.unwrap().description().starts_with(prefix));
         request.commands_enabled=false;
         assert!(demo(&request).command.is_none());
     }

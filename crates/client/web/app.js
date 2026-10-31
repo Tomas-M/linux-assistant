@@ -2,7 +2,8 @@
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
 let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
 const pendingIds=new Set(), messageRows=[], completionRows=[];
-let queueKey='', summaryKey='', steeringKey='';
+const progressViews=new WeakMap(), steeringRows=new Map();
+let queueKey='', steeringKey='';
 let socialLogin, enabledProviders=[], emailEnabled=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
@@ -12,6 +13,83 @@ function setIcon(button,name)
     if (button.dataset.icon===name) return;
     button.dataset.icon=name;
     button.innerHTML='<svg aria-hidden="true"><use href="#icon-'+name+'"/></svg>';
+}
+
+// Match Codex's latest-summary-line status title without treating Markdown punctuation as protocol events.
+function progressTitle(parts)
+{
+    for (const part of [...parts].reverse())
+    {
+        if (part.kind!=='reasoning') continue;
+        for (let line of part.text.split(/\r?\n/u).reverse())
+        {
+            line=line.trim();
+            if (!line || line.startsWith('<!--')) continue;
+            line=line.replace(/^#+\s*/u,'');
+            if (line.startsWith('**'))
+            {
+                const end=line.indexOf('**',2);
+                if (end<0) continue;
+                line=line.slice(2,end)+line.slice(end+2);
+            }
+            return Array.from(line).slice(0,160).join('');
+        }
+    }
+    return '';
+}
+
+// Reasoning before the first visible commentary remains attached to the preceding command group.
+function foldedProgressCount(parts)
+{
+    if (state.messages.at(-1)?.role!=='tool' || (view.steering || []).some(input=>input.message_index===undefined)) return 0;
+    const commentary=parts.findIndex(part=>part.kind==='commentary' && part.text.trim());
+    return commentary<0?parts.length:commentary;
+}
+
+// Reuse disclosure nodes while typed progress streams; commentary and accepted steering break reasoning groups.
+function renderProgress(container,parts,active=false,steers=[])
+{
+    let rows=progressViews.get(container);
+    if (!rows) { rows=new Map(); progressViews.set(container,rows); }
+    const groups=[];
+    for (let index=0;index<=parts.length;index++)
+    {
+        for (const input of steers.filter(input=>input.progress_after===index)) groups.push({key:'steer:'+input.id,kind:'steer',input});
+        const part=parts[index];
+        if (!part?.text.trim()) continue;
+        const previous=groups.at(-1);
+        if (part.kind==='reasoning' && previous?.kind==='reasoning') previous.parts.push(part);
+        else groups.push({key:part.id,kind:part.kind,parts:[part]});
+    }
+    const present=new Set();
+    groups.forEach((group,index)=>
+    {
+        let row=rows.get(group.key);
+        if (!row)
+        {
+            const element=group.kind==='steer'?steeringRows.get(group.input.id):document.createElement(group.kind==='reasoning'?'details':'div');
+            let label,body=element;
+            if (group.kind==='reasoning')
+            {
+                element.className='past-progress';
+                const summary=document.createElement('summary');
+                summary.innerHTML='<span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
+                label=summary.querySelector('span'); body=document.createElement('div'); body.className='progress-body answer';
+                element.append(summary,body);
+            }
+            else if (group.kind!=='steer') element.className='answer progress-commentary';
+            row={element,label,body}; rows.set(group.key,row);
+        }
+        if (group.kind!=='steer') renderAnswer(row.body,group.parts.map(part=>part.text).join('\n\n'));
+        if (row.label)
+        {
+            row.label.textContent=progressTitle(group.parts) || 'Thinking…';
+            row.label.classList.toggle('working',active && index===groups.length-1);
+        }
+        present.add(group.key);
+        if (container.children[index]!==row.element) container.insertBefore(row.element,container.children[index] || null);
+    });
+    for (const [key,row] of rows) if (!present.has(key)) { if (row.element.parentElement===container) row.element.remove(); rows.delete(key); }
 }
 document.documentElement.dataset.theme=localStorage.getItem('assistant-theme') || 'light';
 setIcon(elements.theme,document.documentElement.dataset.theme==='dark'?'sun':'moon');
@@ -95,6 +173,10 @@ function render()
     if (state.pending)
     {
         const proposal=state.pending.proposal;
+        const labels={exec_command:['Run this on your computer?','Run command','terminal'],write_stdin:['Send input to this command?','Send input','send'],stop_process:['Stop this command?','Stop command','stop']}[proposal.type];
+        elements['proposal-title'].textContent=labels[0];
+        elements.approve.firstChild.textContent=labels[1]+' ';
+        elements.approve.querySelector('use').setAttribute('href','#icon-'+labels[2]);
         elements.command.textContent=proposal.command;
         elements.cwd.textContent=proposal.cwd;
         elements.reason.textContent=proposal.reason;
@@ -109,10 +191,21 @@ function render()
     // Reuse unchanged messages so expanded output, text selection and keyboard focus survive new replies.
     while (messageRows.length>state.messages.length) messageRows.pop().element.remove();
     const commands=new Map(view.commands.map(command=>[command.after,command]));
+    // Empty assistant messages and reasoning do not split consecutive command activity.
+    const commandRow=index=>
+    {
+        const message=state.messages[index];
+        if (!message) return false;
+        if (message.role==='tool') return true;
+        if (message.role!=='assistant' || message.text.trim()) return false;
+        const commentary=(progressByMessage.get(index) || []).some(step=>step.summaries.some(part=>part.kind==='commentary' && part.text.trim()));
+        const adjacent=state.messages[index-1]?.role==='tool' || state.messages[index+1]?.role==='tool';
+        return adjacent && !commentary;
+    };
     state.messages.forEach((message,index)=>
     {
         const previous=messageRows[index];
-        if (message.role==='tool')
+        if (commandRow(index))
         {
             if (!previous || previous.role!=='tool')
             {
@@ -121,14 +214,14 @@ function render()
                 else elements.messages.append(element);
                 messageRows[index]={element,role:'tool'};
             }
-            if (state.messages[index-1]?.role==='tool')
+            if (commandRow(index-1))
             {
                 if (messageRows[index].details) { messageRows[index].element.replaceChildren(); delete messageRows[index].details; delete messageRows[index].commandKey; }
                 return;
             }
             let end=index+1;
-            while (state.messages[end]?.role==='tool') end++;
-            renderCommandGroup(messageRows[index],index,end,commands);
+            while (commandRow(end)) end++;
+            renderCommandGroup(messageRows[index],index,end,commands,progressByMessage);
             return;
         }
         const progress=progressByMessage.get(index) || [], key=JSON.stringify([progress,message.attachments]);
@@ -137,21 +230,9 @@ function render()
         if (previous) previous.element.replaceWith(group);
         else elements.messages.append(group);
         messageRows[index]={element:group,text:message.text,role:message.role,progress:key,thinking:[]};
-        for (const step of progress.filter(step=>step.summaries.length))
-        {
-            const details=document.createElement('details'), summary=document.createElement('summary');
-            details.className='past-progress';
-            summary.innerHTML='<span>Thinking'+(step.attempt>1?' · attempt '+step.attempt:'')+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
-            details.append(summary);
-            for (const part of step.summaries)
-            {
-                const p=document.createElement('p');
-                p.textContent=part.text;
-                details.append(p);
-            }
-            group.append(details);
-            messageRows[index].thinking.push(details);
-        }
+        const progressContainer=document.createElement('div');
+        renderProgress(progressContainer,progress.flatMap(step=>step.summaries));
+        if (progressContainer.hasChildNodes()) { group.append(progressContainer); messageRows[index].thinking=[progressContainer]; }
         const article=document.createElement('article');
         article.className=message.role;
         const text=document.createElement('div');
@@ -177,26 +258,18 @@ function render()
     });
     renderCompactions();
     renderCompletions();
-    const activity=view.activity;
-    const groupedCommand=activity?.progress===null && state.messages.at(-1)?.role==='tool';
+    const activity=view.activity, parts=activity?.progress?.summaries || [], folded=foldedProgressCount(parts);
+    const steers=(view.steering || []).filter(input=>input.message_index===undefined);
+    const commandTail=state.messages.at(-1)?.role==='tool' && !steers.length;
+    const groupedCommand=commandTail && !parts.slice(folded).length && !activity?.progress?.text;
     elements.activity.hidden=!activity || !view.busy || groupedCommand;
     elements['activity-label'].classList.toggle('working',view.busy);
     if (activity)
     {
         elements['activity-label'].textContent=activity.label;
         elements['activity-icon'].toggleAttribute('hidden',activity.progress!==null);
-        const summaries=activity.progress?.summaries || [], key=JSON.stringify(summaries);
-        if (key!==summaryKey)
-        {
-            summaryKey=key;
-            elements.summaries.replaceChildren();
-            for (const part of summaries)
-            {
-                const p=document.createElement('p');
-                p.textContent=part.text;
-                elements.summaries.append(p);
-            }
-        }
+        elements['activity-label'].parentElement.hidden=parts.some(part=>part.text.trim()) && !activity.progress?.activity;
+        renderProgress(elements.summaries,parts.slice(folded),view.busy,steers);
         renderAnswer(elements['stream-text'],activity.progress?.text || '');
         elements['stream-text'].classList.toggle('streaming',view.busy);
     }
@@ -206,7 +279,7 @@ function render()
 }
 
 // Adjacent command events share a stable disclosure; conversation text starts a new group.
-function renderCommandGroup(row,start,end,commands)
+function renderCommandGroup(row,start,end,commands,progressByMessage)
 {
     if (!row.details)
     {
@@ -215,45 +288,87 @@ function renderCommandGroup(row,start,end,commands)
         const summary=document.createElement('summary');
         summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
         row.label=summary.querySelector('span');
-        row.activity=document.createElement('p');
-        row.activity.className='command-activity';
         row.body=document.createElement('div');
-        row.details.append(summary,row.activity,row.body);
+        row.details.append(summary,row.body);
         row.element.append(row.details);
     }
-    const active=view.busy && end===state.messages.length && commands.has(end-1);
     const grouped=view.commands.filter(command=>command.after>=start && command.after<end);
-    row.label.textContent='Command details';
-    if (grouped.length) row.label.textContent=active?'Running commands…':'Ran commands';
-    row.label.classList.toggle('working',active);
-    const activity=active && view.activity?.progress===null?view.activity.label:'';
-    row.activity.hidden=!activity;
-    row.activity.textContent=activity;
+    const parts=[];
+    for (let index=start;index<end;index++) parts.push(...(progressByMessage.get(index) || []).flatMap(step=>step.summaries));
+    const live=view.activity?.progress?.summaries || [], folded=foldedProgressCount(live);
+    const tail=end===state.messages.length;
+    if (tail) parts.push(...live.slice(0,folded));
+    const separateProgress=live.length>folded || !!view.activity?.progress?.text;
+    const active=view.busy && tail && !separateProgress;
     const changed=grouped.flatMap(command=>command.changes || []);
-    if (changed.length) row.label.textContent=active?'Editing files, running commands…':'Edited files, ran commands';
+    let label='Command details';
+    if (grouped.length) label=active?'Running commands…':'Ran commands';
+    if (changed.length) label=active?'Editing files, running commands…':'Edited files, ran commands';
+    const reason=grouped.at(-1)?.reason?.trim();
+    row.label.textContent=progressTitle(parts) || (active && reason && reason.length<=160?reason:label);
+    row.label.classList.toggle('working',active);
     row.details.querySelector('summary use').setAttribute('href',changed.length?'#icon-edit':'#icon-terminal');
-    if (!row.actions) row.actions=new Map();
-    const present=new Set();
+    row.details.querySelector('summary>svg:first-child').toggleAttribute('hidden',!grouped.length);
+    row.element.hidden=!parts.length && !grouped.length && !state.messages.slice(start,end).some(message=>message.role==='tool');
+    if (!row.actions) { row.actions=new Map(); row.progressRows=new Map(); }
+    const present=new Set(), progressKeys=new Set(), sessions=new Map();
+    for (const command of grouped)
+    {
+        if (!sessions.has(command.id)) sessions.set(command.id,{first:command.after,results:[],changes:new Map()});
+        const session=sessions.get(command.id);
+        session.command=command;
+        const result=state.messages[command.after+1];
+        if (result?.role==='tool' && !commands.has(command.after+1)) session.results.push(result.text);
+        for (const change of command.changes || []) session.changes.set(change.path,change);
+    }
     row.actionPosition=0;
     for (let index=start;index<end;index++)
     {
+        const progress=(progressByMessage.get(index) || []).flatMap(step=>step.summaries);
+        if (progress.some(part=>part.text.trim()))
+        {
+            const key='progress:'+index;
+            progressKeys.add(key); updateGroupProgress(row,key,progress);
+        }
         const command=commands.get(index);
-        const result=command && index+1<end && !commands.has(index+1)?state.messages[++index].text:'';
         if (command)
         {
-            for (const change of command.changes || [])
+            const session=sessions.get(command.id);
+            if (session.first!==index) continue;
+            for (const change of session.changes.values())
             {
                 const key=command.id+':'+change.path;
                 present.add(key);
                 updateAction(row,key,'edit',change.kind+' '+change.path,change.diff,null,change);
             }
+            present.add(command.id);
+            updateAction(row,command.id,'terminal',(session.command.running===false?'Ran ':'Running ')+command.command,
+                command.command+'\nDirectory: '+command.cwd+'\n\n'+(session.results.join('\n\n') || 'Waiting for the command result…'),command.id);
         }
-        const key=command?.id || 'output:'+index;
-        present.add(key);
-        updateAction(row,key,'terminal',command?(result?'Ran ':'Running ')+command.command:'Command result',
-            command?command.command+'\nDirectory: '+command.cwd+'\n\n'+(result || 'Waiting for the command result…'):state.messages[index].text,command?.id);
+        else if (state.messages[index].role==='tool' && !commands.has(index-1))
+        {
+            const key='output:'+index;
+            present.add(key);
+            updateAction(row,key,'terminal','Command result',state.messages[index].text);
+        }
+    }
+    if (tail && folded)
+    {
+        const key='progress:'+end;
+        progressKeys.add(key); updateGroupProgress(row,key,live.slice(0,folded));
     }
     for (const [key,item] of row.actions) if (!present.has(key)) { item.element.remove(); row.actions.delete(key); }
+    for (const [key,element] of row.progressRows) if (!progressKeys.has(key)) { element.remove(); row.progressRows.delete(key); }
+}
+
+// Place reasoning between the commands it accompanied, retaining its disclosure when live items commit.
+function updateGroupProgress(row,key,parts)
+{
+    let element=row.progressRows.get(key);
+    if (!element) { element=document.createElement('div'); row.progressRows.set(key,element); }
+    renderProgress(element,parts);
+    const position=row.body.children[row.actionPosition++];
+    if (position!==element) row.body.insertBefore(element,position || null);
 }
 
 // Keep each nested action open and stable while its result or verified diff arrives.
@@ -337,10 +452,10 @@ function renderCompletions()
             summary.firstChild.textContent='Worked for '+duration;
             work.append(summary,body); element.append(work,answer);
             let notes;
-            if (run.summaries.length)
+            if (run.summaries.some(part=>part.text.trim()))
             {
                 notes=document.createElement('div'); notes.className='summaries';
-                for (const part of run.summaries) { const paragraph=document.createElement('p'); paragraph.textContent=part.text; notes.append(paragraph); }
+                renderProgress(notes,run.summaries);
             }
             if (run.partial)
             {
@@ -840,9 +955,11 @@ function renderComposer()
     if (steering!==steeringKey)
     {
         steeringKey=steering;
-        elements['steering-messages'].replaceChildren();
+        const present=new Set(inputs.map(input=>input.id));
+        for (const [id,element] of steeringRows) if (!present.has(id)) { element.remove(); steeringRows.delete(id); }
         for (const input of inputs)
         {
+            if (steeringRows.has(input.id)) continue;
             const group=document.createElement('div'), message=document.createElement('article'), text=document.createElement('div');
             group.className='user-message'; message.className='user'; text.className='answer'; text.textContent=input.text;
             message.append(text);
@@ -850,7 +967,7 @@ function renderComposer()
             const actions=document.createElement('div'), copy=document.createElement('button');
             actions.className='prompt-actions'; copy.className='icon-button copy-prompt'; copy.dataset.copySteering=input.id;
             copy.title='Copy message'; copy.setAttribute('aria-label','Copy message'); setIcon(copy,'copy');
-            actions.append(copy); group.append(message,actions); elements['steering-messages'].append(group);
+            actions.append(copy); group.append(message,actions); steeringRows.set(input.id,group); elements['steering-messages'].append(group);
         }
     }
     elements['queued-messages'].hidden=!queue.some(input=>!input.editing);

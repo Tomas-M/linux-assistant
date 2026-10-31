@@ -1,5 +1,5 @@
 use anyhow::{ensure, Result};
-use protocol::{ChatEvent, Progress, ProgressText};
+use protocol::{ChatEvent, Progress, ProgressText,ProgressKind};
 use serde_json::Value;
 use tokio::sync::watch;
 use std::time::{Duration,Instant};
@@ -40,15 +40,21 @@ impl Reporter {
                 self.json.clear();
                 self.snapshot.text.clear();
             }
-            Some("item/reasoning/summaryTextDelta") => {
-                let id=format!("{}:{}",params["itemId"].as_str().unwrap_or_default(),params["summaryIndex"]);
+            Some("item/reasoning/summaryPartAdded"|"item/reasoning/summaryTextDelta") => {
+                let item=params["itemId"].as_str().unwrap_or_default();
+                let id=format!("{item}:{}",params["summaryIndex"]);
                 let delta=params["delta"].as_str().unwrap_or_default();
                 ensure!(self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>()+delta.len()<=64_000,"Progress summary too long");
-                if let Some(part)=self.snapshot.summaries.iter_mut().find(|part|part.id==id) { part.text.push_str(delta); }
-                else {
-                    ensure!(self.snapshot.summaries.len()<128,"Too many progress summaries");
-                    self.snapshot.summaries.push(ProgressText { id,text:delta.into() });
+                self.part(&id,item,ProgressKind::Reasoning)?.text.push_str(delta);
+            }
+            Some("item/completed") if params["item"]["type"]=="reasoning"=> {
+                let item=params["item"]["id"].as_str().unwrap_or_default();
+                for (index,text) in params["item"]["summary"].as_array().into_iter().flatten().enumerate() {
+                    let part=self.part(&format!("{item}:{index}"),item,ProgressKind::Reasoning)?;
+                    part.text=text.as_str().unwrap_or_default().into();
+                    part.completed=true;
                 }
+                for part in self.snapshot.summaries.iter_mut().filter(|part|part.item_id==item) { part.completed=true; }
             }
             Some("item/agentMessage/delta") => {
                 let id=params["itemId"].as_str().unwrap_or_default();
@@ -58,21 +64,18 @@ impl Reporter {
                 self.json.push_str(delta);
                 if self.commentary {
                     ensure!(self.json.len()<=16_000,"Progress commentary too long");
-                    if let Some(part)=self.snapshot.summaries.iter_mut().find(|part|part.id==id) { part.text=self.json.clone(); }
-                    else {
-                        ensure!(self.snapshot.summaries.len()<128,"Too many progress summaries");
-                        self.snapshot.summaries.push(ProgressText { id:id.into(),text:self.json.clone() });
-                    }
+                    let text=self.json.clone();
+                    self.part(id,id,ProgressKind::Commentary)?.text=text;
                 } else { self.snapshot.text=text_prefix(&self.json).unwrap_or_default(); }
             }
             Some("item/completed") if params["item"]["type"]=="agentMessage" => {
                 let text=params["item"]["text"].as_str().unwrap_or_default();
                 ensure!(text.len()<=512_000,"Streamed answer too long");
                 if params["item"]["phase"]=="commentary" {
-                    ensure!(text.len()<=16_000 && self.snapshot.summaries.len()<128,"Progress commentary too long");
+                    ensure!(text.len()<=16_000,"Progress commentary too long");
                     let id=params["item"]["id"].as_str().unwrap_or_default();
-                    if let Some(part)=self.snapshot.summaries.iter_mut().find(|part|part.id==id) { part.text=text.into(); }
-                    else { self.snapshot.summaries.push(ProgressText { id:id.into(),text:text.into() }); }
+                    let part=self.part(id,id,ProgressKind::Commentary)?;
+                    part.text=text.into(); part.completed=true;
                     self.snapshot.text.clear();
                 } else { self.snapshot.text=text_prefix(text).unwrap_or_default(); }
             }
@@ -82,6 +85,14 @@ impl Reporter {
         ensure!(self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>()<=64_000,"Progress summary too long");
         self.publish(matches!(event["method"].as_str(),Some("item/started"|"item/completed")));
         Ok(())
+    }
+
+    /// Preserve native item identity, kind and section ordering instead of flattening commentary into reasoning.
+    fn part(&mut self,id:&str,item:&str,kind:ProgressKind)->Result<&mut ProgressText> {
+        if let Some(index)=self.snapshot.summaries.iter().position(|part|part.id==id) { return Ok(&mut self.snapshot.summaries[index]); }
+        ensure!(self.snapshot.summaries.len()<128,"Too many progress summaries");
+        self.snapshot.summaries.push(ProgressText { id:id.into(),item_id:item.into(),kind,completed:false,text:String::new() });
+        Ok(self.snapshot.summaries.last_mut().unwrap())
     }
 
     /// Coalesce token bursts to ten snapshots per second; stage changes bypass the delay.

@@ -102,7 +102,7 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     tokio::select! {
         result=axum::serve(listener,router(state)).into_future() => result?,
         _=async { tokio::select! { _=stop.notified()=>{}, _=tokio::signal::ctrl_c()=>{} } } => {
-            processes.stop_foreground();
+            processes.stop_foreground(None);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
@@ -262,8 +262,13 @@ async fn steer(State(state):State<Local>,Json(input):Json<protocol::Steering>)->
 fn record_steering(state:&Local,input:&protocol::Steering) {
     state.live.0.send_modify(|view| {
         if view["busy"]==true {
+            let progress_after=view["activity"]["progress"]["summaries"].as_array().map_or(0,Vec::len);
             let inputs=view["steering"].as_array_mut().unwrap();
-            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) { inputs.push(protocol::display_messages(&[input])[0].clone()); }
+            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) {
+                let mut value=protocol::display_messages(&[input])[0].clone();
+                value["progress_after"]=json!(progress_after);
+                inputs.push(value);
+            }
         }
     });
 }
@@ -271,7 +276,13 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
 async fn interrupt(State(state):State<Local>)->LocalResult {
     state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
     state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
-    state.processes.stop_foreground();
+    let ids={
+        let view=state.live.0.borrow();
+        let start=view["runs"].as_array().and_then(|runs|runs.last()).filter(|run|run["finished_at"].is_null()).and_then(|run|run["start"].as_u64()).unwrap_or(u64::MAX);
+        view["commands"].as_array().unwrap().iter().filter(|command|command["id"]==command["action_id"])
+            .filter(|command|command["after"].as_u64().is_some_and(|after|after>=start)).filter_map(|command|command["id"].as_str()?.parse().ok()).collect::<Vec<Uuid>>()
+    };
+    state.processes.stop_foreground(Some(&ids));
     state.controls.interrupt().await?;
     Ok(Json(json!({"ok":true})))
 }
@@ -323,7 +334,7 @@ async fn run(state: Local, operation: Operation) -> LocalResult {
             loop {
                 if state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { break; }
                 if let Some(pending)=engine.saved.pending.clone() {
-                    if !state.full_access.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                    if !state.full_access.load(std::sync::atomic::Ordering::SeqCst) && !pending.proposal.is_poll() { break; }
                     engine.decide(pending.id,true).await?;
                     continue;
                 }
@@ -338,6 +349,7 @@ async fn run(state: Local, operation: Operation) -> LocalResult {
         state.live.state(engine.state());
         state.live.0.send_modify(|view| {
             view["busy"]=json!(false);
+            view["can_steer"]=json!(false);
             view["steering"]=json!([]);
             view["error"]=json!(result.as_ref().err().map(ToString::to_string));
             if result.is_ok() { view["activity"]=Value::Null; }
@@ -399,7 +411,7 @@ mod tests {
             let proposal=protocol::CommandProposal { files:None, cwd:request.cwd,reason:"Write one marker".into(),
                 command:if cfg!(windows) { "Add-Content -Encoding UTF8 -LiteralPath 'runs.txt' -Value 'once'; Start-Sleep -Milliseconds 700" }
                     else { "printf 'once\\n' >> runs.txt; sleep 0.7" }.into() };
-            let response=protocol::ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
+            let response=protocol::ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal.into()) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });

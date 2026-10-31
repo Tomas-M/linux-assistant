@@ -9,7 +9,7 @@ use crate::{storage,stream::Live};
 pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
-pub struct Controls { pub stopped:AtomicBool, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
+pub struct Controls { pub stopped:AtomicBool, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
 pub struct Active(Arc<Controls>);
 
 impl Controls {
@@ -17,7 +17,7 @@ impl Controls {
     pub fn open(directory:&Path,live:Live)->Result<Arc<Self>> {
         let path=directory.join("queue.json");
         let queue=if path.exists() { storage::read(&path)? } else { Vec::new() };
-        let controls=Arc::new(Self { stopped:AtomicBool::new(false),remote:Mutex::new(None),queue:tokio::sync::Mutex::new(queue),path,live });
+        let controls=Arc::new(Self { stopped:AtomicBool::new(false),command_yield:tokio::sync::Notify::new(),remote:Mutex::new(None),queue:tokio::sync::Mutex::new(queue),path,live });
         controls.publish(&controls.queue.try_lock().unwrap())?;
         Ok(controls)
     }
@@ -95,6 +95,21 @@ impl Controls {
     }
     /// Forward control requests without waiting for the locked engine or command completion.
     pub async fn send(&self,action:&str,body:Value)->Result<Value> {
+        // Release a local wait, then steer its next AI turn through the normal backend credit gate.
+        if action=="steer" && self.remote.lock().unwrap().is_none() {
+            let run=self.live.0.borrow()["runs"].as_array().and_then(|runs|runs.last()).cloned().context("No task is running")?;
+            ensure!(self.live.0.borrow()["can_steer"]==true,"No AI turn is accepting steering; queue the message instead");
+            tokio::time::timeout(std::time::Duration::from_secs(60),async {
+                loop {
+                    let view=self.live.0.borrow().clone();
+                    let active=view["runs"].as_array().and_then(|runs|runs.last()).context("No task is running")?;
+                    ensure!(!self.stopped.load(Ordering::SeqCst) && active["id"]==run["id"] && active["finished_at"].is_null(),"The task has finished; send this as a new prompt");
+                    if view["can_steer"]==true && self.remote.lock().unwrap().is_some() { return Ok::<_,anyhow::Error>(()); }
+                    self.command_yield.notify_waiters();
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }).await.context("Timed out waiting for the AI turn to accept steering")??;
+        }
         let remote=self.remote.lock().unwrap().clone().context("No AI turn is running; queue the message instead")?;
         let request=crate::backend::client(60)?.post(format!("{}/v1/chat/{}/{action}",remote.backend,remote.request)).bearer_auth(remote.token).json(&body);
         let response=crate::backend::send(request,&self.live,None).await?;
@@ -106,6 +121,7 @@ impl Controls {
     /// Stop applies to the whole local task, including its automatic-command loop and queued follow-ups.
     pub async fn interrupt(&self)->Result<()> {
         self.stopped.store(true,Ordering::SeqCst);
+        self.command_yield.notify_waiters();
         if self.remote.lock().unwrap().is_some() { self.send("stop",json!({})).await?; }
         Ok(())
     }
