@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Slax Assistant · Credit pack designs</title>
+    <style>
+        :root { color-scheme:light; --page:#f1f3f1; --paper:#fcfcfc; --surface:#f5f6f5; --ink:#242a27; --muted:#66716a; --line:#e2e7e3; --green:#23764e; --soft-green:#edf5ef; --shadow:0 12px 40px #152b2110; --small:13px; --meta:14px; --base:16px; --title:20px; --emphasis:24px; --metric:32px; --display:36px; font:var(--base)/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+        :root[data-theme=dark] { color-scheme:dark; --page:#121714; --paper:#1d2420; --surface:#252e28; --ink:#edf3ef; --muted:#a2b1a7; --line:#36433b; --green:#8fcda8; --soft-green:#263b2e; --shadow:0 12px 40px #0002; }
+        * { box-sizing:border-box; }
+        body { margin:0; color:var(--ink); background:var(--page); }
+        h1,h2,h3,h4,p { margin:0; }
+        button { font:inherit; color:inherit; cursor:pointer; }
+        button:focus-visible,summary:focus-visible { outline:2px solid var(--green); outline-offset:4px; }
+        svg { width:20px; height:22px; fill:currentColor; flex-shrink:0; }
+        .sprite { position:absolute; width:0; height:0; overflow:hidden; }
+        .page-heading { max-width:1360px; margin:auto; padding:40px 24px 24px; }
+        .eyebrow { color:var(--green); font-size:var(--small); font-weight:600; letter-spacing:1px; text-transform:uppercase; }
+        h1 { font-size:var(--display); line-height:1.2; letter-spacing:-1px; margin:8px 0 12px; }
+        .page-heading p { color:var(--muted); font-size:var(--meta); }
+        .toolbar { position:sticky; top:0; z-index:2; border-block:1px solid var(--line); background:var(--paper); }
+        .toolbar-inner { max-width:1360px; margin:auto; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 24px; }
+        .views { display:flex; gap:8px; flex-wrap:wrap; }
+        .views button { background:transparent; border:1px solid transparent; border-radius:8px; min-width:40px; padding:6px 12px; font-size:var(--meta); }
+        .views button:hover { background:var(--surface); }
+        .views button[aria-pressed=true] { color:var(--green); background:var(--soft-green); border-color:var(--line); font-weight:600; }
+        .theme { display:flex; align-items:center; gap:8px; padding:8px 12px; white-space:nowrap; border:1px solid var(--line); border-radius:8px; background:transparent; font-size:var(--meta); }
+        main { max-width:1360px; margin:auto; padding:32px 24px 64px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:40px 32px; }
+        main.single { grid-template-columns:minmax(0,640px); justify-content:center; }
+        .concept[hidden] { display:none; }
+        .concept-heading { margin-bottom:16px; }
+        .concept-heading h2 { display:flex; align-items:center; gap:10px; font-size:var(--title); line-height:1.2; font-weight:600; }
+        .concept-heading h2>span { display:grid; place-items:center; width:28px; height:28px; border:1px solid var(--line); border-radius:7px; background:var(--paper); font-size:var(--small); }
+        .concept-heading p { color:var(--muted); font-size:var(--small); margin:8px 0 0 38px; }
+        .account-dialog { min-height:410px; padding:24px; border:1px solid var(--line); border-radius:20px; background:var(--paper); box-shadow:var(--shadow); }
+        .dialog-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+        h3 { font-size:var(--title); line-height:1.2; font-weight:600; }
+        .email { color:var(--muted); font-size:var(--small); margin-top:6px; }
+        .icon-button { display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:8px; background:transparent; }
+        .icon-button:hover { background:var(--surface); }
+        .close { margin:-4px -4px 0 0; }
+        .close svg { width:16px; }
+        .balance { margin:24px 0; }
+        .balance>span { color:var(--muted); font-size:var(--small); }
+        .balance>div { display:flex; align-items:center; gap:8px; margin-top:4px; }
+        .balance strong { font-size:var(--metric); line-height:1.2; font-weight:650; color:var(--green); font-variant-numeric:tabular-nums; }
+        .refresh { color:var(--muted); }
+        .refresh.rotating svg { animation:rotate .6s ease; }
+        h4 { margin-bottom:16px; font-size:var(--base); font-weight:600; }
+        .packs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+        .pack { --tint:#edf5ef; --tone:#28784f; --edge:#c8e0d1; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; min-width:0; padding:20px 10px 16px; border:1px solid var(--line); border-radius:12px; background:var(--paper); text-align:center; transition:border-color .15s,box-shadow .15s,transform .15s; }
+        .pack:hover { border-color:var(--tone); box-shadow:0 5px 18px #152b2110; transform:translateY(-2px); }
+        .pack:active { transform:translateY(0); }
+        .p2 { --tint:#edf3fc; --tone:#3a69b3; --edge:#ccd9f0; }
+        .p3 { --tint:#f4eef9; --tone:#8054aa; --edge:#dfd0ed; }
+        .p4 { --tint:#fff5e5; --tone:#996914; --edge:#ecd9b5; }
+        .pack-icon { display:grid; place-items:center; width:36px; height:36px; border-radius:10px; color:var(--tone); }
+        .pack-icon svg { width:24px; height:24px; }
+        .amount { display:flex; flex-direction:column; gap:2px; }
+        .amount strong { font-size:var(--emphasis); line-height:1.2; font-weight:650; font-variant-numeric:tabular-nums; letter-spacing:-.3px; }
+        .amount>span { font-size:var(--meta); line-height:1.5; }
+        .price { font-size:var(--meta); white-space:nowrap; }
+        .price>span { color:var(--muted); font-size:var(--small); }
+        .checkout-note { color:var(--muted); font-size:var(--small); margin-top:12px; }
+        .history { margin-top:12px; color:var(--muted); font-size:var(--small); }
+        .history summary { display:flex; align-items:center; gap:8px; width:fit-content; cursor:pointer; list-style:none; }
+        .history summary::-webkit-details-marker { display:none; }
+        .history svg { width:7px; height:12px; transition:transform .15s; }
+        .history[open] svg { transform:rotate(90deg); }
+        .history p { margin-top:12px; }
+        .pastel .pack { background:var(--tint); border-color:var(--edge); }
+        .pastel .pack-icon { background:#ffffffa6; }
+        .badges .pack-icon { background:var(--tint); border-radius:50%; }
+        .featured .pack { --tone:var(--green); padding-top:28px; }
+        .featured .pack-icon { color:var(--muted); }
+        .featured .p4 { background:var(--soft-green); border-color:var(--green); }
+        .featured .p4 .pack-icon { color:var(--green); }
+        .value-badge { position:absolute; top:-11px; padding:2px 9px; border-radius:20px; background:var(--green); color:var(--paper); font-size:var(--small); font-weight:600; white-space:nowrap; }
+        .tiles .packs { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .tiles .pack { flex-direction:row; justify-content:flex-start; gap:12px; padding:16px; text-align:left; }
+        .tiles .pack-icon { background:var(--tint); }
+        .tiles .amount { gap:0; }
+        .tiles .amount strong { font-size:var(--title); }
+        .tiles .amount>span { font-size:var(--small); color:var(--muted); }
+        .tiles .price { margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; }
+        .edges .pack { border-top:3px solid var(--tone); }
+        .edges .pack-icon { background:var(--tint); }
+        .charcoal .pack { --tone:#8fbc9f; background:#26312b; color:#f5faf7; border-color:#334039; }
+        .charcoal .pack-icon { color:#a5c9b2; background:#34483c; }
+        .charcoal .price>span { color:#a6b6ac; }
+        .charcoal .pack:hover { border-color:#8fbc9f; }
+        :root[data-theme=dark] .pack { --tint:#253d2e; --tone:#91cda8; --edge:#395b46; }
+        :root[data-theme=dark] .p2 { --tint:#26384e; --tone:#9bbcee; --edge:#3f587b; }
+        :root[data-theme=dark] .p3 { --tint:#3c2f4c; --tone:#c4a8e1; --edge:#614776; }
+        :root[data-theme=dark] .p4 { --tint:#443b27; --tone:#e1c07a; --edge:#685a38; }
+        :root[data-theme=dark] .pastel .pack-icon { background:#ffffff0a; }
+        :root[data-theme=dark] .featured .pack { --tone:var(--green); }
+        .page-footer { text-align:center; color:var(--muted); padding:0 24px 32px; font-size:var(--small); }
+        @keyframes rotate { to { transform:rotate(360deg); } }
+        @media (max-width:1100px) { main { grid-template-columns:minmax(0,640px); justify-content:center; } }
+        @media (max-width:560px) { h1 { font-size:30px; } .page-heading { padding-top:24px; } main { padding:24px 12px 40px; } .account-dialog { padding:20px; } .packs { grid-template-columns:repeat(2,minmax(0,1fr)); } .tiles .pack { flex-wrap:wrap; } .tiles .price { margin-left:0; } .theme span { display:none; } .toolbar-inner { padding-inline:12px; } }
+        @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
+    </style>
+</head>
+<body>
+    <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+        <!-- Official Font Awesome Free SVGs: 6.7.2 and existing 7.3.1 icons. Icons: CC BY 4.0 https://fontawesome.com/license/free -->
+<symbol id="icon-close" viewBox="0 0 384 512"><path fill="currentColor" d="M55.1 73.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L147.2 256 9.9 393.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192.5 301.3 329.9 438.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.8 256 375.1 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192.5 210.7 55.1 73.4z"/></symbol>
+<symbol id="icon-refresh" viewBox="0 0 512 512"><path fill="currentColor" d="M65.9 228.5c13.3-93 93.4-164.5 190.1-164.5 53 0 101 21.5 135.8 56.2 .2 .2 .4 .4 .6 .6l7.6 7.2-47.9 0c-17.7 0-32 14.3-32 32s14.3 32 32 32l128 0c17.7 0 32-14.3 32-32l0-128c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 53.4-11.3-10.7C390.5 28.6 326.5 0 256 0 127 0 20.3 95.4 2.6 219.5 .1 237 12.2 253.2 29.7 255.7s33.7-9.7 36.2-27.1zm443.5 64c2.5-17.5-9.7-33.7-27.1-36.2s-33.7 9.7-36.2 27.1c-13.3 93-93.4 164.5-190.1 164.5-53 0-101-21.5-135.8-56.2-.2-.2-.4-.4-.6-.6l-7.6-7.2 47.9 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L32 320c-8.5 0-16.7 3.4-22.7 9.5S-.1 343.7 0 352.3l1 127c.1 17.7 14.6 31.9 32.3 31.7S65.2 496.4 65 478.7l-.4-51.5 10.7 10.1c46.3 46.1 110.2 74.7 180.7 74.7 129 0 235.7-95.4 253.4-219.5z"/></symbol>
+<symbol id="icon-chevron" viewBox="0 0 320 512"><path fill="currentColor" d="M311.1 233.4c12.5 12.5 12.5 32.8 0 45.3l-192 192c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L243.2 256 73.9 86.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l192 192z"/></symbol>
+<symbol id="icon-moon" viewBox="0 0 512 512"><path fill="currentColor" d="M239.3 48.7c-107.1 8.5-191.3 98.1-191.3 207.3 0 114.9 93.1 208 208 208 33.3 0 64.7-7.8 92.6-21.7-103.4-23.4-180.6-115.8-180.6-226.3 0-65.8 27.4-125.1 71.3-167.3zM0 256c0-141.4 114.6-256 256-256 19.4 0 38.4 2.2 56.7 6.3 9.9 2.2 17.3 10.5 18.5 20.5s-4 19.8-13.1 24.4c-60.6 30.2-102.1 92.7-102.1 164.8 0 101.6 82.4 184 184 184 5 0 9.9-.2 14.8-.6 10.1-.8 19.6 4.8 23.8 14.1s2 20.1-5.3 27.1C387.3 484.8 324.8 512 256 512 114.6 512 0 397.4 0 256z"/></symbol>
+<symbol id="icon-sun" viewBox="0 0 576 512"><path fill="currentColor" d="M288-32c8 0 15.4 4 19.9 10.6l58.8 87.4 103.4-20.2c7.8-1.5 15.9 .9 21.6 6.6s8.1 13.8 6.6 21.6L478 177.3 565.4 236.1C572 240.5 576 248 576 256s-4 15.4-10.6 19.9L478 334.7 498.2 438c1.5 7.8-.9 15.9-6.6 21.6s-13.8 8.1-21.6 6.6L366.7 446 307.9 533.4C303.4 540 296 544 288 544s-15.4-4-19.9-10.6L209.3 446 105.9 466.2c-7.8 1.5-15.9-.9-21.6-6.6s-8.1-13.8-6.6-21.6L98 334.7 10.6 275.9C4 271.4 0 264 0 256s4-15.4 10.6-19.9L98 177.3 77.8 73.9c-1.5-7.8 .9-15.9 6.6-21.6s13.8-8.1 21.6-6.6l103.3 20.2 58.8-87.4 1.8-2.3C274.4-29 281-32 288-32zm-47.8 138c-5.4 8-15 12-24.5 10.2l-84-16.4 16.4 84c1.8 9.5-2.2 19.1-10.2 24.5L67 256 138 303.8c8 5.4 12 15 10.2 24.5l-16.4 84 84-16.4 3.5-.4c8.3-.4 16.3 3.6 21 10.6l47.8 71 47.8-71 2.2-2.8c5.6-6.1 14-9 22.3-7.3l84 16.4-16.4-84c-1.8-9.5 2.2-19.1 10.2-24.5l71-47.8-71-47.8c-8-5.4-12-15-10.2-24.5l16.4-84-84 16.4c-9.5 1.8-19.1-2.2-24.5-10.2l-47.8-71-47.8 71zM288 376a120 120 0 1 1 0-240 120 120 0 1 1 0 240zm0-192a72 72 0 1 0 0 144 72 72 0 1 0 0-144z"/></symbol>
+<symbol id="icon-coins" viewBox="0 0 512 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc. --><path d="M512 80c0 18-14.3 34.6-38.4 48c-29.1 16.1-72.5 27.5-122.3 30.9c-3.7-1.8-7.4-3.5-11.3-5C300.6 137.4 248.2 128 192 128c-8.3 0-16.4 .2-24.5 .6l-1.1-.6C142.3 114.6 128 98 128 80c0-44.2 86-80 192-80S512 35.8 512 80zM160.7 161.1c10.2-.7 20.7-1.1 31.3-1.1c62.2 0 117.4 12.3 152.5 31.4C369.3 204.9 384 221.7 384 240c0 4-.7 7.9-2.1 11.7c-4.6 13.2-17 25.3-35 35.5c0 0 0 0 0 0c-.1 .1-.3 .1-.4 .2c0 0 0 0 0 0s0 0 0 0c-.3 .2-.6 .3-.9 .5c-35 19.4-90.8 32-153.6 32c-59.6 0-112.9-11.3-148.2-29.1c-1.9-.9-3.7-1.9-5.5-2.9C14.3 274.6 0 258 0 240c0-34.8 53.4-64.5 128-75.4c10.5-1.5 21.4-2.7 32.7-3.5zM416 240c0-21.9-10.6-39.9-24.1-53.4c28.3-4.4 54.2-11.4 76.2-20.5c16.3-6.8 31.5-15.2 43.9-25.5l0 35.4c0 19.3-16.5 37.1-43.8 50.9c-14.6 7.4-32.4 13.7-52.4 18.5c.1-1.8 .2-3.5 .2-5.3zm-32 96c0 18-14.3 34.6-38.4 48c-1.8 1-3.6 1.9-5.5 2.9C304.9 404.7 251.6 416 192 416c-62.8 0-118.6-12.6-153.6-32C14.3 370.6 0 354 0 336l0-35.4c12.5 10.3 27.6 18.7 43.9 25.5C83.4 342.6 135.8 352 192 352s108.6-9.4 148.1-25.9c7.8-3.2 15.3-6.9 22.4-10.9c6.1-3.4 11.8-7.2 17.2-11.2c1.5-1.1 2.9-2.3 4.3-3.4l0 3.4 0 5.7 0 26.3zm32 0l0-32 0-25.9c19-4.2 36.5-9.5 52.1-16c16.3-6.8 31.5-15.2 43.9-25.5l0 35.4c0 10.5-5 21-14.9 30.9c-16.3 16.3-45 29.7-81.3 38.4c.1-1.7 .2-3.5 .2-5.3zM192 448c56.2 0 108.6-9.4 148.1-25.9c16.3-6.8 31.5-15.2 43.9-25.5l0 35.4c0 44.2-86 80-192 80S0 476.2 0 432l0-35.4c12.5 10.3 27.6 18.7 43.9 25.5C83.4 438.6 135.8 448 192 448z"/></symbol>
+<symbol id="icon-layer-group" viewBox="0 0 576 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc. --><path d="M264.5 5.2c14.9-6.9 32.1-6.9 47 0l218.6 101c8.5 3.9 13.9 12.4 13.9 21.8s-5.4 17.9-13.9 21.8l-218.6 101c-14.9 6.9-32.1 6.9-47 0L45.9 149.8C37.4 145.8 32 137.3 32 128s5.4-17.9 13.9-21.8L264.5 5.2zM476.9 209.6l53.2 24.6c8.5 3.9 13.9 12.4 13.9 21.8s-5.4 17.9-13.9 21.8l-218.6 101c-14.9 6.9-32.1 6.9-47 0L45.9 277.8C37.4 273.8 32 265.3 32 256s5.4-17.9 13.9-21.8l53.2-24.6 152 70.2c23.4 10.8 50.4 10.8 73.8 0l152-70.2zm-152 198.2l152-70.2 53.2 24.6c8.5 3.9 13.9 12.4 13.9 21.8s-5.4 17.9-13.9 21.8l-218.6 101c-14.9 6.9-32.1 6.9-47 0L45.9 405.8C37.4 401.8 32 393.3 32 384s5.4-17.9 13.9-21.8l53.2-24.6 152 70.2c23.4 10.8 50.4 10.8 73.8 0z"/></symbol>
+<symbol id="icon-gem" viewBox="0 0 512 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc. --><path d="M116.7 33.8c4.5-6.1 11.7-9.8 19.3-9.8l240 0c7.6 0 14.8 3.6 19.3 9.8l112 152c6.8 9.2 6.1 21.9-1.5 30.4l-232 256c-4.5 5-11 7.9-17.8 7.9s-13.2-2.9-17.8-7.9l-232-256c-7.7-8.5-8.3-21.2-1.5-30.4l112-152zm38.5 39.8c-3.3 2.5-4.2 7-2.1 10.5l57.4 95.6L63.3 192c-4.1 .3-7.3 3.8-7.3 8s3.2 7.6 7.3 8l192 16c.4 0 .9 0 1.3 0l192-16c4.1-.3 7.3-3.8 7.3-8s-3.2-7.6-7.3-8L301.5 179.8l57.4-95.6c2.1-3.5 1.2-8.1-2.1-10.5s-7.9-2-10.7 1L256 172.2 165.9 74.6c-2.8-3-7.4-3.4-10.7-1z"/></symbol>
+<symbol id="icon-rocket" viewBox="0 0 512 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc. --><path d="M156.6 384.9L125.7 354c-8.5-8.5-11.5-20.8-7.7-32.2c3-8.9 7-20.5 11.8-33.8L24 288c-8.6 0-16.6-4.6-20.9-12.1s-4.2-16.7 .2-24.1l52.5-88.5c13-21.9 36.5-35.3 61.9-35.3l82.3 0c2.4-4 4.8-7.7 7.2-11.3C289.1-4.1 411.1-8.1 483.9 5.3c11.6 2.1 20.6 11.2 22.8 22.8c13.4 72.9 9.3 194.8-111.4 276.7c-3.5 2.4-7.3 4.8-11.3 7.2l0 82.3c0 25.4-13.4 49-35.3 61.9l-88.5 52.5c-7.4 4.4-16.6 4.5-24.1 .2s-12.1-12.2-12.1-20.9l0-107.2c-14.1 4.9-26.4 8.9-35.7 11.9c-11.2 3.6-23.4 .5-31.8-7.8zM384 168a40 40 0 1 0 0-80 40 40 0 1 0 0 80z"/></symbol>
+<symbol id="icon-bolt" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc. --><path d="M349.4 44.6c5.9-13.7 1.5-29.7-10.6-38.5s-28.6-8-39.9 1.8l-256 224c-10 8.8-13.6 22.9-8.9 35.3S50.7 288 64 288l111.5 0L98.6 467.4c-5.9 13.7-1.5 29.7 10.6 38.5s28.6 8 39.9-1.8l256-224c10-8.8 13.6-22.9 8.9-35.3s-16.6-20.7-30-20.7l-111.5 0L349.4 44.6z"/></symbol>
+    </defs></svg>
+    <header class="page-heading"><span class="eyebrow">Slax Assistant · Design previews</span><h1>A better way to choose credits</h1><p>Six visual directions using the same credit packs and prices. Preview only; no payments are connected.</p></header>
+    <nav class="toolbar" aria-label="Compare designs"><div class="toolbar-inner"><div class="views"><button data-view="all" aria-pressed="true">All designs</button><button data-view="A" aria-pressed="false">A</button><button data-view="B" aria-pressed="false">B</button><button data-view="C" aria-pressed="false">C</button><button data-view="D" aria-pressed="false">D</button><button data-view="E" aria-pressed="false">E</button><button data-view="F" aria-pressed="false">F</button></div><button class="theme" type="button" aria-label="Toggle dark mode"><svg aria-hidden="true"><use href="#icon-moon"/></svg><span>Dark mode</span></button></div></nav>
+    <main>
+        <section class="concept" id="concept-A" data-letter="A">
+            <header class="concept-heading"><h2><span>A</span>Soft colour</h2><p>Subtle colour fills make the packs easy to distinguish.</p></header>
+            <div class="account-dialog pastel">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+        <section class="concept" id="concept-B" data-letter="B">
+            <header class="concept-heading"><h2><span>B</span>Simple badges</h2><p>A quiet white card with a small coloured icon.</p></header>
+            <div class="account-dialog badges">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+        <section class="concept" id="concept-C" data-letter="C">
+            <header class="concept-heading"><h2><span>C</span>One green accent</h2><p>Neutral packs with the best price per credit highlighted.</p></header>
+            <div class="account-dialog featured">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="value-badge">Best value</span><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+        <section class="concept" id="concept-D" data-letter="D">
+            <header class="concept-heading"><h2><span>D</span>Roomy tiles</h2><p>Two columns leave more space for the icon and price.</p></header>
+            <div class="account-dialog tiles">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+        <section class="concept" id="concept-E" data-letter="E">
+            <header class="concept-heading"><h2><span>E</span>Colour accents</h2><p>White cards, coloured top edges and matching icons.</p></header>
+            <div class="account-dialog edges">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+        <section class="concept" id="concept-F" data-letter="F">
+            <header class="concept-heading"><h2><span>F</span>Charcoal</h2><p>Dark cards with understated green accents.</p></header>
+            <div class="account-dialog charcoal">
+                <header class="dialog-header"><div><h3>Account & settings</h3><p class="email">tomas@slax.org</p></div><button class="icon-button close" type="button" aria-label="Close settings"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+                <div class="balance"><span>Available credits</span><div><strong>1791</strong><button class="icon-button refresh" type="button" aria-label="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
+                <h4>Buy credits</h4>
+                <div class="packs"><button class="pack p1" type="button" aria-label="Buy 100 credits for $2.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-coins"/></svg></span><span class="amount"><strong>100</strong><span>credits</span></span><span class="price">$2.99<span> USD</span></span></button><button class="pack p2" type="button" aria-label="Buy 200 credits for $5.49 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-layer-group"/></svg></span><span class="amount"><strong>200</strong><span>credits</span></span><span class="price">$5.49<span> USD</span></span></button><button class="pack p3" type="button" aria-label="Buy 500 credits for $9.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-gem"/></svg></span><span class="amount"><strong>500</strong><span>credits</span></span><span class="price">$9.99<span> USD</span></span></button><button class="pack p4" type="button" aria-label="Buy 1000 credits for $14.99 USD"><span class="pack-icon"><svg aria-hidden="true"><use href="#icon-rocket"/></svg></span><span class="amount"><strong>1000</strong><span>credits</span></span><span class="price">$14.99<span> USD</span></span></button></div>
+                <p class="checkout-note">Choose a pack to open checkout.</p>
+                <details class="history"><summary>Recent purchases <svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><p>Your recent purchases will appear here.</p></details>
+            </div>
+        </section>
+    </main>
+    <footer class="page-footer">Choose a letter, or combine the layout of one option with the colours of another.</footer>
+    <script>
+        // Focus one proposal without changing the underlying application.
+        document.querySelector('.views').addEventListener('click',event=>
+        {
+            const button=event.target.closest('[data-view]');
+            if (!button) return;
+            for (const control of document.querySelectorAll('[data-view]')) control.setAttribute('aria-pressed',String(control===button));
+            for (const concept of document.querySelectorAll('.concept')) concept.hidden=button.dataset.view!=='all' && concept.dataset.letter!==button.dataset.view;
+            document.querySelector('main').classList.toggle('single',button.dataset.view!=='all');
+        });
+        // Colours and contrast can be compared in both supported themes.
+        document.querySelector('.theme').addEventListener('click',event=>
+        {
+            const dark=document.documentElement.dataset.theme!=='dark';
+            document.documentElement.dataset.theme=dark?'dark':'light';
+            const button=event.currentTarget; button.querySelector('span').textContent=dark?'Light mode':'Dark mode';
+            button.querySelector('use').setAttribute('href',dark?'#icon-sun':'#icon-moon');
+        });
+        // Preview the existing refresh animation without making a network request.
+        for (const button of document.querySelectorAll('.refresh')) button.addEventListener('click',()=>
+        {
+            button.classList.remove('rotating'); void button.offsetWidth; button.classList.add('rotating');
+        });
+    </script>
+</body>
+</html>
