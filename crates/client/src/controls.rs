@@ -74,6 +74,7 @@ impl Controls {
         let input=queue.iter().find(|input|input.id==id).context("This message is no longer queued")?;
         ensure!(!input.editing,"Submit the edited message before steering it");
         let input=protocol::Steering { attachments:input.attachments.clone(), id,text:input.text.clone() };
+        crate::media::cache_attachments(self.path.parent().unwrap(),&input.id.to_string(),input.attachments.as_deref())?;
         self.send("steer",json!(input)).await?;
         queue.retain(|queued|queued.id!=id);
         self.publish(&queue)?;
@@ -81,6 +82,7 @@ impl Controls {
     }
     /// Steering an edited draft consumes its held queue slot only after backend acceptance.
     pub async fn steer(&self,input:&protocol::Steering)->Result<Value> {
+        crate::media::cache_attachments(self.path.parent().unwrap(),&input.id.to_string(),input.attachments.as_deref())?;
         let mut queue=self.queue.lock().await;
         ensure!(!queue.iter().any(|queued|queued.id==input.id && !queued.editing),"Use the queued message's Steer action");
         let result=self.send("steer",json!(input)).await?;

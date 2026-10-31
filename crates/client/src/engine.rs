@@ -36,6 +36,7 @@ impl Engine {
                 task_id:None,token:None,committed:0,messages:vec![],request:None }
         };
         validate_backend(&saved.settings.backend)?;
+        for (index,message) in saved.messages.iter().enumerate() { crate::media::cache_attachments(directory,&format!("{}_{index}",saved.conversation_id),message.attachments.as_deref())?; }
         let live=crate::stream::Live::new();
         let presentation=directory.join("presentation.json");
         if presentation.exists() {
@@ -55,13 +56,14 @@ impl Engine {
 
     /// Never expose authentication tokens or pending request internals to browser state.
     pub fn state(&self) -> Value {
-        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":protocol::display_messages(&self.saved.messages),
+        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":crate::media::messages(self.saved.conversation_id,&self.saved.messages),
             "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),
             "retry_available":self.saved.request.is_some(),"account":self.account})
     }
 
     /// Keep all state transitions durable before performing external side effects.
     fn save(&self) -> Result<()> {
+        for (index,message) in self.saved.messages.iter().enumerate() { crate::media::cache_attachments(self.path.parent().unwrap(),&format!("{}_{index}",self.saved.conversation_id),message.attachments.as_deref())?; }
         storage::write(&self.path,&self.saved)?;
         let view=self.live.0.borrow();
         storage::write(&self.path.with_file_name("presentation.json"),&json!({"conversation_id":self.saved.conversation_id,"steps":view["steps"],"runs":view["runs"],"commands":view["commands"],"tool_results":view["tool_results"]}))?;

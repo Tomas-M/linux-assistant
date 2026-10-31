@@ -53,17 +53,26 @@ impl Requests {
 
     /// Validate an answer against its actual pending question/tool and acknowledge exact retries once.
     pub fn answer(&mut self,id:Uuid,answer:InteractionAnswer,reporter:&mut Reporter,db:&crate::db::Db,user:Option<i64>,request_id:Uuid)->Result<Option<(Value,Value)>> {
+        let evidence=crate::turns::answer_record(&answer)?;
         if !self.pending.contains_key(&id) {
             let user=user.context("Unknown pending request")?;
             let previous:String=db.0.lock().unwrap().query_row("SELECT answer FROM tool_calls WHERE id=?1 AND user_id=?2 AND request_id=?3 AND answer IS NOT NULL",rusqlite::params![id.to_string(),user,request_id.to_string()],|row|row.get(0)).context("This request is no longer waiting for an answer")?;
-            ensure!(serde_json::from_str::<InteractionAnswer>(&previous)?==answer,"Answer ID reused with different content");
+            ensure!(previous==evidence,"Answer ID reused with different content");
             return Ok(None);
         }
         let (rpc,request)=self.pending.get(&id).context("This request is no longer waiting for an answer")?;
         let result=match (&request.kind,&answer) {
-            (InteractionKind::Tool { .. },InteractionAnswer::Tool { output,success })=> {
+            (InteractionKind::Tool { action },InteractionAnswer::Tool { output,success,image })=> {
                 ensure!(output.len()<=16_000,"Tool result exceeds the output budget");
-                json!({"contentItems":[{"type":"inputText","text":output}],"success":success})
+                let mut items=vec![json!({"type":"inputText","text":output})];
+                if let Some(image)=image {
+                    ensure!(*success && matches!(action,protocol::LocalAction::ViewImage { .. }),"Only successful image tools may return image pixels");
+                    protocol::validate_input("Viewed image",Some(std::slice::from_ref(image)))?;
+                    let protocol::Attachment::Image { content,.. }=image else { anyhow::bail!("Expected image content"); };
+                    items.push(json!({"type":"inputImage","imageUrl":content}));
+                }
+                if *success && matches!(action,protocol::LocalAction::ViewImage { .. }) { ensure!(image.is_some(),"Image viewing requires actual image pixels"); }
+                json!({"contentItems":items,"success":success})
             }
             (InteractionKind::Questions { questions },InteractionAnswer::Questions { answers })=> {
                 protocol::validate_answers(questions,answers)?;
@@ -73,7 +82,7 @@ impl Requests {
             _=>anyhow::bail!("Answer does not match the pending request"),
         };
         let rpc=rpc.clone();
-        if let Some(user)=user { db.0.lock().unwrap().execute("UPDATE tool_calls SET answer=?1 WHERE id=?2 AND user_id=?3",rusqlite::params![serde_json::to_string(&answer)?,id.to_string(),user])?; }
+        if let Some(user)=user { db.0.lock().unwrap().execute("UPDATE tool_calls SET answer=?1 WHERE id=?2 AND user_id=?3",rusqlite::params![evidence,id.to_string(),user])?; }
         self.pending.remove(&id);
         reporter.snapshot.requests.retain(|request|request.id!=id);
         reporter.publish(true);

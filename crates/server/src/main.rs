@@ -125,7 +125,7 @@ fn router(app: App) -> Router {
         .route("/auth/{provider}/{device}",get(auth::social::begin)).route("/auth/{provider}/callback",get(auth::social::callback))
         .route("/auth/complete.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("auth/complete.js")) }))
         .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
-        .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop)).route("/v1/chat/{id}/respond",post(turns::respond))
+        .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop)).route("/v1/chat/{id}/respond",post(turns::respond).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/credit-packs",get(payments::packs)).route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
         .route("/payment/success",get(||async { Html(auth::document("<h1>Payment submitted</h1><p>Credits appear after the payment is confirmed. Return to Linux Assistant and refresh your balance.</p>")) }))
         .route("/payment/cancel",get(||async { Html(auth::document("<h1>Checkout cancelled</h1><p>Return to Linux Assistant to continue.</p>")) }))

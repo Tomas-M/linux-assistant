@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/style.css">
     <script src="/markdown-it.min.js" defer></script>
     <script src="/markdown.js" defer></script>
+    <script src="/images.js" defer></script>
     <script src="/attachments.js" defer></script>
     <script src="/native.js" defer></script>
     <script src="/app.js" defer></script>
@@ -83,6 +84,7 @@
             <section id="activity" class="activity" hidden aria-label="Assistant progress">
                 <div class="activity-heading"><svg id="activity-icon" aria-hidden="true" hidden><use href="#icon-terminal"/></svg><span id="activity-label" role="status">Thinking…</span><span id="elapsed"></span></div>
                 <div id="summaries" class="summaries"></div>
+                <div id="agent-images" class="image-gallery" hidden></div>
                 <div id="stream-text" class="answer streaming"></div>
             </section>
             <section id="interactions" aria-live="polite" hidden></section>
@@ -114,6 +116,10 @@
             </div>
         </section>
     </main>
+    <dialog id="image-dialog" aria-labelledby="image-caption">
+        <button id="image-close" class="icon-button" aria-label="Close image" autofocus><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
+        <figure><img id="image-original" alt=""><figcaption id="image-caption"></figcaption></figure>
+    </dialog>
     <dialog id="input-cost-dialog" aria-labelledby="input-cost-title">
         <h2 id="input-cost-title">Send a large message?</h2>
         <p id="input-cost-description"></p>

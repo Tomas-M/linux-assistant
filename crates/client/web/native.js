@@ -71,8 +71,10 @@ function renderWork(row,parts,active)
     if (!active && actions.length)
     {
         const commands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
-        const files=actions.some(part=>['local_read_file','local_list_directory','local_search_files'].includes(part.data?.tool));
-        label=[changes.length?'Edited files':files?'Read files':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':''].filter(Boolean).join(', ');
+        const files=actions.some(part=>['local_read_file','local_list_directory','local_search_files','local_get_metadata'].includes(part.data?.tool));
+        const images=actions.some(part=>part.data?.tool==='local_view_image');
+        const modified=actions.some(part=>['local_create_directory','local_copy_path','local_move_path','local_remove_path','local_create_symlink','local_set_permissions'].includes(part.data?.tool) && view.tool_results[part.id]?.success);
+        label=[changes.length?'Edited files':modified?'Updated files':files?'Read files':'',images?'viewed images':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':''].filter(Boolean).join(', ');
         label=label?label[0].toUpperCase()+label.slice(1):'Completed actions';
     }
     const title=progressTitle(parts) || label;

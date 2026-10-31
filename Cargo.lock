@@ -7546,9 +7546,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "dirs",
  "fs2",
+ "image",
  "libc",
  "protocol",
  "reqwest 0.12.28",

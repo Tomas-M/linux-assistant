@@ -64,11 +64,20 @@ pub async fn respond(State(app):State<App>,headers:HeaderMap,Path(id):Path<Uuid>
     let turn=app.turns.lock().unwrap().get(&(user,id)).cloned();
     let Some(turn)=turn else {
         let previous:Option<String>=app.db.0.lock().unwrap().query_row("SELECT answer FROM tool_calls WHERE id=?1 AND user_id=?2 AND request_id=?3",rusqlite::params![input.id.to_string(),user,id.to_string()],|row|row.get(0)).map_err(|_|ApiError::bad("This task is no longer running"))?;
-        if previous.as_deref().and_then(|answer|serde_json::from_str::<protocol::InteractionAnswer>(answer).ok()).as_ref()!=Some(&input.answer) { return Err(ApiError::bad("This task is no longer running or received a different answer")); }
+        if previous.as_deref()!=Some(answer_record(&input.answer)?.as_str()) { return Err(ApiError::bad("This task is no longer running or received a different answer")); }
         return Ok(Json(serde_json::json!({"ok":true})));
     };
     let (reply,result)=oneshot::channel();
     turn.sender.send(Control::Respond(input,reply)).await.map_err(|_|ApiError::bad("This task has finished"))?;
     result.await.map_err(|_|ApiError::bad("Answer was not acknowledged; retry the same answer"))?.map_err(|error|ApiError::bad(&error))?;
     Ok(Json(serde_json::json!({"ok":true})))
+}
+
+/// Keep image identity in the recovery journal without persisting its base64 pixels on the backend.
+pub(crate) fn answer_record(answer:&protocol::InteractionAnswer)->anyhow::Result<String> {
+    let value=match answer {
+        protocol::InteractionAnswer::Tool { output,success,image:Some(protocol::Attachment::Image { name,content }) }=>serde_json::json!({"type":"tool","output":output,"success":success,"image":{"kind":"image","name":name,"content_hash":crate::db::hash(content)}}),
+        _=>serde_json::to_value(answer)?,
+    };
+    Ok(value.to_string())
 }

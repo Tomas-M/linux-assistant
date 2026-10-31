@@ -61,6 +61,8 @@ impl Controls {
 
     /// Keep an acknowledgement on disk before sending it; transport retries cannot replay side effects.
     async fn execute(&self,request:&Interaction,processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool,cwd:&str,cancelled:&Arc<AtomicBool>)->Result<()> {
+        // Bound large image buffers through acknowledgement, including retries from saved receipts.
+        let _image_access=if matches!(&request.kind,InteractionKind::Tool { action:LocalAction::ViewImage { .. } }) { Some(self.file_access.clone().lock_owned().await) } else { None };
         let directory=self.path.parent().unwrap().join("tool-results");
         std::fs::create_dir_all(&directory)?;
         let path=directory.join(format!("{}.json",request.id));
@@ -71,6 +73,7 @@ impl Controls {
             let answer=match &request.kind {
                 InteractionKind::Questions { .. }=>self.wait(request).await?,
                 InteractionKind::Tool { action }=> {
+                    let mut image=None;
                     let result:Result<String>=async {
                         ensure!(!cancelled.load(Ordering::SeqCst) && !self.stopped.load(Ordering::SeqCst),"Task stopped");
                         let mut operation=request.id;
@@ -92,6 +95,14 @@ impl Controls {
                         let session=match &action { LocalAction::ExecCommand { .. }|LocalAction::WriteStdin { .. }|LocalAction::StopProcess { .. }=>Some(action.session_id(operation)),_=>None };
                         self.live.0.send_modify(|view|view["tool_results"][&request.item_id]=json!({"session_id":session,"running":true,"output":"","changes":[]}));
                         match &action {
+                            LocalAction::ViewImage { path,.. }=> {
+                                let (directory,path)=(self.path.parent().unwrap().to_owned(),PathBuf::from(path)); let id=request.id;
+                                let (output,attachment,preview)=tokio::task::spawn_blocking(move||crate::media::view(&directory,id,&path)).await??;
+                                ensure!(!cancelled.load(Ordering::SeqCst),"Image viewing cancelled");
+                                image=Some(attachment);
+                                self.live.0.send_modify(|view|view["tool_results"][&request.item_id]=json!({"running":false,"changes":[],"image":preview}));
+                                Ok(output)
+                            }
                             LocalAction::ExecCommand { .. }|LocalAction::WriteStdin { .. }|LocalAction::StopProcess { .. }=> {
                                 let session=action.session_id(operation);
                                 let command=match &action {
@@ -117,7 +128,7 @@ impl Controls {
                                 let (action,stopped)=(action.clone(),cancelled.clone());
                                 let (output,changes)=tokio::task::spawn_blocking(move|| {
                                     let _access=access;
-                                    let paths=match &action { LocalAction::ApplyPatch { path,.. }|LocalAction::WriteFile { path,.. }=>vec![path.clone()],_=>vec![] };
+                                    let paths=action.affected_paths();
                                     let before=crate::changes::capture("",&paths);
                                     let result=crate::files::execute(&action,&stopped);
                                     let mut changes=crate::changes::compare(before);
@@ -136,12 +147,15 @@ impl Controls {
                     let success=result.is_ok();
                     let output=match result { Ok(output)=>output,Err(error)=>format!("Local operation failed: {error:#}") };
                     self.live.0.send_modify(|view| { view["tool_results"][&request.item_id]["output"]=json!(crate::engine::output::preview(&output)); view["tool_results"][&request.item_id]["success"]=json!(success); if !success { view["tool_results"][&request.item_id]["running"]=json!(false); } });
-                    InteractionAnswer::Tool { output:crate::engine::output::preview(&output),success }
+                    InteractionAnswer::Tool { output:crate::engine::output::preview(&output),success,image }
                 }
             };
             storage::write(&path,&Receipt { request:request.clone(),answer:Some(answer.clone()) })?;
             answer
         };
+        if let InteractionAnswer::Tool { image:Some(protocol::Attachment::Image { name,.. }),.. }=&answer {
+            self.live.0.send_modify(|view|view["tool_results"][&request.item_id]["image"]=json!({"kind":"image","name":name,"url":format!("/api/media/{}/0",request.id),"run":view["runs"].as_array().unwrap().last().map(|run|run["started_at"].clone())}));
+        }
         self.send("respond",json!(InteractionResponse { id:request.id,answer })).await?;
         Ok(())
     }

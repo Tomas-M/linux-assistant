@@ -3,10 +3,12 @@ use anyhow::{ensure,Context,Result};
 use protocol::LocalAction;
 use serde_json::json;
 mod metadata;
+mod operations;
 
 /// Execute dedicated file tools with bounded reads and exact-match edits, without shell quoting or helper binaries.
 pub fn execute(action:&LocalAction,stopped:&std::sync::atomic::AtomicBool)->Result<String> {
     ensure!(!stopped.load(std::sync::atomic::Ordering::SeqCst),"Task stopped");
+    if matches!(action,LocalAction::GetMetadata { .. }|LocalAction::CreateDirectory { .. }|LocalAction::CopyPath { .. }|LocalAction::MovePath { .. }|LocalAction::RemovePath { .. }|LocalAction::CreateSymlink { .. }|LocalAction::SetPermissions { .. }) { return operations::execute(action,stopped); }
     let path=match action {
         LocalAction::ReadFile { path,.. }|LocalAction::ListDirectory { path,.. }|LocalAction::SearchFiles { path,.. }|LocalAction::ApplyPatch { path,.. }|LocalAction::WriteFile { path,.. }=>Path::new(path),
         _=>anyhow::bail!("Not a file operation"),

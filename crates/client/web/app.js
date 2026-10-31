@@ -145,7 +145,7 @@ function render()
         if (message.role==='assistant') renderAnswer(text,message.text);
         else text.textContent=message.text;
         article.append(text);
-        for (const file of message.attachments || []) { const chip=document.createElement('span'); chip.className='attachment sent-attachment'; chip.textContent=file.name; article.append(chip); }
+        for (const file of message.attachments || []) article.append(attachmentElement(file));
         group.append(article);
         if (message.role==='user')
         {
@@ -173,6 +173,7 @@ function render()
         elements['activity-icon'].toggleAttribute('hidden',activity.progress!==null);
         elements['activity-label'].parentElement.hidden=parts.some(part=>part.text.trim()) && !activity.progress?.activity;
         renderProgress(elements.summaries,parts,view.busy && !view.interactions.length,steers);
+        renderImageGallery(elements['agent-images'],Object.values(view.tool_results).map(result=>result.image).filter(image=>image?.run===view.runs.at(-1)?.started_at));
         renderAnswer(elements['stream-text'],activity.progress?.text || '');
         elements['stream-text'].classList.toggle('streaming',view.busy);
     }
@@ -267,7 +268,8 @@ function renderCompletions()
             const duration=(seconds>=60?Math.floor(seconds/60)+'m ':'')+seconds%60+'s';
             summary.innerHTML='<span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
             summary.firstChild.textContent='Worked for '+duration;
-            work.append(summary,body); element.append(work,answer);
+            const images=document.createElement('div'); images.className='image-gallery';
+            work.append(summary,body); element.append(work,images,answer);
             let notes;
             if (run.summaries.some(part=>part.text.trim()))
             {
@@ -292,8 +294,9 @@ function renderCompletions()
             credits.textContent=run.credits==null?'Credits unavailable':run.credits+' '+(run.credits===1?'credit':'credits');
             footer.append(copy,time,status,credits); element.append(footer);
             if (row) row.element.replaceWith(element);
-            completionRows[index]=row={element,work,body,answer,notes,key};
+            completionRows[index]=row={element,work,body,answer,images,notes,key};
         }
+        renderImageGallery(row.images,Object.values(view.tool_results).map(result=>result.image).filter(image=>image?.run===run.started_at));
         const history=[], finalIndex=!run.partial && state.messages[run.end-1]?.role==='assistant'?run.end-1:-1;
         let anchor=anchors.get(run.start) || messageRows[run.start-1]?.element;
         anchor=anchor?.closest('.completion') || anchor;
@@ -780,7 +783,7 @@ function renderComposer()
             const group=document.createElement('div'), message=document.createElement('article'), text=document.createElement('div');
             group.className='user-message'; message.className='user'; text.className='answer'; text.textContent=input.text;
             message.append(text);
-            for (const file of input.attachments || []) { const chip=document.createElement('span'); chip.className='attachment sent-attachment'; chip.textContent=file.name; message.append(chip); }
+            for (const file of input.attachments || []) message.append(attachmentElement(file));
             const actions=document.createElement('div'), copy=document.createElement('button');
             actions.className='prompt-actions'; copy.className='icon-button copy-prompt'; copy.dataset.copySteering=input.id;
             copy.title='Copy message'; copy.setAttribute('aria-label','Copy message'); setIcon(copy,'copy');

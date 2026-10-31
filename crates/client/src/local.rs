@@ -128,6 +128,7 @@ fn router(state: Local) -> Router {
             };
             Ok::<_,LocalError>(([(header::CONTENT_TYPE,"image/png"),(header::CACHE_CONTROL,"no-store")],bytes))
         }))
+        .route("/images.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/images.js")) }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
         .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
@@ -136,6 +137,8 @@ fn router(state: Local) -> Router {
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
         .route("/logo.png",get(|State(state):State<Local>|async move { match &state.brand.logo { Some(bytes)=>([(header::CONTENT_TYPE,"image/png")],bytes.clone()).into_response(),None=>StatusCode::NOT_FOUND.into_response() } }))
         .route("/api/branding",get(|State(state):State<Local>|async move { Json(state.brand.metadata()) }))
+        .route("/api/media/{scope}/{index}",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,false).await }))
+        .route("/api/media/{scope}/{index}/thumbnail",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,true).await }))
         .route("/api/health",get(||async { Json(json!({"ok":true})) }))
         .route("/api/events",get(events)).route("/api/access",post(access))
         .route("/api/state",get(state_view)).route("/api/account",post(account))
@@ -149,6 +152,15 @@ fn router(state: Local) -> Router {
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
         .route("/api/processes/{id}/stop",post(process_stop))
         .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
+}
+
+/// Serve only previously captured images without waiting for the conversation engine lock.
+async fn media_response(state:Local,scope:String,index:usize,thumbnail:bool)->Response {
+    let directory=state.session_path.parent().unwrap().to_owned();
+    match tokio::task::spawn_blocking(move||crate::media::read(&directory,&scope,index,thumbnail)).await {
+        Ok(Ok((mime,bytes)))=>([(header::CONTENT_TYPE,mime)],bytes).into_response(),
+        _=>StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Keep the local API accessible to local users while rejecting unrelated websites and DNS rebinding.
@@ -267,6 +279,7 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
             let inputs=view["steering"].as_array_mut().unwrap();
             if !inputs.iter().any(|old|old["id"]==input.id.to_string()) {
                 let mut value=protocol::display_messages(&[input])[0].clone();
+                value["attachments"]=crate::media::attachments(&input.id.to_string(),input.attachments.as_deref());
                 value["progress_after"]=json!(progress_after);
                 inputs.push(value);
             }

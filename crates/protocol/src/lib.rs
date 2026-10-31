@@ -45,6 +45,14 @@ pub struct CommandProposal { pub command: String, pub cwd: String, pub reason: S
 #[derive(Clone,Debug,Deserialize,Serialize)]
 #[serde(tag="type",rename_all="snake_case",deny_unknown_fields)]
 pub enum LocalAction {
+    ViewImage { path:String,reason:String },
+    GetMetadata { path:String,follow_symlinks:bool,reason:String },
+    CreateDirectory { path:String,recursive:bool,reason:String },
+    CopyPath { source:String,destination:String,recursive:bool,reason:String },
+    MovePath { source:String,destination:String,reason:String },
+    RemovePath { path:String,recursive:bool,reason:String },
+    CreateSymlink { path:String,target:String,directory:bool,reason:String },
+    SetPermissions { path:String,mode:String,reason:String },
     ReadFile { path:String,offset:u64,limit:u64,reason:String },
     ListDirectory { path:String,offset:usize,limit:usize,reason:String },
     SearchFiles { path:String,pattern:String,case_sensitive:bool,recursive:bool,reason:String },
@@ -59,6 +67,14 @@ impl LocalAction {
     /// Show the exact proposed input in the permission UI before it can be delivered.
     pub fn description(&self)->String {
         match self {
+            Self::ViewImage { path,.. }=>format!("View image {path}"),
+            Self::GetMetadata { path,.. }=>format!("Inspect metadata for {path}"),
+            Self::CreateDirectory { path,recursive,.. }=>format!("Create directory {path} (parents: {recursive})"),
+            Self::CopyPath { source,destination,recursive,.. }=>format!("Copy {source} to {destination} (recursive: {recursive}; no overwrite)"),
+            Self::MovePath { source,destination,.. }=>format!("Move {source} to {destination} (no overwrite)"),
+            Self::RemovePath { path,recursive,.. }=>format!("Delete {path} (recursive: {recursive})"),
+            Self::CreateSymlink { path,target,.. }=>format!("Create symbolic link {path} pointing to {target}"),
+            Self::SetPermissions { path,mode,.. }=>format!("Set permissions of {path} to {mode}"),
             Self::ReadFile { path,offset,limit,.. }=>format!("Read {path}, bytes {offset}..{}",offset.saturating_add(*limit)),
             Self::ListDirectory { path,.. }=>format!("List {path}"),
             Self::SearchFiles { path,pattern,.. }=>format!("Search {path} for {pattern}"),
@@ -75,11 +91,20 @@ impl LocalAction {
     /// Polling only reads an already-authorized local session and needs no new execution approval.
     pub fn is_poll(&self)->bool { matches!(self,Self::WriteStdin { chars,close_stdin:false,.. } if chars.is_empty()) }
     /// Recovery may safely repeat reads and idempotent Stop, but never stdin delivery or filesystem writes.
-    pub fn replay_safe(&self)->bool { self.is_poll() || matches!(self,Self::ReadFile { .. }|Self::ListDirectory { .. }|Self::SearchFiles { .. }|Self::StopProcess { .. }) }
+    pub fn replay_safe(&self)->bool { self.is_poll() || matches!(self,Self::ViewImage { .. }|Self::GetMetadata { .. }|Self::ReadFile { .. }|Self::ListDirectory { .. }|Self::SearchFiles { .. }|Self::StopProcess { .. }) }
+    /// Capture content changes only on explicitly affected paths, never an implicit directory scan.
+    pub fn affected_paths(&self)->Vec<String> {
+        match self {
+            Self::ApplyPatch { path,.. }|Self::WriteFile { path,.. }|Self::RemovePath { path,.. }=>vec![path.clone()],
+            Self::CopyPath { destination,.. }=>vec![destination.clone()],
+            Self::MovePath { source,destination,.. }=>vec![source.clone(),destination.clone()],
+            _=>vec![],
+        }
+    }
     /// Session identities are native-owned UUIDs; an execution's approval ID becomes its session ID.
     pub fn session_id(&self,id:Uuid)->Uuid { match self { Self::ExecCommand { .. }=>id,Self::WriteStdin { session_id,.. }|Self::StopProcess { session_id,.. }=>*session_id,_=>id } }
     /// Keep the permission UI and provider validation on the same explanation.
-    pub fn reason(&self)->&str { match self { Self::ExecCommand { reason,.. }|Self::WriteStdin { reason,.. }|Self::StopProcess { reason,.. }|Self::ReadFile { reason,.. }|Self::ListDirectory { reason,.. }|Self::SearchFiles { reason,.. }|Self::ApplyPatch { reason,.. }|Self::WriteFile { reason,.. }=>reason } }
+    pub fn reason(&self)->&str { match self { Self::ExecCommand { reason,.. }|Self::WriteStdin { reason,.. }|Self::StopProcess { reason,.. }|Self::ReadFile { reason,.. }|Self::ListDirectory { reason,.. }|Self::SearchFiles { reason,.. }|Self::ApplyPatch { reason,.. }|Self::WriteFile { reason,.. }|Self::ViewImage { reason,.. }|Self::GetMetadata { reason,.. }|Self::CreateDirectory { reason,.. }|Self::CopyPath { reason,.. }|Self::MovePath { reason,.. }|Self::RemovePath { reason,.. }|Self::CreateSymlink { reason,.. }|Self::SetPermissions { reason,.. }=>reason } }
     /// Validate operation-specific limits before either frontend can cause local side effects.
     pub fn validate(&self)->anyhow::Result<()> {
         anyhow::ensure!(serde_json::to_vec(self)?.len()<=128_000,"Local operation arguments exceed 128 KB");
@@ -92,7 +117,10 @@ impl LocalAction {
                 anyhow::ensure!(timeout_ms.is_none_or(|timeout|timeout>0),"Execution timeout must be positive or null");
             }
             Self::WriteStdin { chars,.. }=>anyhow::ensure!(chars.len()<=16_000,"Session input is too long"),
-            Self::ReadFile { path,.. }|Self::ListDirectory { path,.. }|Self::SearchFiles { path,.. }|Self::ApplyPatch { path,.. }|Self::WriteFile { path,.. }=>anyhow::ensure!(!path.is_empty() && path.len()<=4096 && !path.contains('\0'),"Invalid file path"),
+            Self::ReadFile { path,.. }|Self::ListDirectory { path,.. }|Self::SearchFiles { path,.. }|Self::ApplyPatch { path,.. }|Self::WriteFile { path,.. }|Self::ViewImage { path,.. }|Self::GetMetadata { path,.. }|Self::CreateDirectory { path,.. }|Self::RemovePath { path,.. }|Self::CreateSymlink { path,.. }|Self::SetPermissions { path,.. }=>anyhow::ensure!(!path.is_empty() && path.len()<=4096 && !path.contains('\0'),"Invalid file path"),
+            Self::CopyPath { source,destination,.. }|Self::MovePath { source,destination,.. }=> {
+                for path in [source,destination] { anyhow::ensure!(!path.is_empty() && path.len()<=4096 && !path.contains('\0'),"Invalid source or destination path"); }
+            }
             Self::StopProcess { .. }=>{},
         }
         Ok(())
