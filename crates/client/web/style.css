@@ -17,7 +17,7 @@ h1 { font-size:2.25rem; font-weight:550; letter-spacing:-0.075rem; line-height:1
 h2 { font-size:1.25rem; font-weight:600; line-height:1.2; }
 .muted,small { color:var(--muted); font-size:0.8125rem; }
 .eyebrow { font-size:0.8125rem; letter-spacing:0.09375rem; color:var(--muted); }
-.topbar { position:sticky; top:0; z-index:3; height:5.5rem; display:flex; align-items:center; gap:1.5rem; padding:0 2.5rem; border-bottom:0.0625rem solid var(--border); background:var(--bg); }
+.topbar { position:sticky; top:0; z-index:3; height:5rem; display:flex; align-items:center; gap:1.5rem; padding:0 2.5rem; border-bottom:0.0625rem solid var(--border); background:var(--bg); }
 .brand { display:flex; gap:0.75rem; align-items:center; text-decoration:none; color:var(--text); font-size:1.25rem; font-weight:600; white-space:nowrap; }
 .brand-mark { display:flex; align-items:center; justify-content:center; height:2.125rem; width:2.125rem; background:var(--accent-soft); color:var(--accent); border-radius:0.6875rem; }
 .topbar nav { margin-left:auto; display:flex; align-items:center; gap:1rem; }
@@ -247,7 +247,7 @@ svg { width:1.25rem; height:1.375rem; fill:currentColor; stroke:none; }
 #cancel-sign-in { width:100%; margin-top:1rem; font-size:0.875rem; }
 #login-email { color:var(--text); overflow-wrap:anywhere; }
 .code-digits { display:flex; gap:0.5rem; border:0; padding:0; margin:1.5rem 0 0; min-width:0; }
-.code-digits input { min-width:0; flex:1; padding:0.75rem 0; text-align:center; font-size:1.5rem; font-weight:600; font-variant-numeric:tabular-nums; }
+.code-digits input { min-width:0; flex:1; padding:0.25rem 0; text-align:center; font-size:1.5rem; font-weight:600; font-variant-numeric:tabular-nums; }
 .code-digits input:nth-of-type(4) { margin-left:0.625rem; }
 #auth-status { margin:1rem 0 0; color:#ad5628; text-align:center; }
 #auth-status:empty { display:none; }
