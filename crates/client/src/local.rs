@@ -89,9 +89,12 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
     if lock.try_lock_exclusive().is_err() { return Ok(()); }
     let engine = Engine::open(&directory,backend).await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Retain the local address across restarts so existing browser tabs can simply refresh.
+    let discovery=directory.join("daemon.json");
+    let port=if discovery.exists() { reqwest::Url::parse(&storage::read::<Connection>(&discovery)?.url)?.port().context("Local client URL is missing its port")? } else { 0 };
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1",port)).await?;
     let connection = Connection { url:format!("http://{}",listener.local_addr()?) };
-    storage::write(&directory.join("daemon.json"),&connection)?;
+    storage::write(&discovery,&connection)?;
     engine.live.0.send_modify(|view|view["brand"]=brand.metadata());
     let processes=engine.processes.clone();
     let state = Local { brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
@@ -103,7 +106,6 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
-    std::fs::remove_file(directory.join("daemon.json"))?;
     Ok(())
 }
 

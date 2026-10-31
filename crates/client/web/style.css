@@ -117,6 +117,8 @@ textarea::placeholder { color:var(--muted); }
 .compaction-note svg { width:16px; height:16px; }
 .send:hover { background:var(--accent); }
 .composer-caption { display:flex; justify-content:space-between; margin:10px 2px 0; color:var(--muted); font-size:13px; }
+.composer-caption button { padding:0; border:0; border-radius:0; background:none; color:inherit; font:inherit; text-decoration:none; }
+.composer-caption button:hover { color:var(--text); }
 .proposal { padding:24px; border:1px solid var(--border); border-radius:16px; margin:24px 0; }
 .proposal .eyebrow { color:var(--accent); margin-bottom:12px; }
 .button-row { display:flex; gap:10px; flex-wrap:wrap; }
