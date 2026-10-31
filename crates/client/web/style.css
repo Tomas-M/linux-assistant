@@ -205,29 +205,33 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 #new { display:inline-flex; align-items:center; gap:8px; }
 .credit-balance { color:var(--accent); background:var(--accent-soft); border-color:transparent; font-size:16px; font-weight:600; white-space:nowrap; }
 .credit-balance.depleted { color:var(--warning); background:var(--surface); }
-.auth-layout { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:48px; align-items:center; margin:32px auto; }
-.auth-intro h1 { font-size:36px; }
-.auth-intro p { color:var(--muted); margin:18px 0; }
-.auth-character { display:block; width:200px; height:200px; object-fit:contain; margin-bottom:24px; filter:drop-shadow(0 12px 20px #172f4514); }
+.auth-layout { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:24px auto; border:1px solid var(--border); border-radius:24px; overflow:hidden; background:var(--bg); box-shadow:var(--shadow); }
+.auth-intro { padding:32px; background:var(--surface); border-right:1px solid var(--border); }
+.auth-intro h1 { font-size:32px; margin:0 0 16px; }
+.auth-intro p { color:var(--text); margin:0 0 16px; }
+.auth-intro .auth-permissions { font-size:14px; color:var(--muted); margin-bottom:24px; }
+.auth-character { display:block; width:128px; height:128px; object-fit:contain; margin-bottom:24px; }
 .welcome-credits { display:inline-block; padding:7px 13px; border-radius:24px; background:var(--accent-soft); color:var(--accent); font-size:14px; font-weight:600; }
-.auth-intro .auth-invitation { font-size:14px; }
-.auth-card { min-width:0; padding:28px; border:1px solid var(--border); border-radius:20px; box-shadow:var(--shadow); background:var(--bg); }
+.auth-card { min-width:0; padding:32px; align-self:center; }
 .signed-out main { max-width:1000px; padding-bottom:48px; }
-@media (max-width:760px) { .signed-out main { padding:24px 18px 48px; } .auth-layout { grid-template-columns:1fr; gap:24px; max-width:440px; margin:0 auto; } .auth-intro { text-align:center; } .auth-character { width:112px; height:112px; margin:0 auto 16px; } .auth-intro h1 { font-size:30px; } }
-.auth-card h2 { margin:0 0 12px; }
+@media (max-width:760px) { .signed-out main { padding:24px 18px 48px; } .auth-layout { grid-template-columns:1fr; max-width:440px; margin:0 auto; } .auth-intro { padding:24px; border-right:0; border-bottom:1px solid var(--border); text-align:center; } .auth-character { width:96px; height:96px; margin:0 auto 16px; } .auth-intro h1 { font-size:30px; } }
+.auth-card h2 { margin:0 0 16px; }
 .auth-card p { color:var(--muted); font-size:14px; }
-.auth-card label { display:block; font-size:14px; margin:22px 0 8px; }
 .auth-card input { width:100%; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
 .auth-card .primary { width:100%; margin-top:20px; }
+#email-sign-in { display:grid; gap:12px; }
+#email { border-color:var(--muted); }
+#email:focus { border-color:var(--accent); }
+#email-sign-in .primary { margin-top:0; min-height:48px; }
 .auth-actions { display:flex; align-items:center; justify-content:space-between; margin-top:16px; font-size:13px; }
 .auth-actions button { padding:6px 0; }
 .credit-packs { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin:16px 0 12px; }
 .credit-pack { padding:18px 12px; text-align:center; }
 .credit-pack strong { display:block; font-size:20px; line-height:1.2; margin-bottom:10px; }
 .credit-pack span { display:block; font-size:14px; }
-#social-providers { margin-top:28px; padding:20px; background:var(--surface); border:1px solid var(--border); border-radius:14px; }
+#social-providers { margin-top:24px; padding:16px; background:var(--surface); border:1px solid var(--border); border-radius:12px; }
 .auth-divider { margin:0 0 14px; color:var(--text); font-size:14px; font-weight:600; }
-.social-buttons { display:grid; gap:10px; }
+.social-buttons { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:10px; }
 .social-buttons button { display:flex; align-items:center; justify-content:center; gap:12px; min-height:44px; font-size:14px; font-weight:500; }
 .social-buttons svg { width:20px; height:20px; fill:currentColor; stroke:none; flex-shrink:0; }
 #cancel-sign-in { width:100%; margin-top:16px; font-size:14px; }

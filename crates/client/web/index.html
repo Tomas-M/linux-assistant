@@ -35,28 +35,27 @@
             </section>
             <section id="setup" class="auth-layout" hidden aria-label="Sign in">
                 <div class="auth-intro">
-                    <img src="/assistant.png" width="200" height="200" alt="Your friendly Linux assistant" class="auth-character">
-                    <h1>A helping hand with your computer.</h1>
-                    <p>Ask questions, solve problems, and get everyday tasks done. Your assistant can run commands on your computer when you allow it.</p>
+                    <img src="/assistant.png" width="128" height="128" alt="Your friendly Linux assistant" class="auth-character">
+                    <h1>Meet your computer assistant.</h1>
+                    <p>Get answers, troubleshoot problems, and complete everyday tasks in one chat.</p>
+                    <p class="auth-permissions">You control when your assistant can run commands on your computer.</p>
                     <span class="welcome-credits">Start with 100 free credits</span>
-                    <p class="auth-invitation">Sign in to get your free credits and start chatting.</p>
                 </div>
                 <div class="auth-card">
                 <form id="email-form">
-                    <h2>Let’s get you started</h2>
+                    <h2>Sign in to start chatting</h2>
                     <div id="email-sign-in" hidden>
-                    <p>Enter your email and we’ll send you a sign-in code.</p>
-                    <label for="email">Email address</label>
+                    <label for="email" class="sr-only">Email address</label>
                     <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254" required>
-                    <button id="login" class="primary">Send sign-in code</button>
+                    <button id="login" class="primary">Sign in with email</button>
                     </div>
                 </form>
                     <div id="social-providers" hidden>
-                        <div id="auth-divider" class="auth-divider"><span>Or use an existing account</span></div>
+                        <div id="auth-divider" class="auth-divider"><span>Or sign in with</span></div>
                         <div class="social-buttons">
-                            <button type="button" data-provider="google" hidden><svg aria-hidden="true"><use href="#icon-google"/></svg>Continue with Google</button>
-                            <button type="button" data-provider="microsoft" hidden><svg aria-hidden="true"><use href="#icon-microsoft"/></svg>Continue with Microsoft</button>
-                            <button type="button" data-provider="github" hidden><svg aria-hidden="true"><use href="#icon-github"/></svg>Continue with GitHub</button>
+                            <button type="button" data-provider="google" hidden><svg aria-hidden="true"><use href="#icon-google"/></svg>Google</button>
+                            <button type="button" data-provider="microsoft" hidden><svg aria-hidden="true"><use href="#icon-microsoft"/></svg>Microsoft</button>
+                            <button type="button" data-provider="github" hidden><svg aria-hidden="true"><use href="#icon-github"/></svg>GitHub</button>
                         </div>
                     </div>
                 <form id="code-form" hidden>
