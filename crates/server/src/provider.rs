@@ -8,7 +8,7 @@ pub use backup::AccountBackup;
 #[cfg(test)]
 mod tests;
 
-use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock}};
+use std::{path::PathBuf, time::Duration,sync::{Arc,RwLock,atomic::{AtomicI64,Ordering}}};
 use anyhow::{ensure, Context, Result};
 use protocol::{AssistantReply, ChatRequest, CommandProposal, Platform};
 #[cfg(test)]
@@ -19,7 +19,7 @@ use crate::{config::Config, db::{now, Db}};
 use rpc::Rpc;
 
 pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, login:Mutex<Option<accounts::Login>>, executable:PathBuf, selection:Mutex<()> }
-struct ProviderAccount { home: String, access:AsyncRwLock<()>, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>> }
+struct ProviderAccount { home: String, access:AsyncRwLock<()>, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>>, probe_retry_at:AtomicI64 }
 #[derive(Clone, Copy, Debug)]
 struct Limits { used:f64, retry_at:i64, checked_at:i64, api_key:bool }
 pub struct Answer { pub reply: AssistantReply, pub account_home: Option<String>, pub thread_id: Option<String>, pub checkpoint: Option<String> }
@@ -43,7 +43,7 @@ impl Pool {
                     if let Some(key)=auth["OPENAI_API_KEY"].as_str() { crate::diagnostics::protect(key); }
                 }
             }
-            accounts.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None) }));
+            accounts.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None),probe_retry_at:AtomicI64::new(0) }));
         }
         Ok(Self { accounts:RwLock::new(accounts),managed,login:Mutex::new(None),executable:std::env::current_exe()?,selection:Mutex::new(()) })
     }
@@ -125,7 +125,8 @@ impl Pool {
                 let mut rpc=self.rpc(&account).await?;
                 let same_account = session.account_home.as_deref()==Some(account.home.as_str());
                 let thread = if same_account { session.thread_id.as_deref() } else { None };
-                db.bind_conversation(user,request.conversation_id,&account.home)?;
+                // Selection already persisted new assignments; resumed threads still need invalidation.
+                if same_account { db.bind_conversation(user,request.conversation_id,&account.home)?; }
                 let purpose="conversation";
                 let mut attempt=crate::usage::Attempt::start(db,Some(user),request,&account.home,purpose)?;
                 let mut reporter=progress::Reporter::new(events,tried.len());
@@ -160,13 +161,20 @@ impl Pool {
 
     /// Rank fresh quota snapshots by the most depleted window, then spread ties across conversations.
     async fn select(&self, db: &Db, user: i64, request: &ChatRequest, tried: &[String]) -> Result<Arc<ProviderAccount>> {
-        let _selection = self.selection.lock().await;
-        let mut candidates = Vec::new();
+        let mut available=Vec::new();
         let mut excluded=Vec::new();
+        // Quota RPCs can take seconds; only ranking and assignment need the selection lock.
         for account in self.accounts() {
             if tried.contains(&account.home) { excluded.push(format!("{}: already tried for this request",account.home)); continue; }
             if self.paused(db,&account.home)? { excluded.push(format!("{}: paused by operator",account.home)); continue; }
             self.probe(db,&account).await?;
+            available.push(account);
+        }
+        let _selection = self.selection.lock().await;
+        let mut candidates = Vec::new();
+        for account in available {
+            if !self.registered(&account) { continue; }
+            if self.paused(db,&account.home)? { excluded.push(format!("{}: paused by operator",account.home)); continue; }
             if let Some(limits) = *account.limits.lock().await {
                 if limits.retry_at<=now() { candidates.push((account.clone(),limits.api_key,limits.used,db.assigned_conversations(&account.home)?)); }
                 else { excluded.push(format!("{}: quota/cooldown blocks selection until {} UTC (Unix time); {:.1}% used; checked at {}",account.home,limits.retry_at,limits.used,limits.checked_at)); }

@@ -54,7 +54,7 @@ impl Pool {
             }
             let home=managed.join(account.id.to_string()).to_string_lossy().into_owned();
             homes.push((home.clone(),account.paused));
-            restored.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None) }));
+            restored.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None),probe_retry_at:AtomicI64::new(0) }));
         }
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;

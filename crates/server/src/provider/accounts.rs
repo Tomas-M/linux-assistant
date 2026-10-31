@@ -127,7 +127,7 @@ impl Pool {
         let identity=rpc.call("account/read",json!({"refreshToken":false})).await?;
         ensure!(matches!(identity["account"]["type"].as_str(),Some("chatgpt"|"apiKey")),"Provider did not authenticate the account");
         ensure!(std::path::Path::new(&home).join("auth.json").is_file(),"Provider did not save account credentials");
-        let account=Arc::new(ProviderAccount { home:home.clone(),access:AsyncRwLock::new(()),worker:Mutex::new(Some(rpc)),limits:Mutex::new(None) });
+        let account=Arc::new(ProviderAccount { home:home.clone(),access:AsyncRwLock::new(()),worker:Mutex::new(Some(rpc)),limits:Mutex::new(None),probe_retry_at:AtomicI64::new(0) });
         self.accounts.write().unwrap().push(account.clone());
         crate::diagnostics::record("info","account_login",None,Some(&home),"Account connected");
         self.probe(db,&account).await

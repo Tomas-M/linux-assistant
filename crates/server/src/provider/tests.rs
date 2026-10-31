@@ -104,6 +104,7 @@ async fn integration_diagnostics_preserve_causes()->Result<()> {
     assert!(error.contains("account/rateLimits/read") && error.contains("HTTP 401"));
     assert!(!error.contains("PRIVATE_TOKEN"));
     account(home,json!({"primary":23,"turn_error":"unexpectedServerError","error_message":"Upstream failed 世界; refresh_token=PRIVATE_TOKEN"}))?;
+    pool.accounts()[0].probe_retry_at.store(0,Ordering::Relaxed);
     pool.probe(&db,&pool.accounts()[0]).await?;
     assert!(pool.account_status(&db)?[0]["error"].is_null());
     let user=db.user("diagnostic@example.test",None,100)?;
@@ -148,7 +149,7 @@ async fn integration_streams_before_completion() -> Result<()> {
                 assert!(!serde_json::to_string(&event)?.contains("PRIVATE_RAW_REASONING"));
                 if let protocol::ChatEvent::Progress { progress }=event {
                     early_summary|=progress.summaries.iter().any(|part|part.text.contains("before acknowledgement"));
-                    partial|=progress.text=="Fixture";
+                    partial|=!progress.text.is_empty() && progress.text.len()<"Fixture reply from stream".len();
                     assert!("Fixture reply from stream".starts_with(&progress.text));
                 }
             }

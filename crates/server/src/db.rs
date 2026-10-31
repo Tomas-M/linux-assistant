@@ -30,6 +30,18 @@ impl Db {
         Ok(Self(Mutex::new(conn)))
     }
 
+    /// File-backed reports use a WAL snapshot without blocking billing writes on the shared connection.
+    pub fn read<T>(&self,query:impl FnOnce(&Connection)->Result<T>)->Result<T> {
+        let connection=self.0.lock().unwrap();
+        let path=connection.path().filter(|path|!path.is_empty()).map(str::to_owned);
+        let Some(path)=path else { return query(&connection); };
+        drop(connection);
+        let mut reader=Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        reader.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction=reader.transaction()?;
+        query(&transaction)
+    }
+
     /// A verified identity receives a welcome grant exactly once.
     pub fn user(&self, email: &str, google_sub: Option<&str>, free: i64) -> Result<i64> {
         let mut conn = self.0.lock().unwrap();
@@ -149,15 +161,18 @@ impl Db {
         messages.extend(steering.iter().map(|input|Message { attachments:input.attachments.clone(), role:Role::User,text:input.text.clone() }));
         messages.push(Message { attachments:None, role:Role::Assistant,text:reply.text.clone() });
         let result=Completed { reply:reply.clone(),revision:messages.len(),steering };
+        // Large attachment histories are encoded before acquiring the shared billing connection.
+        let response=serde_json::to_string(&result)?;
+        let history=serde_json::to_string(&messages)?;
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
         let changed = tx.execute("UPDATE requests SET response=?1 WHERE user_id=?2 AND id=?3 AND response IS NULL AND error IS NULL",
-            params![serde_json::to_string(&result)?,user,request.request_id.to_string()])?;
+            params![response,user,request.request_id.to_string()])?;
         ensure!(changed==1,"Request was already settled");
         crate::billing::settle(&tx,user,&request.request_id.to_string(),true,reply.command.is_none())?;
         tx.execute("INSERT INTO conversations(user_id,id,account_home,thread_id,messages,checkpoint,checkpoint_at) VALUES(?1,?2,?3,?4,?5,?6,?7)
             ON CONFLICT(user_id,id) DO UPDATE SET account_home=excluded.account_home,thread_id=excluded.thread_id,messages=excluded.messages,checkpoint=excluded.checkpoint,checkpoint_at=excluded.checkpoint_at",
-            params![user,request.conversation_id.to_string(),home,thread,serde_json::to_string(&messages)?,checkpoint.unwrap_or(&session.checkpoint),(if checkpoint.is_some() { messages.len() } else { session.checkpoint_at }) as i64])?;
+            params![user,request.conversation_id.to_string(),home,thread,history,checkpoint.unwrap_or(&session.checkpoint),(if checkpoint.is_some() { messages.len() } else { session.checkpoint_at }) as i64])?;
         tx.commit()?;
         Ok(result)
     }
@@ -212,6 +227,33 @@ pub enum Reservation { New, Cached(String), Failed(String), Pending, Insufficien
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A report keeps one coherent snapshot while billing can still commit on the writer.
+    #[test]
+    fn report_snapshot_does_not_block_billing()->Result<()> {
+        let directory=tempfile::tempdir()?;
+        let db=std::sync::Arc::new(Db::open(&directory.path().join("test.db"))?);
+        db.user("before@example.test",None,100)?;
+        let reader=db.clone();
+        let (started,waiting)=std::sync::mpsc::channel();
+        let (release,finished)=std::sync::mpsc::channel();
+        let report=std::thread::spawn(move||reader.read(|conn| {
+            let before:i64=conn.query_row("SELECT COUNT(*) FROM users",[],|row|row.get(0))?;
+            started.send(())?;
+            finished.recv_timeout(std::time::Duration::from_secs(5))?;
+            let after:i64=conn.query_row("SELECT COUNT(*) FROM users",[],|row|row.get(0))?;
+            assert_eq!((before,after),(1,1));
+            assert!(conn.execute("DELETE FROM users",[]).is_err());
+            Ok(())
+        }));
+        waiting.recv_timeout(std::time::Duration::from_secs(5))?;
+        let start=std::time::Instant::now();
+        db.user("during@example.test",None,100)?;
+        assert!(start.elapsed()<std::time::Duration::from_secs(1));
+        release.send(())?;
+        report.join().unwrap()?;
+        Ok(())
+    }
 
 
     /// Start an independent task using the production request contract.

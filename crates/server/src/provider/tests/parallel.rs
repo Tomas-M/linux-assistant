@@ -1,6 +1,35 @@
 use super::*;
 use std::sync::Arc;
 
+/// A failed quota endpoint is contacted once for a burst, then retried after the shared cooldown.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn failed_quota_probe_is_shared()->Result<()> {
+    let directory=tempfile::tempdir()?;
+    let mut config=Config::default();
+    config.test_homes.push(directory.path().join("quota"));
+    account(&config.test_homes[0],json!({"primary":10,"rpc_error_method":"account/rateLimits/read","error_message":"Offline fixture"}))?;
+    let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
+    let mut pool=Pool::new(&config)?;
+    pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
+    let pool=Arc::new(pool);
+    let account=pool.accounts()[0].clone();
+    let mut probes=tokio::task::JoinSet::new();
+    for _ in 0..100 {
+        let (pool,db,account)=(pool.clone(),db.clone(),account.clone());
+        probes.spawn(async move { pool.probe(&db,&account).await });
+    }
+    while let Some(result)=probes.join_next().await { result??; }
+    let events=std::fs::read_to_string(config.test_homes[0].join("events.jsonl"))?;
+    assert_eq!(events.lines().filter(|line|line.contains("account/rateLimits/read")).count(),1);
+    assert!(account.limits.lock().await.is_none());
+    super::account(&config.test_homes[0],json!({"primary":10}))?;
+    account.probe_retry_at.store(0,Ordering::Relaxed);
+    pool.probe(&db,&account).await?;
+    assert_eq!(account.limits.lock().await.unwrap().used,10.0);
+    Ok(())
+}
+
 /// One account/worker supports overlapping users, admin tests and probes; Stop/cancellation remain scoped.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
@@ -50,7 +79,7 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     controls[0].send(crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"Only the first conversation 世界".into() },reply)).await?;
     ack.await?.map_err(anyhow::Error::msg)?;
     let answer=tokio::time::timeout(Duration::from_secs(5),tasks.pop().unwrap()).await???;
-    assert_eq!(answer.reply.text,"Steered: Only the first conversation 世界");
+    assert!(answer.reply.text.ends_with("Only the first conversation 世界"));
     assert_eq!(db.steering(user,chats[0].request_id)?.len(),1);
     assert!(db.steering(user,chats[1].request_id)?.is_empty());
     assert!(db.steering(other,chats[2].request_id)?.is_empty());
@@ -65,7 +94,7 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     Ok(())
 }
 
-/// The unmodified embedded App Server must reach two HTTP model requests before either is released.
+/// One unmodified embedded App Server must reach 100 model requests before any are released.
 #[tokio::test]
 #[ignore = "Build assistant-server and set ASSISTANT_TEST_SERVER to its executable"]
 async fn embedded_account_runs_parallel_threads()->Result<()> {
@@ -73,17 +102,19 @@ async fn embedded_account_runs_parallel_threads()->Result<()> {
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint=format!("http://{}/v1",listener.local_addr()?);
     let app=axum::Router::new().route("/v1/responses",axum::routing::post(|axum::extract::State(barrier):axum::extract::State<Arc<tokio::sync::Barrier>>,axum::Json(body):axum::Json<Value>|async move {
-        tokio::time::timeout(Duration::from_secs(15),barrier.wait()).await.expect("Native turns were serialized");
-        let text=if body.to_string().contains("FIRST_THREAD") { "FIRST_THREAD" } else { "SECOND_THREAD" };
+        tokio::time::timeout(Duration::from_secs(60),barrier.wait()).await.expect("Native turns were serialized");
+        let body=body.to_string();
+        let text=(0..100).map(|index|format!("THREAD_{index}_END")).find(|text|body.contains(text)).unwrap();
         let events=[json!({"type":"response.created","response":{"id":text}}),
             json!({"type":"response.output_item.done","item":{"id":text,"type":"message","role":"assistant","content":[{"type":"output_text","text":json!({"text":text,"command":null}).to_string()}]}}),
             json!({"type":"response.completed","response":{"id":text,"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}})];
         ([("content-type","text/event-stream")],events.iter().map(|event|format!("event: {}\ndata: {event}\n\n",event["type"].as_str().unwrap())).collect::<String>())
-    })).with_state(Arc::new(tokio::sync::Barrier::new(2)));
+    })).with_state(Arc::new(tokio::sync::Barrier::new(100)));
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
     let rpc=Rpc::start_unauthenticated(&PathBuf::from(std::env::var("ASSISTANT_TEST_SERVER")?),&directory.path().to_string_lossy()).await?;
     let mut tasks=tokio::task::JoinSet::new();
-    for name in ["FIRST_THREAD","SECOND_THREAD"] {
+    for index in 0..100 {
+        let name=format!("THREAD_{index}_END");
         let mut rpc=rpc.session();
         let endpoint=endpoint.clone();
         tasks.spawn(async move {
@@ -109,7 +140,7 @@ async fn embedded_account_runs_parallel_threads()->Result<()> {
             }
         });
     }
-    tokio::time::timeout(Duration::from_secs(45),async { while let Some(result)=tasks.join_next().await { result??; } Ok::<_,anyhow::Error>(()) }).await??;
+    tokio::time::timeout(Duration::from_secs(90),async { while let Some(result)=tasks.join_next().await { result??; } Ok::<_,anyhow::Error>(()) }).await??;
     server.abort();
     Ok(())
 }

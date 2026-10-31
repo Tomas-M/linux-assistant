@@ -2,6 +2,7 @@ use anyhow::{ensure, Result};
 use protocol::{ChatEvent, Progress, ProgressText};
 use serde_json::Value;
 use tokio::sync::watch;
+use std::time::{Duration,Instant};
 
 pub(super) struct Reporter {
     pub snapshot: Progress,
@@ -9,13 +10,14 @@ pub(super) struct Reporter {
     json: String,
     item: String,
     commentary: bool,
+    published: Instant,
 }
 
 impl Reporter {
     /// Each quota failover starts a new preview; text from failed attempts cannot mix with the answer.
     pub fn new(sender: Option<&watch::Sender<ChatEvent>>, attempt: usize) -> Self {
-        let reporter=Self { snapshot:Progress { attempt,..Default::default() },sender:sender.cloned(),json:String::new(),item:String::new(),commentary:false };
-        reporter.publish();
+        let mut reporter=Self { snapshot:Progress { attempt,..Default::default() },sender:sender.cloned(),json:String::new(),item:String::new(),commentary:false,published:Instant::now() };
+        reporter.publish(true);
         reporter
     }
 
@@ -78,13 +80,23 @@ impl Reporter {
         }
         ensure!(self.snapshot.text.len()<=64_000,"Answer preview too long");
         ensure!(self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>()<=64_000,"Progress summary too long");
-        self.publish();
+        self.publish(matches!(event["method"].as_str(),Some("item/started"|"item/completed")));
         Ok(())
     }
 
-    /// Watch replaces the previous snapshot rather than blocking the provider on a slow browser.
-    fn publish(&self) {
+    /// Coalesce token bursts to ten snapshots per second; stage changes bypass the delay.
+    fn publish(&mut self,force:bool) {
+        if !force && self.published.elapsed()<Duration::from_millis(100) { return; }
         if let Some(sender)=&self.sender { sender.send_replace(ChatEvent::Progress { progress:self.snapshot.clone() }); }
+        self.published=Instant::now();
+    }
+}
+
+impl Drop for Reporter {
+    /// Completion, Stop and disconnected clients retain the latest valid partial answer.
+    fn drop(&mut self) {
+        let summaries=self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>();
+        if self.snapshot.text.len()<=64_000 && summaries<=64_000 { self.publish(true); }
     }
 }
 
@@ -130,7 +142,7 @@ mod tests {
         assert_eq!(reporter.snapshot.activity.as_deref(),Some("Compacting context…"));
         for _ in 0..2 { reporter.event(&serde_json::json!({"method":"item/completed","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}))?; }
         assert!(reporter.snapshot.activity.is_none());
-        assert_eq!(reporter.snapshot.compacted.unwrap(),vec!["compact-1"]);
+        assert_eq!(reporter.snapshot.compacted.as_ref().unwrap(),&vec!["compact-1"]);
         Ok(())
     }
 

@@ -34,6 +34,8 @@ impl Pool {
         if !self.registered(account) { return Ok(()); }
         let mut cached=account.limits.lock().await;
         if cached.is_some_and(|limits|now()-limits.checked_at<300) { return Ok(()); }
+        // Concurrent arrivals must not each repeat the same failed 20-second network probe.
+        if account.probe_retry_at.load(Ordering::Relaxed)>now() { return Ok(()); }
         let result=tokio::time::timeout(Duration::from_secs(20),async {
             let mut rpc=self.rpc(account).await.context("Starting authenticated account worker")?;
             let identity=rpc.call("account/read",json!({"refreshToken":false})).await.context("Reading account identity")?;
@@ -54,6 +56,7 @@ impl Pool {
             }
             Err(error) => {
                 *cached=None;
+                account.probe_retry_at.store(now()+300,Ordering::Relaxed);
                 let message=crate::diagnostics::clean(&format!("Quota refresh failed: {error:#}"));
                 crate::diagnostics::record("error","quota_refresh",None,Some(&account.home),&message);
                 conn.execute("INSERT INTO provider_accounts(home,error) VALUES(?1,?2) ON CONFLICT(home) DO UPDATE SET error=excluded.error",

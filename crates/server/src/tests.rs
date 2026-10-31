@@ -3,6 +3,7 @@ use axum::body::to_bytes;
 use tower::ServiceExt;
 mod smtp;
 mod conversations;
+mod capacity;
 
 /// Disconnecting a live reader cannot abandon settlement; replay returns the cached answer once.
 #[tokio::test]

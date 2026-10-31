@@ -12,10 +12,12 @@ CREATE INDEX IF NOT EXISTS ledger_user ON ledger(user_id);
 CREATE INDEX IF NOT EXISTS ledger_time ON ledger(created_at);
 CREATE TABLE IF NOT EXISTS billing_tasks(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, conversation_id TEXT NOT NULL,
     input_rate INTEGER NOT NULL, cached_rate INTEGER NOT NULL, output_rate INTEGER NOT NULL, finished_at INTEGER, PRIMARY KEY(user_id,id));
+CREATE INDEX IF NOT EXISTS billing_tasks_active ON billing_tasks(user_id,conversation_id) WHERE finished_at IS NULL;
 CREATE TABLE IF NOT EXISTS requests(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, task_id TEXT NOT NULL, conversation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT, error TEXT, steering TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(user_id,id));
 CREATE INDEX IF NOT EXISTS requests_task ON requests(user_id,task_id);
 CREATE INDEX IF NOT EXISTS requests_conversation ON requests(user_id,conversation_id) WHERE response IS NULL AND error IS NULL;
 CREATE TABLE IF NOT EXISTS conversations(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, account_home TEXT, thread_id TEXT, messages TEXT NOT NULL DEFAULT '[]', checkpoint TEXT NOT NULL DEFAULT '', checkpoint_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,id));
+CREATE INDEX IF NOT EXISTS conversations_account ON conversations(account_home);
 CREATE TABLE IF NOT EXISTS purchases(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), credits INTEGER NOT NULL CHECK(credits>0), stripe_session TEXT UNIQUE, paid_at INTEGER);
 CREATE TABLE IF NOT EXISTS admin_sessions(token_hash TEXT PRIMARY KEY, password_hash TEXT NOT NULL, expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS user_blocks(user_id INTEGER PRIMARY KEY REFERENCES users(id), created_at INTEGER NOT NULL);

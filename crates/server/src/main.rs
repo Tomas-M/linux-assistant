@@ -182,23 +182,33 @@ async fn logout(State(app): State<App>, headers: HeaderMap) -> ApiResult<Json<Va
 
 /// Reserve, generate, and settle even when the HTTP caller disconnects mid-request.
 async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<ChatRequest>) -> ApiResult<Response> {
+    tokio::spawn(chat_request(app,headers,input)).await?
+}
+
+/// Admission and settlement continue even if the connection disappears during a blocking commit.
+async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Response> {
     let config=app.config();
-    let user = app.user(&headers)?;
-    let bytes = serde_json::to_vec(&input)?;
-    if input.messages.is_empty() || bytes.len()>protocol::MAX_UPLOAD_BYTES || protocol::display_messages(&input.messages).to_string().len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
-        return Err(ApiError::bad("New input is empty or exceeds the per-request limit"));
-    }
-    for message in &input.messages {
-        if message.role==protocol::Role::User { protocol::validate_input(&message.text,message.attachments.as_deref()).map_err(|error|ApiError::bad(&error.to_string()))?; }
-        else if message.attachments.is_some() { return Err(ApiError::bad("Only user messages can include attachments")); }
-    }
-    if input.messages.iter().any(|m|m.text.len()>64_000) {
-        return Err(ApiError::bad("Message is too long"));
-    }
-    let request_id=input.request_id;
-    let id = request_id.to_string();
-    let reservation = app.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&config.pricing)?;
     let streaming=headers.get(header::ACCEPT).is_some_and(|value|value=="text/event-stream");
+    let (admission,pricing)=(app.clone(),config.clone());
+    // Attachment validation and durable admission must not occupy the async network workers.
+    let (user,input,reservation)=tokio::task::spawn_blocking(move||->ApiResult<_> {
+        let user = admission.user(&headers)?;
+        let bytes = serde_json::to_vec(&input)?;
+        if input.messages.is_empty() || bytes.len()>protocol::MAX_UPLOAD_BYTES || protocol::display_messages(&input.messages).to_string().len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
+            return Err(ApiError::bad("New input is empty or exceeds the per-request limit"));
+        }
+        for message in &input.messages {
+            if message.role==protocol::Role::User { protocol::validate_input(&message.text,message.attachments.as_deref()).map_err(|error|ApiError::bad(&error.to_string()))?; }
+            else if message.attachments.is_some() { return Err(ApiError::bad("Only user messages can include attachments")); }
+        }
+        if input.messages.iter().any(|m|m.text.len()>64_000) {
+            return Err(ApiError::bad("Message is too long"));
+        }
+        let reservation = admission.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&pricing.pricing)?;
+        Ok((user,input,reservation))
+    }).await??;
+    let request_id=input.request_id;
+    let id=request_id.to_string();
     let (events,receiver)=tokio::sync::watch::channel(ChatEvent::Progress { progress:Default::default() });
     let reply: db::Completed = match reservation {
         Reservation::Cached(value) => serde_json::from_str(&value)?,
@@ -220,10 +230,17 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                 let result = tokio::select! {
                     answer=task_app.pool.answer_stream(&config,&task_app.db,user,&input,streaming.then_some(&task_events),Some(&mut control_receiver))=>answer,
                     _=cancellation.changed()=>Err(anyhow::Error::from(turns::Interrupted)),
-                }.and_then(|answer| {
-                    task_app.db.complete(user,&input,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())
-                });
-                task_app.turns.lock().unwrap().remove(&(user,input.request_id));
+                };
+                task_app.turns.lock().unwrap().remove(&(user,request_id));
+                // Moving the request avoids copying attachments while SQLite commits on a blocking thread.
+                let result=match result {
+                    Ok(answer)=> {
+                        let db=task_app.db.clone();
+                        tokio::task::spawn_blocking(move||db.complete(user,&input,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref()))
+                            .await.map_err(anyhow::Error::from).and_then(|result|result)
+                    }
+                    Err(error)=>Err(error),
+                };
                 let result=match result {
                     Ok(reply) => Ok(reply),
                     Err(error) => {
@@ -248,7 +265,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                         }
                     }
                     Err(error)=> {
-                        match task_app.db.steering(user,input.request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?,task_app.db.task_credits(user,request_id)?))) {
+                        match task_app.db.steering(user,request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?,task_app.db.task_credits(user,request_id)?))) {
                             Ok((steering,credits,task_credits))=> { task_events.send_replace(ChatEvent::Error { task_credits:Some(task_credits), progress:progress.clone(),message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
                             Err(error)=> {
                                 task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });

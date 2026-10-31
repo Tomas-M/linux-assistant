@@ -11,6 +11,7 @@ pub(super) struct Transport {
     pub(super) global:broadcast::Sender<Value>,
     failure:Arc<Mutex<Option<String>>>,
     task:tokio::task::JoinHandle<()>,
+    writer:tokio::task::JoinHandle<()>,
     stderr:tokio::task::JoinHandle<()>,
 }
 
@@ -52,7 +53,12 @@ async fn read(output:&mut BufReader<ChildStdout>,line:&mut Vec<u8>)->Result<Valu
         let complete=chunk[count-1]==b'\n';
         line.extend_from_slice(&chunk[..count]);
         output.consume(count);
-        if complete { return Ok(serde_json::from_slice(&std::mem::take(line))?); }
+        if complete {
+            let value=serde_json::from_slice(line)?;
+            line.clear();
+            if line.capacity()>256*1024 { line.shrink_to(64*1024); }
+            return Ok(value);
+        }
     }
 }
 
@@ -65,7 +71,21 @@ impl Transport {
             if let Err(error)=worker_stderr(stderr,&stderr_account).await { crate::diagnostics::record("error","provider_worker",None,Some(&stderr_account),&format!("Reading worker stderr: {error:#}")); }
         });
         let mut input=child.stdin.take().unwrap();
-        let mut output=BufReader::new(child.stdout.take().unwrap());
+        let mut output=BufReader::with_capacity(64*1024,child.stdout.take().unwrap());
+        // A large input must not prevent the account dispatcher from draining other conversations.
+        let (writes,mut queued)=mpsc::unbounded_channel::<Value>();
+        let (writer_failed,mut writer_failure)=oneshot::channel();
+        let writer=tokio::spawn(async move {
+            let result:Result<()>=async {
+                while let Some(value)=queued.recv().await {
+                    input.write_all(format!("{value}\n").as_bytes()).await?;
+                    input.flush().await?;
+                }
+                Ok(())
+            }.await;
+            let _=writer_failed.send(result);
+        });
+        let stop_writer=writer.abort_handle();
         let (sender,mut receiver)=mpsc::unbounded_channel();
         let threads=Arc::new(Mutex::new(HashMap::<String,(Uuid,mpsc::Sender<Value>)>::new()));
         let global=broadcast::channel(32).0;
@@ -73,7 +93,7 @@ impl Transport {
         let failed=failure.clone();
         let (routes,notifications,cleanup)=(threads.clone(),global.clone(),sender.clone());
         let task=tokio::spawn(async move {
-            let mut pending=HashMap::<u64,(Value,Uuid,oneshot::Sender<Value>)>::new();
+            let mut pending=HashMap::<u64,(String,Option<String>,Uuid,oneshot::Sender<Value>)>::new();
             let mut turns=HashMap::<String,String>::new();
             let mut line=Vec::new();
             let mut sequence=0u64;
@@ -81,6 +101,10 @@ impl Transport {
             let result:Result<()>=async {
                 loop {
                     let write=tokio::select! {
+                        result=&mut writer_failure=> {
+                            result.context("Provider input writer stopped")??;
+                            anyhow::bail!("Provider input writer closed");
+                        }
                         outgoing=receiver.recv()=>match outgoing.context("Provider transport closed")? {
                             Outbound::Shutdown(reply)=> { stopped=Some(reply); break Ok(()); }
                             Outbound::Subscribe(thread,owner,sender,reply)=> {
@@ -94,7 +118,9 @@ impl Transport {
                                 if value["method"]!="initialized" {
                                     sequence+=1;
                                     value["id"]=json!(sequence);
-                                    if let Some(reply)=reply { pending.insert(sequence,(value.clone(),owner,reply)); }
+                                    if let Some(reply)=reply {
+                                        pending.insert(sequence,(value["method"].as_str().unwrap().into(),value["params"]["threadId"].as_str().map(str::to_owned),owner,reply));
+                                    }
                                 }
                                 vec![value]
                             }
@@ -122,14 +148,14 @@ impl Transport {
                                 vec![json!({"id":message["id"],"error":{"code":-32601,"message":"Backend tools are disabled"}})]
                             } else {
                                 if let Some(id)=message["id"].as_u64() {
-                                    if let Some((request,owner,reply))=pending.remove(&id) {
-                                        if request["method"]=="turn/start" {
-                                            if let (Some(thread),Some(turn))=(request["params"]["threadId"].as_str(),message["result"]["turn"]["id"].as_str()) {
+                                    if let Some((method,thread,owner,reply))=pending.remove(&id) {
+                                        if method=="turn/start" {
+                                            if let (Some(thread),Some(turn))=(thread.as_deref(),message["result"]["turn"]["id"].as_str()) {
                                                 turns.insert(thread.into(),turn.into());
                                             }
                                         }
                                         if let Err(message)=reply.send(message) {
-                                            let thread=if request["method"]=="thread/start" { message["result"]["thread"]["id"].as_str() } else { request["params"]["threadId"].as_str() };
+                                            let thread=if method=="thread/start" { message["result"]["thread"]["id"].as_str() } else { thread.as_deref() };
                                             if let Some(thread)=thread { let _=cleanup.send(Outbound::Release(thread.into(),owner)); }
                                         }
                                     }
@@ -144,7 +170,7 @@ impl Transport {
                             }
                         }
                     };
-                    for value in write { input.write_all(format!("{value}\n").as_bytes()).await?; input.flush().await?; }
+                    for value in write { writes.send(value).context("Provider input writer closed")?; }
                 }
             }.await;
             if let Err(error)=result {
@@ -154,10 +180,11 @@ impl Transport {
             }
             routes.lock().unwrap().clear();
             let _=notifications.send(json!({"method":"assistant/transportClosed"}));
+            stop_writer.abort();
             let _=child.kill().await;
             if let Some(reply)=stopped { let _=reply.send(()); }
         });
-        Arc::new(Self { sender,threads,global,task,failure,stderr })
+        Arc::new(Self { sender,threads,global,task,failure,writer,stderr })
     }
 
     /// Wait for process exit before removing credentials or databases it may still have open.
@@ -196,7 +223,7 @@ impl Transport {
 
 impl Drop for Transport {
     /// Only losing the entire account transport terminates its process, never dropping one conversation.
-    fn drop(&mut self) { self.task.abort(); self.stderr.abort(); }
+    fn drop(&mut self) { self.task.abort(); self.writer.abort(); self.stderr.abort(); }
 }
 
 #[cfg(test)]
