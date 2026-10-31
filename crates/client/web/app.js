@@ -616,6 +616,12 @@ async function pollSocial()
             renderLogin(); elements.email.focus();
             return;
         }
+        // Check completion first because successful sign-in also closes the popup.
+        if (attempt.popup?.closed)
+        {
+            elements['cancel-sign-in'].click();
+            return;
+        }
     }
     catch (error)
     {
