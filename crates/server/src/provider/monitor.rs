@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::Arc;
+use protocol::Role;
 use rusqlite::params;
 use serde_json::json;
 
