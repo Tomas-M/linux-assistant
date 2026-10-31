@@ -72,7 +72,7 @@ mod tests {
                         else { "printf 'run\\n' >> runs.txt; printf 'HEAD_MARKER\\n'; i=0; while [ $i -lt 10000 ]; do printf '世界🙂 '; i=$((i+1)); done; printf 'TAIL_ERROR\\n' >&2" }.into(),
                 });
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete {
-                    response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Fixture response".into(),command },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
+                    response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Fixture response".into(),command },credits:50,revision:request.base+request.messages.len()+1,steering:vec![] }
                 }).unwrap())).into_response()
             }
         }));

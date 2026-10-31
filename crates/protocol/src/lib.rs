@@ -47,7 +47,7 @@ pub struct CommandProposal { pub command: String, pub cwd: String, pub reason: S
 pub struct AssistantReply { pub text: String, pub command: Option<CommandProposal> }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ChatResponse { pub reply: AssistantReply, pub credits: i64, pub revision: usize, pub steering: Vec<Steering>, pub progress:Option<Progress> }
+pub struct ChatResponse { pub reply: AssistantReply, pub credits: i64, pub task_credits:Option<i64>, pub revision: usize, pub steering: Vec<Steering>, pub progress:Option<Progress> }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Steering { pub id: Uuid, pub text: String, pub attachments: Option<Vec<Attachment>> }
@@ -70,7 +70,7 @@ pub struct ProgressText { pub id: String, pub text: String }
 pub enum ChatEvent {
     Progress { progress: Progress },
     Complete { response: ChatResponse },
-    Error { message: String, settled: bool, credits: Option<i64>, steering: Vec<Steering>, progress:Option<Progress> },
+    Error { message: String, settled: bool, credits: Option<i64>, task_credits:Option<i64>, steering: Vec<Steering>, progress:Option<Progress> },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

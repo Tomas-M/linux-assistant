@@ -55,6 +55,13 @@ impl Db {
         Ok(self.0.lock().unwrap().query_row("SELECT COALESCE(SUM(delta),0) FROM ledger WHERE user_id=?1", [user], |r| r.get(0))?)
     }
 
+    /// Resolve an owned request to its task and read the actual ledger charge.
+    pub fn task_credits(&self,user:i64,request:Uuid)->Result<i64> {
+        let conn=self.0.lock().unwrap();
+        let task:String=conn.query_row("SELECT task_id FROM requests WHERE user_id=?1 AND id=?2",params![user,request.to_string()],|r|r.get(0))?;
+        crate::billing::charged(&conn,user,&task)
+    }
+
     /// Resolve stable provider identities before considering a potentially changed email address.
     pub fn identity_user(&self, provider:AuthProvider, subject:&str)->Result<Option<i64>> {
         let conn=self.0.lock().unwrap();

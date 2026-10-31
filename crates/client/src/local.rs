@@ -399,7 +399,7 @@ mod tests {
             let proposal=protocol::CommandProposal { files:None, cwd:request.cwd,reason:"Write one marker".into(),
                 command:if cfg!(windows) { "Add-Content -Encoding UTF8 -LiteralPath 'runs.txt' -Value 'once'; Start-Sleep -Milliseconds 700" }
                     else { "printf 'once\\n' >> runs.txt; sleep 0.7" }.into() };
-            let response=protocol::ChatResponse { progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
+            let response=protocol::ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"A command proposal".into(),command:Some(proposal) },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let provider=tokio::spawn(async move { axum::serve(listener,provider).await.unwrap(); });

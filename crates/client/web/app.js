@@ -63,6 +63,7 @@ function render()
         elements['process-history'].replaceChildren();
         elements['process-detail'].hidden=true;
         elements['process-count'].hidden=true;
+        elements['tasks-running'].hidden=true;
         elements['process-status'].textContent='No commands in this chat yet.';
         elements['history-heading'].textContent='Completed commands · 0';
     }
@@ -135,7 +136,7 @@ function render()
         const group=document.createElement('div');
         if (previous) previous.element.replaceWith(group);
         else elements.messages.append(group);
-        messageRows[index]={element:group,text:message.text,role:message.role,progress:key};
+        messageRows[index]={element:group,text:message.text,role:message.role,progress:key,thinking:[]};
         for (const step of progress.filter(step=>step.summaries.length))
         {
             const details=document.createElement('details'), summary=document.createElement('summary');
@@ -149,6 +150,7 @@ function render()
                 details.append(p);
             }
             group.append(details);
+            messageRows[index].thinking.push(details);
         }
         const article=document.createElement('article');
         article.className=message.role;
@@ -173,8 +175,8 @@ function render()
             group.append(actions);
         }
     });
-    renderCompletions();
     renderCompactions();
+    renderCompletions();
     const activity=view.activity;
     const groupedCommand=activity?.progress===null && state.messages.at(-1)?.role==='tool';
     elements.activity.hidden=!activity || !view.busy || groupedCommand;
@@ -310,10 +312,15 @@ function renderCompactions()
     for (const [id,element] of compactionRows) if (!present.has(id)) { element.remove(); compactionRows.delete(id); }
 }
 
-// Completed tasks keep their own timestamp and interrupted text, even when the next queued task starts.
+// Fold completed work into a stable disclosure while keeping prompts and the final answer visible.
 function renderCompletions()
 {
-    const runs=view.runs.filter(run=>run.finished_at), anchors=new Map();
+    const runs=view.runs.filter(run=>run.finished_at), anchors=new Map(), compactions=new Map();
+    for (const step of view.steps)
+    {
+        if (!compactions.has(step.after)) compactions.set(step.after,[]);
+        for (const id of step.compacted || []) compactions.get(step.after).push(compactionRows.get(id));
+    }
     while (completionRows.length>runs.length) completionRows.pop().element.remove();
     runs.forEach((run,index)=>
     {
@@ -321,45 +328,64 @@ function renderCompletions()
         let row=completionRows[index];
         if (row?.key!==key)
         {
-            const element=document.createElement('section');
-            element.className='completion';
+            const element=document.createElement('section'), work=document.createElement('details'), summary=document.createElement('summary');
+            const body=document.createElement('div'), answer=document.createElement('div');
+            element.className='completion'; work.className='work-summary'; body.className='work-body';
+            const seconds=Math.max(0,Math.round((run.finished_at-run.started_at)/1000));
+            const duration=(seconds>=60?Math.floor(seconds/60)+'m ':'')+seconds%60+'s';
+            summary.innerHTML='<span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
+            summary.firstChild.textContent='Worked for '+duration;
+            work.append(summary,body); element.append(work,answer);
+            let notes;
             if (run.summaries.length)
             {
-                const details=document.createElement('details'), summary=document.createElement('summary');
-                details.className='past-progress';
-                summary.innerHTML='<span>Thinking</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
-                details.append(summary);
-                for (const part of run.summaries) { const paragraph=document.createElement('p'); paragraph.textContent=part.text; details.append(paragraph); }
-                element.append(details);
+                notes=document.createElement('div'); notes.className='summaries';
+                for (const part of run.summaries) { const paragraph=document.createElement('p'); paragraph.textContent=part.text; notes.append(paragraph); }
             }
             if (run.partial)
             {
                 const partial=document.createElement('div');
-                partial.className='answer partial-answer';
-                renderAnswer(partial,run.partial);
-                element.append(partial);
+                partial.className='answer partial-answer'; renderAnswer(partial,run.partial); answer.append(partial);
             }
             const footer=document.createElement('div'), copy=document.createElement('button'), time=document.createElement('time'), status=document.createElement('span');
-            footer.className='completion-footer';
-            copy.className='icon-button copy-answer';
-            copy.dataset.copy=index;
-            copy.title='Copy response';
-            copy.setAttribute('aria-label','Copy response');
+            footer.className='completion-footer'; copy.className='icon-button copy-answer'; copy.dataset.copy=index;
+            copy.title='Copy response'; copy.setAttribute('aria-label','Copy response');
             copy.disabled=!run.partial && !state.messages.slice(run.start,run.end).some(message=>message.role==='assistant' && message.text);
             setIcon(copy,'copy');
             const date=new Date(run.finished_at);
-            time.dateTime=date.toISOString();
-            time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-            time.title=date.toLocaleString();
-            status.textContent=run.error || 'Completed';
-            const seconds=Math.max(0,Math.round((run.finished_at-run.started_at)/1000));
-            status.title='Worked for '+Math.floor(seconds/60)+'m '+seconds%60+'s';
-            footer.append(copy,time,status);
-            element.append(footer);
+            time.dateTime=date.toISOString(); time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); time.title=date.toLocaleString();
+            status.textContent=run.error || 'Completed'; status.title='Worked for '+duration;
+            const credits=document.createElement('span');
+            credits.className='completion-cost';
+            credits.textContent=run.credits==null?'Credits unavailable':run.credits.toLocaleString()+' '+(run.credits===1?'credit':'credits');
+            footer.append(copy,time,status,credits); element.append(footer);
             if (row) row.element.replaceWith(element);
-            completionRows[index]=row={element,key};
+            completionRows[index]=row={element,work,body,answer,notes,key};
         }
-        const anchor=anchors.get(run.end) || messageRows[run.end-1]?.element;
+        const history=[], finalIndex=!run.partial && state.messages[run.end-1]?.role==='assistant'?run.end-1:-1;
+        let anchor=anchors.get(run.start) || messageRows[run.start-1]?.element;
+        anchor=anchor?.closest('.completion') || anchor;
+        for (let messageIndex=run.start;messageIndex<run.end;messageIndex++)
+        {
+            history.push(...(compactions.get(messageIndex) || []));
+            const message=messageRows[messageIndex];
+            if (state.messages[messageIndex].role==='user' || messageIndex===finalIndex)
+            {
+                history.push(...(message.thinking || []));
+                if (state.messages[messageIndex].role==='user') anchor=message.element;
+            }
+            else history.push(message.element);
+        }
+        const items=[...new Set(history)];
+        if (row.notes) items.push(row.notes);
+        items.forEach((element,position)=>
+        {
+            if (row.body.children[position]!==element) row.body.insertBefore(element,row.body.children[position] || null);
+        });
+        const present=new Set(items);
+        for (const child of [...row.body.children]) if (!present.has(child)) child.remove();
+        row.work.hidden=!items.length;
+        if (finalIndex>=0 && messageRows[finalIndex].element.parentElement!==row.answer) row.answer.append(messageRows[finalIndex].element);
         if (anchor && row.element.previousElementSibling!==anchor) anchor.after(row.element);
         else if (!anchor && elements.messages.firstElementChild!==row.element) elements.messages.prepend(row.element);
         anchors.set(run.end,row.element);
@@ -401,6 +427,7 @@ elements.messages.addEventListener('click',async event=>
 // Show a way back to the latest output whenever the reader is away from the end.
 function renderScrollButton()
 {
+    setIcon(elements['scroll-bottom'],view.busy?'ellipsis':'send');
     elements['scroll-bottom'].hidden=!state?.authenticated || document.body.classList.contains('empty-chat') || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
 }
 
@@ -876,6 +903,25 @@ async function submitPrompt(steer=false)
     }
     finally { if (!(view.queue || []).some(input=>input.id===id && input.editing)) pendingIds.delete(id); renderComposer(); }
 }
+// Start typing at the end of the prompt without taking over dialogs, text fields or shortcuts.
+document.addEventListener('keydown',event=>
+{
+    if (!state?.authenticated || elements.prompt.disabled) return;
+    if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
+    const shortcut=(event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState('AltGraph');
+    if (shortcut || event.target.closest('textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio])')) return;
+    if (event.key===' ' && event.target.closest('button,a,summary,input')) return;
+    const composing=event.isComposing || ['Dead','Process'].includes(event.key);
+    if (!composing && Array.from(event.key).length!==1) return;
+    elements.prompt.focus({preventScroll:true});
+    const end=elements.prompt.value.length;
+    elements.prompt.setSelectionRange(end,end);
+    if (composing) return;
+    event.preventDefault();
+    elements.prompt.setRangeText(event.key,end,end,'end');
+    elements.prompt.dispatchEvent(new Event('input',{bubbles:true}));
+});
+
 elements.prompt.addEventListener('paste',event=>
 {
     const files=[...event.clipboardData.files];
@@ -1039,6 +1085,8 @@ async function pollProcesses()
         const running=records.filter(record=>!record.finished_at);
         elements['process-count'].textContent=running.length+' running';
         elements['process-count'].hidden=!running.length;
+        elements['tasks-running'].hidden=!running.length;
+        elements['process-toggle'].setAttribute('aria-label',running.length?'Tasks, '+running.length+' running commands':'Tasks');
         elements['process-toggle'].title='Task manager · '+running.length+' running';
         if (elements['process-panel'].hidden) return;
         elements['process-status'].textContent=records.length?'No commands are running.':'No commands in this chat yet.';
@@ -1170,7 +1218,8 @@ for (const stream of ['stdout','stderr']) elements['download-'+stream].addEventL
 // Idle or hidden tabs avoid constant polling; selected output is fetched only when its metadata changes.
 setInterval(()=>
 {
-    const interval=elements['process-panel'].hidden && !view.busy?5000:1000;
+    const idle=elements['process-panel'].hidden && !view.busy && elements['tasks-running'].hidden;
+    const interval=idle?5000:1000;
     if (state?.authenticated && !document.hidden && Date.now()-lastProcessPoll>=interval) pollProcesses();
 },1000);
 // Connection attempts remain visible during both sign-in and an active task, including concurrent checkout.

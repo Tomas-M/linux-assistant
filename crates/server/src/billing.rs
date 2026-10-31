@@ -82,6 +82,12 @@ pub fn admit(conn:&Connection,user:i64,request:&ChatRequest,pricing:&Pricing)->R
     Ok(true)
 }
 
+/// Report the exact debits recorded for a whole task, including command follow-ups and minimum charges.
+pub fn charged(conn:&Connection,user:i64,task:&str)->Result<i64> {
+    let minimum=format!("task:{user}:{task}");
+    Ok(conn.query_row("SELECT COALESCE(-SUM(delta),0) FROM ledger WHERE user_id=?1 AND (reference=?3 OR reference IN (SELECT 'usage:'||x.id FROM usage x JOIN requests r ON r.user_id=x.user_id AND r.id=x.request_id WHERE r.user_id=?1 AND r.task_id=?2))",params![user,task,minimum],|r|r.get(0))?)
+}
+
 /// Settle recorded usage atomically with delivery; incremental debits sum to one rounded task cost.
 pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)->Result<()> {
     let (task,pricing)=conn.query_row("SELECT t.id,t.input_rate,t.cached_rate,t.output_rate FROM billing_tasks t JOIN requests r ON r.user_id=t.user_id AND r.task_id=t.id WHERE r.user_id=?1 AND r.id=?2",params![user,request],|r| {
@@ -90,7 +96,7 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
     let mut statement=conn.prepare("SELECT x.id,x.input_tokens,x.cached_tokens,x.output_tokens FROM usage x JOIN requests r ON r.user_id=x.user_id AND r.id=x.request_id WHERE r.user_id=?1 AND r.task_id=?2 ORDER BY x.id")?;
     let attempts=statement.query_map(params![user,task],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let minimum=format!("task:{user}:{task}");
-    let mut charged:i64=conn.query_row("SELECT COALESCE(-SUM(delta),0) FROM ledger WHERE user_id=?1 AND (reference=?3 OR reference IN (SELECT 'usage:'||x.id FROM usage x JOIN requests r ON r.user_id=x.user_id AND r.id=x.request_id WHERE r.user_id=?1 AND r.task_id=?2))",params![user,task,minimum],|r|r.get(0))?;
+    let mut charged=charged(conn,user,&task)?;
     let mut cost=0i128;
     for (index,(id,input,cached,output)) in attempts.iter().enumerate() {
         if let (Some(input),Some(cached),Some(output))=(input,cached,output) {

@@ -8,7 +8,14 @@ impl Engine {
             let runs=view["runs"].as_array_mut().unwrap();
             if runs.last().is_some_and(|run|run["finished_at"].is_null()) { return; }
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-            runs.push(json!({"start":start,"end":start,"started_at":now,"finished_at":null,"error":null,"partial":"","summaries":[]}));
+            runs.push(json!({"start":start,"end":start,"started_at":now,"finished_at":null,"error":null,"partial":"","summaries":[],"credits":null}));
+        });
+    }
+
+    /// Each completion reports the cumulative task charge, so retries never add it twice.
+    pub(super) fn record_credits(&self,credits:Option<i64>) {
+        self.live.0.send_modify(|view| {
+            if let Some(run)=view["runs"].as_array_mut().unwrap().last_mut().filter(|run|run["finished_at"].is_null()) { run["credits"]=json!(credits); }
         });
     }
 

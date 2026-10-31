@@ -195,7 +195,8 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
     if input.messages.iter().any(|m|m.text.len()>64_000) {
         return Err(ApiError::bad("Message is too long"));
     }
-    let id = input.request_id.to_string();
+    let request_id=input.request_id;
+    let id = request_id.to_string();
     let reservation = app.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&config.pricing)?;
     let streaming=headers.get(header::ACCEPT).is_some_and(|value|value=="text/event-stream");
     let (events,receiver)=tokio::sync::watch::channel(ChatEvent::Progress { progress:Default::default() });
@@ -203,7 +204,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
         Reservation::Cached(value) => serde_json::from_str(&value)?,
         Reservation::Failed(error) => {
             if !streaming { return Err(ApiError::busy(&error)); }
-            events.send_replace(ChatEvent::Error { progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
+            events.send_replace(ChatEvent::Error { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
         Reservation::Pending => return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into())),
@@ -229,7 +230,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                         diagnostics::record("error","chat",Some(&id),None,&format!("{error:#}"));
                         let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged.".to_owned() } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
                         if let Err(error)=task_app.db.settle(user,&id,Err(message.clone())) {
-                            task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                            task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                             return Err(ApiError::from(error));
                         }
                         Err(ApiError::busy(&message))
@@ -238,19 +239,19 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
                 let progress=match &*task_events.borrow() { ChatEvent::Progress { progress }=>Some(progress.clone()),_=>None };
                 match &result {
                     Ok(reply) => {
-                        match task_app.db.balance(user) {
-                            Ok(credits)=> { task_events.send_replace(ChatEvent::Complete { response:ChatResponse { progress:progress.clone(), reply:reply.reply.clone(),credits,revision:reply.revision,steering:reply.steering.clone() } }); }
+                        match task_app.db.balance(user).and_then(|credits|Ok((credits,task_app.db.task_credits(user,request_id)?))) {
+                            Ok((credits,task_credits))=> { task_events.send_replace(ChatEvent::Complete { response:ChatResponse { task_credits:Some(task_credits), progress:progress.clone(), reply:reply.reply.clone(),credits,revision:reply.revision,steering:reply.steering.clone() } }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not read the balance. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not read billing details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }
                     }
                     Err(error)=> {
-                        match task_app.db.steering(user,input.request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?))) {
-                            Ok((steering,credits))=> { task_events.send_replace(ChatEvent::Error { progress:progress.clone(),message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
+                        match task_app.db.steering(user,input.request_id).and_then(|steering|Ok((steering,task_app.db.balance(user)?,task_app.db.task_credits(user,request_id)?))) {
+                            Ok((steering,credits,task_credits))=> { task_events.send_replace(ChatEvent::Error { task_credits:Some(task_credits), progress:progress.clone(),message:error.1.clone(),settled:true,credits:Some(credits),steering }); }
                             Err(error)=> {
-                                task_events.send_replace(ChatEvent::Error { progress:None,message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                                task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not recover settlement details. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                                 return Err(ApiError::from(error));
                             }
                         }
@@ -262,7 +263,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
             task.await??
         }
     };
-    let response=ChatResponse { progress:None, reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
+    let response=ChatResponse { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None, reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
     if streaming {
         events.send_replace(ChatEvent::Complete { response });
         Ok(chat_stream(receiver))

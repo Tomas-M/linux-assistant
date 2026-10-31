@@ -217,6 +217,7 @@ impl Engine {
         if self.saved.pending_output.is_some() { self.finish_output()?; }
         let request = self.saved.request.as_ref().context("No unfinished request")?;
         self.begin_activity(self.saved.messages.len());
+        self.record_credits(None);
         let _active=self.controls.active(crate::controls::Remote { backend:self.saved.settings.backend.clone(),token:self.saved.token.clone().unwrap(),request:request.request_id });
         self.live.activity("Waiting for assistant…",Some(Default::default()));
         let response = crate::backend::send(self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request),&self.live,Some(&self.controls.stopped)).await?;
@@ -268,9 +269,11 @@ impl Engine {
                     }
                     protocol::ChatEvent::Complete { mut response } => {
                         if let Some(progress)=response.progress.take() { self.live.activity("Responding…",Some(progress)); }
+                        self.record_credits(response.task_credits);
                         return Ok(response);
                     },
-                    protocol::ChatEvent::Error { message,settled,credits,steering,progress } => {
+                    protocol::ChatEvent::Error { message,settled,credits,task_credits,steering,progress } => {
+                        self.record_credits(task_credits);
                         if let Some(progress)=progress { self.live.activity("Thinking…",Some(progress)); }
                         if let (Some(account),Some(credits))=(&mut self.account,credits) { account.credits=credits; }
                         if settled {
@@ -362,7 +365,7 @@ mod tests {
         let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>| {
             let mut requests=seen.lock().unwrap(); requests.push(request.clone());
             let event=if requests.len()==1 { protocol::ChatEvent::Progress { progress:Default::default() } }
-                else { protocol::ChatEvent::Complete { response:ChatResponse { progress:Some(protocol::Progress { compacted:Some(vec!["compact".into()]),..Default::default() }),reply:protocol::AssistantReply { text:"Read".into(),command:None },credits:99,revision:request.base+2,steering:vec![] } } };
+                else { protocol::ChatEvent::Complete { response:ChatResponse { task_credits:Some(1), progress:Some(protocol::Progress { compacted:Some(vec!["compact".into()]),..Default::default() }),reply:protocol::AssistantReply { text:"Read".into(),command:None },credits:99,revision:request.base+2,steering:vec![] } } };
             async move { ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap())) }
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
@@ -391,7 +394,7 @@ mod tests {
         let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>| {
             seen.lock().unwrap().push((request.task_id,request.request_id));
             async move {
-                let event=protocol::ChatEvent::Error { progress:None,message:"Stopped".into(),settled:true,credits:Some(-2),steering:vec![] };
+                let event=protocol::ChatEvent::Error { task_credits:Some(2), progress:None,message:"Stopped".into(),settled:true,credits:Some(-2),steering:vec![] };
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap()))
             }
         }));
@@ -426,7 +429,7 @@ mod tests {
                 let mut requests=seen.lock().unwrap();
                 requests.push(request.request_id);
                 let event=if requests.len()==1 { protocol::ChatEvent::Progress { progress:protocol::Progress { compacted:None,attempt:1,activity:None,text:"Partial 世界".into(),summaries:vec![] } } }
-                    else { protocol::ChatEvent::Complete { response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Complete 世界".into(),command:None },credits:8,revision:request.base+request.messages.len()+1,steering:vec![] } } };
+                    else { protocol::ChatEvent::Complete { response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Complete 世界".into(),command:None },credits:8,revision:request.base+request.messages.len()+1,steering:vec![] } } };
                 ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap()))
             }
         }));
@@ -466,7 +469,7 @@ mod tests {
                     Platform::Windows => "Add-Content -Encoding UTF8 -LiteralPath 'approval.txt' -Value 'approved'",
                 }.into(),cwd:request.cwd,reason:"Write a test marker".into(),
             });
-            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Test reply".into(),command },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
+            ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response:ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Test reply".into(),command },credits:10,revision:request.base+request.messages.len()+1,steering:vec![] } }).unwrap()))
         }));
         let server = tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         engine.saved.token = Some("test-session".into());
@@ -531,7 +534,7 @@ mod tests {
         let app=Router::new().route("/v1/chat",post(|Json(request):Json<ChatRequest>|async move {
             assert_eq!(request.messages.len(),1);
             assert!(serde_json::to_vec(&request).unwrap().len()<16_000);
-            let response=ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Recorded".into(),command:None },credits:100,revision:request.base+2,steering:vec![] };
+            let response=ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Recorded".into(),command:None },credits:100,revision:request.base+2,steering:vec![] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
@@ -582,7 +585,7 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
         let app=Router::new().route("/v1/chat",post(move |Json(request):Json<ChatRequest>|async move {
-            let response=ChatResponse { progress:None, reply:protocol::AssistantReply { text:"Done".into(),command:None },credits:10,revision:request.base+request.messages.len()+2,
+            let response=ChatResponse { task_credits:Some(1), progress:None, reply:protocol::AssistantReply { text:"Done".into(),command:None },credits:10,revision:request.base+request.messages.len()+2,
                 steering:vec![protocol::Steering { attachments:None, id,text:"Queued steering".into() }] };
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
