@@ -16,6 +16,6 @@ test "$(git -C vendor/codex rev-parse HEAD)" = "$revision"
 
 # Limit parallel compilation by default; the embedded Codex build is substantial.
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-cargo build --release --locked -p assistant-server --bin assistant-server
+python3 scripts/cargo_backend.py build --release --locked -p assistant-server --bin assistant-server
 ./target/release/assistant-server --codex-version
 printf '%s\n' 'Built target/release/assistant-server. Continue with START-HERE.md to install and configure it.'

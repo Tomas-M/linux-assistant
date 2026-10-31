@@ -156,7 +156,7 @@ CLI commands:
 
 For a small server upload, run `python scripts/package_server.py` in the development checkout. Upload `dist/linux-assistant-server-source.tar.gz` and follow its `deploy/START-HERE.md`. The bundle excludes local tools, build output, credentials, and vendored sources; its Linux build script downloads the exact pinned Codex commit. Regenerate the archive after application or Codex updates.
 
-Build `assistant-server` and run it under a dedicated OS user using the [systemd unit](deploy/linux-assistant.service). Production Linux binds `127.0.0.1:8787` and stores its database at `/var/lib/linux-assistant/assistant.db`. The backend embeds Codex App Server; no separate Codex installation is needed.
+Build `assistant-server` and run it under a dedicated OS user using the [systemd unit](deploy/linux-assistant.service). Production Linux binds `127.0.0.1:8787` and stores its database at `/var/lib/linux-assistant/assistant.db`. The backend embeds Codex App Server and its V8-based Code Mode host; no separate Codex installation is needed. Code Mode orchestrates the advertised local tools, while command execution and file access still happen exclusively in the client. Each account worker creates temporary executable aliases in its private data directory and communicates with the host through stdio pipes. Use the build wrapper (`python scripts/cargo_backend.py build --locked -p assistant-server`) to download and verify the pinned Codex V8 library. The first backend build is larger and slower than a client-only build; later builds reuse the library. The wrapper requires Python 3.11 or later.
 
 Open `/admin` through your HTTPS reverse proxy. Until an administrator password exists, it redirects to the first-run password form. Only this setup form is available without authentication; the operational APIs remain protected. The first submitted valid password claims the backend. After setup, sign-in is required. Administrator passwords are salted and stretched with PBKDF2-HMAC-SHA256; only their hashes are stored.
 
@@ -269,8 +269,8 @@ The cross-compiled executable is at `target/x86_64-unknown-linux-gnu/release/lin
 Install Rust with the MSVC toolchain and Visual Studio C++ Build Tools, then use PowerShell:
 
 ```powershell
-cargo test --workspace --locked
-cargo build --release --locked --workspace
+python scripts/cargo_backend.py test --workspace --locked
+python scripts/cargo_backend.py build --release --locked --workspace
 .\target\release\assistant-server.exe --dev
 # In another terminal:
 .\target\release\linux-assistant.exe --backend http://127.0.0.1:8787 --cli
@@ -283,20 +283,20 @@ Distribute `target/release/linux-assistant.exe`. The repository's `.cargo/config
 Run the optional provider protocol fixture on Windows with:
 
 ```powershell
-cargo build -p assistant-server --bin assistant-server --example provider-fixture --locked
+python scripts/cargo_backend.py build -p assistant-server --bin assistant-server --example provider-fixture --locked
 $env:ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture.exe"
 $env:ASSISTANT_TEST_SERVER="$PWD/target/debug/assistant-server.exe"
-cargo test -p assistant-server integration_ --locked -- --ignored
+python scripts/cargo_backend.py test -p assistant-server integration_ --locked -- --ignored
 ```
 
 ## Tests
 
 ```sh
-cargo test --workspace --locked
-cargo build -p assistant-server --bin assistant-server --example provider-fixture --locked
+python scripts/cargo_backend.py test --workspace --locked
+python scripts/cargo_backend.py build -p assistant-server --bin assistant-server --example provider-fixture --locked
 ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture" \
   ASSISTANT_TEST_SERVER="$PWD/target/debug/assistant-server" \
-  cargo test -p assistant-server integration_ --locked -- --ignored
+  python scripts/cargo_backend.py test -p assistant-server integration_ --locked -- --ignored
 ```
 
 Tests cover ledger idempotency and crash recovery, insufficient credits, device-session consumption, email-code attempt limits, session revocation, payment signature validation and replay, account rotation over JSONL, local Origin/Host/token checks, HTTPS enforcement, OS-specific proposals, and actual execution through the approval flow. Process tests check live output and stopping while the conversation is locked, saved results, Unicode-safe output truncation, results staying in the main conversation, provider thread isolation, and restart/retry without command reexecution. Windows tests also check Unicode and quoting, working directories, PowerShell/native failures, both output caps, and descendant cleanup on Stop and cancellation. Live credentials are unnecessary for these tests.

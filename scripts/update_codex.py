@@ -92,6 +92,8 @@ def main():
     (ROOT/"rust-toolchain.toml").write_text(f'[toolchain]\nchannel = "{channel}"\nprofile = "minimal"\n',encoding="utf-8")
     # Seed the tested upstream dependency graph; Cargo adds our workspace's own packages.
     shutil.copyfile(UPSTREAM/"codex-rs/Cargo.lock",ROOT/"Cargo.lock")
+    from cargo_backend import environment
+    os.environ.update(environment())
     run("cargo","check","--workspace")
     run("cargo","build","-p","assistant-server","--bin","assistant-server","--example","provider-fixture","--locked")
     run("cargo","test","--workspace","--locked")

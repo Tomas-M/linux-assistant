@@ -69,6 +69,12 @@ impl App {
 
 /// Use upstream's runtime and stack sizing only inside isolated provider workers.
 fn main() -> anyhow::Result<()> {
+    let name=std::env::args_os().next().map(std::path::PathBuf::from).unwrap();
+    if name.file_stem().is_some_and(|name|name=="codex-code-mode-host") {
+        // Upstream selects stdio or grpc+stdio; neither exposes a network listener.
+        let listen=std::env::args().nth(2).filter(|value|value=="grpc+stdio://").unwrap_or_else(||"stdio".into());
+        return tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(codex_code_mode_host::run_main(&listen));
+    }
     if std::env::args_os().any(|arg|arg=="--provider-worker") {
         return codex_arg0::arg0_dispatch_or_else(embedded::run);
     }

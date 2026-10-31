@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 protocol = { path = "crates/protocol" }
 codex-app-server = { path = "vendor/codex/codex-rs/app-server" }
+codex-code-mode-host = { path = "vendor/codex/codex-rs/code-mode-host" }
 codex-arg0 = { path = "vendor/codex/codex-rs/arg0" }
 codex-config = { path = "vendor/codex/codex-rs/config" }
 codex-utils-cli = { path = "vendor/codex/codex-rs/utils/cli" }

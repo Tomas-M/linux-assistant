@@ -9,7 +9,7 @@ use super::QuotaReached;
 
 pub(super) struct Rpc {
     transport:Arc<Transport>, owner:uuid::Uuid, thread:Option<String>, events:Option<mpsc::Receiver<Value>>,
-    global:broadcast::Receiver<Value>,
+    global:broadcast::Receiver<Value>, runtime:Arc<tempfile::TempDir>,
 }
 
 impl Rpc {
@@ -19,7 +19,8 @@ impl Rpc {
         ensure!(!home.join("config.toml").exists(),"Use dedicated operator directories without config.toml");
         let workspace = home.join("assistant-empty-workspace");
         std::fs::create_dir_all(&workspace)?;
-        let mut command = Command::new(executable);
+        let (runtime,worker)=crate::embedded::runtime(executable,home)?;
+        let mut command = Command::new(worker);
         command.arg("--provider-worker").env("CODEX_HOME",home).env_remove("OPENAI_API_KEY").env_remove("CODEX_API_KEY")
             .env("RUST_LOG","warn").current_dir(workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         // Provider children receive only their own authentication home, never application or payment secrets.
@@ -29,7 +30,7 @@ impl Rpc {
         }
         #[cfg(windows)] { command.creation_flags(0x08000000); }
         let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?,home.to_string_lossy().into_owned());
-        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None };
+        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,runtime:Arc::new(runtime) };
         rpc.call("initialize",json!({"clientInfo":{"name":"linux_assistant","title":"Linux Assistant","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true}})).await?;
         rpc.transport.initialized()?;
@@ -46,7 +47,7 @@ impl Rpc {
 
     /// Each caller gets its own thread subscription on the same authenticated account process.
     pub(super) fn session(&self)->Self {
-        Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None }
+        Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None,runtime:self.runtime.clone() }
     }
 
     /// Removal waits for the account worker to exit before deleting its private home.
@@ -212,6 +213,12 @@ impl Rpc {
                 // Resuming a thread replays the preceding counters before current-turn notifications.
                 if event["method"]=="thread/tokenUsage/updated" { baseline=event["params"]["tokenUsage"]["total"].clone(); }
                 continue;
+            }
+            if event["method"]=="warning" {
+                let message=event["params"]["message"].as_str().unwrap_or("Provider warning");
+                crate::diagnostics::record("warning","provider_warning",Some(&request.request_id.to_string()),None,message);
+                // This pinned protocol exposes no warning code; fail-closed runtime warnings cannot be a successful task.
+                if message.starts_with("Code Mode is unavailable") && message.contains("fail closed") { bail!("Provider tool runtime unavailable: {message}"); }
             }
             if interrupted.is_none() {
                 if event.get("id").is_some() {

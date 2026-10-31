@@ -4,20 +4,20 @@ The backend is one executable. Application configuration is entered in the web a
 
 ## Build
 
-Upload `dist/linux-assistant-server-source.tar.gz`, or use the Git checkout. The bundle excludes tools, credentials, build output and vendored Codex; the build script downloads the exact pinned Codex commit. The first build needs internet access and substantial free disk space.
+Upload `dist/linux-assistant-server-source.tar.gz`, or use the Git checkout. The bundle excludes tools, credentials, build output and vendored Codex; the build script downloads the exact pinned Codex commit. The first build needs internet access and substantial free disk space, including the pinned prebuilt V8 library used by Code Mode. Both App Server and its Code Mode host are linked into the same backend executable; no separate Codex installation is required. Code Mode orchestrates local tool calls; commands and file operations still execute in the user’s client.
 
 Run as root on Debian/Ubuntu:
 
 ```sh
 # Install system build dependencies once.
 apt-get update
-apt-get install -y build-essential git curl ca-certificates pkg-config libssl-dev libcap-dev cmake
+apt-get install -y build-essential git curl ca-certificates pkg-config libssl-dev libcap-dev cmake python3
 
 # Inside the extracted source directory, build the backend.
 sh scripts/build_server.sh
 ```
 
-Install Rust/rustup before building if it is not already available. `rust-toolchain.toml` selects the required version. The build defaults to two jobs; use `CARGO_BUILD_JOBS=1 sh scripts/build_server.sh` to reduce memory pressure.
+Python 3.11 or later is required. Install Rust/rustup before building if it is not already available. `rust-toolchain.toml` selects the required version. The build defaults to two jobs; use `CARGO_BUILD_JOBS=1 sh scripts/build_server.sh` to reduce memory pressure.
 
 ## Fresh service installation
 

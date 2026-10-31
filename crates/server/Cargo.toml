@@ -18,6 +18,7 @@ tokio.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
 uuid.workspace = true
 codex-app-server.workspace = true
+codex-code-mode-host.workspace = true
 codex-arg0.workspace = true
 codex-config.workspace = true
 codex-utils-cli.workspace = true
