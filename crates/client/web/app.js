@@ -569,7 +569,7 @@ function renderLogin()
     elements.resend.disabled=loginBusy || remaining>0;
     elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
     elements.login.textContent=loginBusy?'Sending…':'Send sign-in code';
-    elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification;
+    elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification || !elements['code-form'].hidden;
     for (const button of document.querySelectorAll('[data-provider]'))
     {
         button.hidden=!enabledProviders.includes(button.dataset.provider);

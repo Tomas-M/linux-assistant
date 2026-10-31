@@ -117,6 +117,7 @@ fn router(state: Local) -> Router {
             let name=state.brand.name.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
             Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{ICONS}}",protocol::ICONS_SVG))
         }))
+        .route("/assistant.png",get(||async { ([(header::CONTENT_TYPE,"image/png")],include_bytes!("../web/assistant.png").as_slice()) }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
         .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))

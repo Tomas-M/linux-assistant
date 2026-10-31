@@ -205,8 +205,15 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 #new { display:inline-flex; align-items:center; gap:8px; }
 .credit-balance { color:var(--accent); background:var(--accent-soft); border-color:transparent; font-size:16px; font-weight:600; white-space:nowrap; }
 .credit-balance.depleted { color:var(--warning); background:var(--surface); }
-.auth-card { max-width:420px; padding:28px; margin:32px auto 0; border:1px solid var(--border); border-radius:20px; box-shadow:var(--shadow); }
-.signed-out main { padding-bottom:48px; }
+.auth-layout { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:48px; align-items:center; margin:32px auto; }
+.auth-intro h1 { font-size:36px; }
+.auth-intro p { color:var(--muted); margin:18px 0; }
+.auth-character { display:block; width:200px; height:200px; object-fit:contain; margin-bottom:24px; filter:drop-shadow(0 12px 20px #172f4514); }
+.welcome-credits { display:inline-block; padding:7px 13px; border-radius:24px; background:var(--accent-soft); color:var(--accent); font-size:14px; font-weight:600; }
+.auth-intro .auth-invitation { font-size:14px; }
+.auth-card { min-width:0; padding:28px; border:1px solid var(--border); border-radius:20px; box-shadow:var(--shadow); background:var(--bg); }
+.signed-out main { max-width:1000px; padding-bottom:48px; }
+@media (max-width:760px) { .signed-out main { padding:24px 18px 48px; } .auth-layout { grid-template-columns:1fr; gap:24px; max-width:440px; margin:0 auto; } .auth-intro { text-align:center; } .auth-character { width:112px; height:112px; margin:0 auto 16px; } .auth-intro h1 { font-size:30px; } }
 .auth-card h2 { margin:0 0 12px; }
 .auth-card p { color:var(--muted); font-size:14px; }
 .auth-card label { display:block; font-size:14px; margin:22px 0 8px; }
@@ -218,8 +225,8 @@ svg { width:20px; height:22px; fill:currentColor; stroke:none; }
 .credit-pack { padding:18px 12px; text-align:center; }
 .credit-pack strong { display:block; font-size:20px; line-height:1.2; margin-bottom:10px; }
 .credit-pack span { display:block; font-size:14px; }
-.auth-divider { display:flex; align-items:center; gap:12px; margin:24px 0 16px; color:var(--muted); font-size:13px; }
-.auth-divider::before,.auth-divider::after { content:''; flex:1; height:1px; background:var(--border); }
+#social-providers { margin-top:28px; padding:20px; background:var(--surface); border:1px solid var(--border); border-radius:14px; }
+.auth-divider { margin:0 0 14px; color:var(--text); font-size:14px; font-weight:600; }
 .social-buttons { display:grid; gap:10px; }
 .social-buttons button { display:flex; align-items:center; justify-content:center; gap:12px; min-height:44px; font-size:14px; font-weight:500; }
 .social-buttons svg { width:20px; height:20px; fill:currentColor; stroke:none; flex-shrink:0; }

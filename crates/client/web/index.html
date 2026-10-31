@@ -33,24 +33,32 @@
             <section id="welcome" class="welcome" hidden>
                 <h1>What can I help you with?</h1>
             </section>
-            <section id="setup" class="auth-card" hidden aria-label="Sign in">
+            <section id="setup" class="auth-layout" hidden aria-label="Sign in">
+                <div class="auth-intro">
+                    <img src="/assistant.png" width="200" height="200" alt="Your friendly Linux assistant" class="auth-character">
+                    <h1>A helping hand with your computer.</h1>
+                    <p>Ask questions, solve problems, and get everyday tasks done. Your assistant can run commands on your computer when you allow it.</p>
+                    <span class="welcome-credits">Start with 100 free credits</span>
+                    <p class="auth-invitation">Sign in to get your free credits and start chatting.</p>
+                </div>
+                <div class="auth-card">
                 <form id="email-form">
-                    <h2>Sign in to continue</h2>
+                    <h2>Let’s get you started</h2>
                     <div id="email-sign-in" hidden>
                     <p>Enter your email and we’ll send you a sign-in code.</p>
                     <label for="email">Email address</label>
                     <input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254" required>
                     <button id="login" class="primary">Send sign-in code</button>
                     </div>
+                </form>
                     <div id="social-providers" hidden>
-                        <div id="auth-divider" class="auth-divider"><span>or continue with</span></div>
+                        <div id="auth-divider" class="auth-divider"><span>Or use an existing account</span></div>
                         <div class="social-buttons">
                             <button type="button" data-provider="google" hidden><svg aria-hidden="true"><use href="#icon-google"/></svg>Continue with Google</button>
                             <button type="button" data-provider="microsoft" hidden><svg aria-hidden="true"><use href="#icon-microsoft"/></svg>Continue with Microsoft</button>
                             <button type="button" data-provider="github" hidden><svg aria-hidden="true"><use href="#icon-github"/></svg>Continue with GitHub</button>
                         </div>
                     </div>
-                </form>
                 <form id="code-form" hidden>
                     <h2>Check your inbox</h2>
                     <p>Enter the six-digit code sent to <strong id="login-email"></strong>.</p>
@@ -69,6 +77,7 @@
                 <button id="cancel-sign-in" type="button" class="quiet" hidden>Cancel sign-in</button>
                 <p id="auth-status" role="status" aria-live="polite"></p>
                 <p id="auth-connection" class="connection-note" role="status" hidden></p>
+                </div>
             </section>
             <section id="messages" aria-label="Conversation"></section>
             <section id="activity" class="activity" hidden aria-label="Assistant progress">
