@@ -107,14 +107,15 @@
                     <label for="prompt" class="sr-only">Message your assistant</label>
                     <textarea id="prompt" rows="2" placeholder="Ask anything, or describe a task…"></textarea>
                     <div class="composer-bottom">
-                        <label class="access-toggle"><input id="full-access" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span><span>Full access</span></label>
-                        <span id="permission-note" class="muted">Commands run automatically</span>
                         <button id="attach" type="button" class="icon-button attach" aria-label="Attach files" title="Attach images and UTF-8 text files"><svg aria-hidden="true"><use href="#icon-attach"/></svg></button>
                         <button id="send" class="send" aria-label="Send message"><svg aria-hidden="true"><use href="#icon-send"/></svg></button>
                     </div>
                     <p id="attachment-note" class="attachment-note" role="status" hidden></p>
                 </form>
-                <div class="composer-caption"><span id="platform"></span><button id="logout" type="button">Sign Out</button></div>
+                <div class="composer-caption">
+                    <div class="composer-access"><label class="access-toggle"><input id="full-access" type="checkbox" role="switch" checked><span class="switch" aria-hidden="true"></span><span>Full access</span></label><span id="permission-note" class="muted">Commands run automatically</span></div>
+                    <span id="platform"></span>
+                </div>
             </div>
         </section>
     </main>

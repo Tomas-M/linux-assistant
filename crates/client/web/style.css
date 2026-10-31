@@ -123,9 +123,9 @@ textarea::placeholder { color:var(--muted); }
 .compaction-note { display:flex; align-items:center; gap:0.5rem; font-size:0.875rem; color:var(--muted); margin:1.25rem 0; }
 .compaction-note svg { width:1rem; height:1rem; }
 .send:hover { background:var(--accent); }
-.composer-caption { display:flex; justify-content:space-between; margin:0.625rem 0.125rem 0; color:var(--muted); font-size:0.8125rem; }
-.composer-caption button { padding:0; border:0; border-radius:0; background:none; color:inherit; font:inherit; text-decoration:none; }
-.composer-caption button:hover { color:var(--text); }
+.composer-caption { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin:0.625rem 0.125rem 0; color:var(--muted); font-size:0.8125rem; }
+.composer-access { display:flex; align-items:center; gap:0.75rem; flex-shrink:0; }
+#platform { margin-left:auto; text-align:right; }
 .proposal { padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1rem; margin:1.5rem 0; }
 .proposal .eyebrow { color:var(--accent); margin-bottom:0.75rem; }
 .button-row { display:flex; gap:0.625rem; flex-wrap:wrap; }

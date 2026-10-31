@@ -82,7 +82,7 @@ function render()
     const depleted=state.account && state.account.credits<=0;
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
-    for (const id of ['new','credits','logout','approve','deny','retry'])
+    for (const id of ['new','credits','approve','deny','retry'])
         elements[id].disabled=busy || !state.authenticated;
     elements['buy-inline'].disabled=buying || !state.account;
     for (const button of elements['credit-packs'].querySelectorAll('button')) button.disabled=buying || !state.account || elements['credit-packs'].dataset.development==='true';
@@ -947,11 +947,6 @@ for (const [id,path] of [['new','new'],['credits','account'],['retry','retry']])
             await loadCreditPacks();
         }
     }));
-// Reload after session revocation so login starts with a fresh form and no previous draft.
-elements.logout.addEventListener('click',async()=>
-{
-    if (await action(()=>api('logout',{}))) location.reload();
-});
 elements['buy-inline'].addEventListener('click',openSettings);
 elements['credit-packs'].addEventListener('click',async event=>
 {
