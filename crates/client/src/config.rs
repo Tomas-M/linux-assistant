@@ -42,6 +42,7 @@ impl crate::Args {
         if explicit.is_some() { args.config=Some(std::fs::canonicalize(path)?); }
         ensure!(!args.name.trim().is_empty() && args.name.len()<=100 && !args.name.chars().any(char::is_control),"Name must be 1–100 bytes without control characters");
         if let Some(logo)=&args.logo { args.logo=Some(std::fs::canonicalize(logo).context("Cannot find the PNG logo")?); }
+        if let Some(mark)=&args.brand_mark { args.brand_mark=Some(std::fs::canonicalize(mark).context("Cannot find the PNG brand mark")?); }
         Ok(args)
     }
 
@@ -50,16 +51,17 @@ impl crate::Args {
         let mut args=vec!["--daemon".into(),"--desktop=false".into(),"--cli=false".into(),"--reset-chat=false".into(),"--install-desktop=false".into(),"--backend".into(),self.backend.clone().into(),"--name".into(),self.name.clone().into()];
         if let Some(path)=&self.config { args.extend(["--config".into(),path.clone().into_os_string()]); }
         if let Some(path)=&self.logo { args.extend(["--logo".into(),path.clone().into_os_string()]); }
+        if let Some(path)=&self.brand_mark { args.extend(["--brand-mark".into(),path.clone().into_os_string()]); }
         args
     }
 }
 
 #[derive(Default)]
-pub struct Brand { pub name:String,pub logo:Option<Vec<u8>> }
+pub struct Brand { pub name:String,pub logo:Option<Vec<u8>>,pub mark:bool }
 impl Brand {
     /// Read a bounded, actual PNG once, never expose the arbitrary filesystem path over HTTP.
     pub fn read(args:&crate::Args)->Result<Self> {
-        let logo=if let Some(path)=&args.logo {
+        let logo=if let Some(path)=args.logo.as_ref().or(args.brand_mark.as_ref()) {
             use std::io::Read;
             let mut bytes=Vec::new();
             std::fs::File::open(path)?.take(1024*1024+1).read_to_end(&mut bytes)?;
@@ -69,11 +71,11 @@ impl Brand {
             ensure!(width>0 && height>0 && width<=4096 && height<=4096,"Logo must be at most 4096 × 4096 pixels");
             Some(bytes)
         } else { None };
-        Ok(Self { name:args.name.clone(),logo })
+        Ok(Self { name:args.name.clone(),logo,mark:args.brand_mark.is_some() })
     }
     /// Fingerprint bytes to detect a changed logo when reusing an existing daemon.
     pub fn metadata(&self)->Value {
-        json!({"name":self.name,"logo":self.logo.as_ref().map(|bytes|format!("{:x}",Sha256::digest(bytes)))})
+        json!({"name":self.name,"logo":self.logo.as_ref().map(|bytes|format!("{:x}",Sha256::digest(bytes))),"mark":self.mark})
     }
 }
 

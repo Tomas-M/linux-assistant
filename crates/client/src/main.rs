@@ -27,6 +27,8 @@ struct Args {
     name: String,
     #[arg(long,help="PNG logo path; replaces both the header icon and name")]
     logo: Option<PathBuf>,
+    #[arg(long,conflicts_with="logo",help="PNG logo path; displays a square image beside the assistant name")]
+    brand_mark: Option<PathBuf>,
     #[arg(long,action=clap::ArgAction::Set,num_args=0..=1,require_equals=true,default_missing_value="true",default_value="false")]
     cli: bool,
     #[arg(long,hide=true,action=clap::ArgAction::Set,num_args=0..=1,require_equals=true,default_missing_value="true",default_value="false")]
@@ -73,7 +75,7 @@ fn install_desktop(args:&Args) -> Result<()> {
     let path = directory.join("linux-assistant.desktop");
     let name=args.name.replace('\\',"\\\\");
     let mut branding=String::new();
-    for (key,value) in [("name",Some(args.name.clone())),("logo",args.logo.as_ref().map(|path|path.to_string_lossy().into_owned())),("config",args.config.as_ref().map(|path|path.to_string_lossy().into_owned()))] {
+    for (key,value) in [("name",Some(args.name.clone())),("logo",args.logo.as_ref().map(|path|path.to_string_lossy().into_owned())),("brand-mark",args.brand_mark.as_ref().map(|path|path.to_string_lossy().into_owned())),("config",args.config.as_ref().map(|path|path.to_string_lossy().into_owned()))] {
         if let Some(value)=value { branding.push_str(&format!(" --{key} \"{}\"",value.replace('\\',"\\\\").replace('\"',"\\\"").replace('`',"\\`").replace('$',"\\$").replace('%',"%%"))); }
     }
     let backend=args.backend.replace('%',"%%");

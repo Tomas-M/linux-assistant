@@ -39,7 +39,8 @@ function render()
         elements.brand.setAttribute('aria-label',view.brand.name+' home');
         elements['brand-logo'].hidden=!view.brand.logo;
         elements['brand-mark'].hidden=!!view.brand.logo;
-        elements['brand-name'].hidden=!!view.brand.logo;
+        elements['brand-name'].hidden=!!view.brand.logo && !view.brand.mark;
+        elements['brand-logo'].classList.toggle('brand-mark-image',view.brand.mark);
         if (view.brand.logo && elements['brand-logo'].dataset.hash!==view.brand.logo)
         {
             elements['brand-logo'].src='/logo.png'; elements['brand-logo'].alt=view.brand.name; elements['brand-logo'].dataset.hash=view.brand.logo;

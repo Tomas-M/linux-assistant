@@ -531,7 +531,7 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;
