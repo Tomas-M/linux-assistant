@@ -893,7 +893,7 @@ elements.prompt.addEventListener('keydown',event=>
 {
     if (event.key==='Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitPrompt(event.ctrlKey || event.metaKey); }
 });
-elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(180,elements.prompt.scrollHeight)+'px'; renderComposer();});
+elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(162,elements.prompt.scrollHeight)+'px'; renderComposer();});
 elements['queued-messages'].addEventListener('click',async event=>
 {
     const button=event.target.closest('[data-action]');
