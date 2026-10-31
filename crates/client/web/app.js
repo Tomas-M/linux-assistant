@@ -1,6 +1,6 @@
 'use strict';
 const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(element=>[element.id,element]));
-let steerId, editingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
+let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 let queueKey='', summaryKey='', steeringKey='';
 let socialLogin, enabledProviders=[], emailEnabled=false;
@@ -800,12 +800,28 @@ elements['full-access'].addEventListener('change',async()=>
     catch (error) { elements.status.textContent=error.message; }
     render();
 });
+// Reset a submitted draft after acceptance, or immediately when queueing behind an active task.
+function clearPrompt()
+{
+    editingId=null; steerId=null; elements.prompt.value=''; draftAttachments=[];
+    elements.prompt.style.height='auto';
+}
+
 // The same composer sends, queues, steers, or interrupts according to the active task.
 function renderComposer()
 {
     if (!state) return;
-    elements.prompt.disabled=!state.authenticated || queueAction;
-    const queue=view.queue || [], held=queue.find(input=>input.editing);
+    if (startingId)
+    {
+        const run=view.runs.find(run=>run.id===startingId);
+        const accepted=run && state.messages.length>run.start;
+        const blocked=!!state.pending || view.runs.some(run=>!run.finished_at && run.id!==startingId);
+        const queued=blocked && (view.queue || []).some(input=>input.id===startingId);
+        if (accepted || queued) { startingId=null; clearPrompt(); }
+    }
+    elements.prompt.disabled=!state.authenticated || queueAction || !!startingId;
+    const dispatched=new Set(view.runs.map(run=>run.id));
+    const queue=(view.queue || []).filter(input=>input.id!==startingId && !dispatched.has(input.id)), held=queue.find(input=>input.editing);
     if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value && !draftAttachments.length)
     {
         editingId=held.id;
@@ -818,7 +834,8 @@ function renderComposer()
     const text=elements.prompt.value.trim(), hasInput=!!text || !!draftAttachments.length, stop=view.busy && !hasInput, queueing=view.busy || !!state.pending || !!editingId;
     setIcon(elements.send,stop?'stop':'send');
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
-    elements.send.disabled=!state.authenticated || queueAction || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
+    if (startingId) elements.send.setAttribute('aria-label','Sending message');
+    elements.send.disabled=elements.prompt.disabled || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
     renderAttachments();
     const inputs=(view.steering || []).filter(input=>input.message_index===undefined), steering=JSON.stringify(inputs);
     if (steering!==steeringKey)
@@ -860,15 +877,15 @@ function renderComposer()
             button.setAttribute('aria-label',label);
             button.title=action==='steer' && depleted?'Add credits to steer the conversation':label;
             button.disabled=queueAction || (action==='steer' && !canSteer);
-            if (action==='steer') button.textContent=label;
-            else setIcon(button,action);
+            setIcon(button,'queue-'+action);
+            if (action==='steer') button.append(document.createTextNode(label));
             row.append(button);
         }
         elements['queued-messages'].append(row);
     }
 }
 
-// Clear each submitted draft immediately so another message can be queued during generation.
+// Idle submissions retain their disabled draft until the native client has accepted them into the chat.
 async function submitPrompt(steer=false)
 {
     const text=elements.prompt.value, attachments=draftAttachments;
@@ -885,17 +902,20 @@ async function submitPrompt(steer=false)
     const steering=steer && view.busy, draftId=editingId, submittedAt=state.messages.length;
     const id=draftId || (steering?(steerId || crypto.randomUUID()):crypto.randomUUID());
     pendingIds.add(id);
-    editingId=null;
-    steerId=null;
-    elements.prompt.value='';
-    draftAttachments=[];
-    elements.prompt.style.height='auto';
+    const direct=!view.busy && !state.pending && !draftId;
+    if (direct) startingId=id;
+    else clearPrompt();
     elements.status.textContent='';
     renderComposer();
     scrollToEnd();
-    try { await api(steering?'steer':'chat',{id,text,attachments:attachments.length?attachments.map(({kind,name,content})=>({kind,name,content})):null}); }
+    try
+    {
+        await api(steering?'steer':'chat',{id,text,attachments:attachments.length?attachments.map(({kind,name,content})=>({kind,name,content})):null});
+        if (startingId===id) { startingId=null; clearPrompt(); }
+    }
     catch (error)
     {
+        if (startingId===id) startingId=null;
         pendingIds.delete(id);
         elements.status.textContent=error.message;
         const accepted=state.messages.slice(submittedAt).some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
@@ -939,7 +959,7 @@ elements['attachment-input'].addEventListener('change',event=>addAttachments([..
 elements.attachments.addEventListener('click',event=>
 {
     const button=event.target.closest('[data-attachment]');
-    if (!button || attaching) return;
+    if (!button || attaching || elements.prompt.disabled) return;
     draftAttachments.splice(Number(button.dataset.attachment),1); steerId=null; renderComposer();
 });
 for (const type of ['dragenter','dragover','dragleave','drop']) elements['chat-form'].addEventListener(type,event=>

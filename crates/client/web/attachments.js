@@ -96,6 +96,7 @@ function renderAttachments()
     elements['attachment-note'].hidden=!attaching && !attachmentError;
     elements['attachment-note'].classList.toggle('error',!!attachmentError);
     elements['attachment-note'].textContent=attachmentError || (attaching?'Preparing attachments…':'');
+    for (const button of elements.attachments.querySelectorAll('button')) button.disabled=attaching || elements.prompt.disabled;
     const key=JSON.stringify(draftAttachments.map(item=>[item.name,item.kind,item.content.length]));
     if (elements.attachments.dataset.key===key) return;
     elements.attachments.dataset.key=key;
@@ -104,7 +105,7 @@ function renderAttachments()
     {
         const chip=document.createElement('span'), name=document.createElement('span'), remove=document.createElement('button');
         chip.className='attachment'; name.textContent=file.name; name.title=file.kind==='image'?file.name+' · '+file.width+'×'+file.height+' · Original':file.name;
-        remove.type='button'; remove.dataset.attachment=index; remove.setAttribute('aria-label','Remove '+file.name); setIcon(remove,'close');
+        remove.type='button'; remove.disabled=attaching || elements.prompt.disabled; remove.dataset.attachment=index; remove.setAttribute('aria-label','Remove '+file.name); setIcon(remove,'close');
         chip.append(name,remove); elements.attachments.append(chip);
     });
 }
