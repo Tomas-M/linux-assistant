@@ -32,7 +32,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .empty-chat #workspace { width:100%; }
 .empty-chat .composer-wrap { position:static; left:auto; bottom:auto; transform:none; width:100%; padding:0; background:none; }
 #messages article { margin:1.125rem 0 2.125rem; }
-#messages .user { margin:1rem 0 2.125rem auto; padding:0.9375rem 1.25rem; width:fit-content; max-width:88%; border-radius:1.125rem 1.125rem 0.25rem 1.125rem; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; }
+#messages .user { margin:1rem 0 2.125rem auto; padding:0.9375rem 1.25rem; width:fit-content; max-width:88%; border-radius:1.125rem 1.125rem 0.25rem 1.125rem; background:#000; color:#fff; white-space:pre-wrap; overflow-wrap:anywhere; }
 #messages .user-message .user { margin-bottom:0.375rem; }
 .prompt-actions { display:flex; justify-content:flex-end; margin-bottom:1.5rem; }
 .prompt-actions .copy-prompt { width:1.875rem; height:1.875rem; color:var(--muted); border-radius:0.4375rem; }
@@ -124,8 +124,8 @@ textarea::placeholder { color:var(--muted); }
 .compaction-note svg { width:1rem; height:1rem; }
 .send:hover { background:var(--accent); }
 .composer-caption { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin:0.625rem 0.125rem 0; color:var(--muted); font-size:0.8125rem; }
-.composer-access { display:flex; align-items:center; gap:0.75rem; flex-shrink:0; }
-#platform { margin-left:auto; text-align:right; }
+.composer-access { margin-left:20px; display:flex; align-items:center; gap:0.75rem; flex-shrink:0; }
+#platform { margin-left:auto; margin-right:20px; text-align:right; }
 .proposal { padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1rem; margin:1.5rem 0; }
 .proposal .eyebrow { color:var(--accent); margin-bottom:0.75rem; }
 .button-row { display:flex; gap:0.625rem; flex-wrap:wrap; }
