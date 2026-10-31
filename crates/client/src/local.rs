@@ -117,7 +117,14 @@ fn router(state: Local) -> Router {
             let name=state.brand.name.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
             Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{ICONS}}",protocol::ICONS_SVG))
         }))
-        .route("/assistant.png",get(||async { ([(header::CONTENT_TYPE,"image/png")],include_bytes!("../web/assistant.png").as_slice()) }))
+        .route("/assistant.png",get(|State(state):State<Local>|async move {
+            // Read the configured character on demand so replacing the file only requires a browser refresh.
+            let bytes=match &state.brand.assistant_image {
+                Some(path)=>tokio::fs::read(path).await.context("Cannot read the assistant image")?,
+                None=>include_bytes!("../web/assistant.png").to_vec(),
+            };
+            Ok::<_,LocalError>(([(header::CONTENT_TYPE,"image/png"),(header::CACHE_CONTROL,"no-store")],bytes))
+        }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
         .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
@@ -531,7 +538,7 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false,assistant_image:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;

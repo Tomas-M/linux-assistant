@@ -43,6 +43,7 @@ impl crate::Args {
         ensure!(!args.name.trim().is_empty() && args.name.len()<=100 && !args.name.chars().any(char::is_control),"Name must be 1–100 bytes without control characters");
         if let Some(logo)=&args.logo { args.logo=Some(std::fs::canonicalize(logo).context("Cannot find the PNG logo")?); }
         if let Some(mark)=&args.brand_mark { args.brand_mark=Some(std::fs::canonicalize(mark).context("Cannot find the PNG brand mark")?); }
+        if let Some(image)=&args.assistant_image { args.assistant_image=Some(std::fs::canonicalize(image).context("Cannot find the PNG assistant image")?); }
         Ok(args)
     }
 
@@ -52,14 +53,15 @@ impl crate::Args {
         if let Some(path)=&self.config { args.extend(["--config".into(),path.clone().into_os_string()]); }
         if let Some(path)=&self.logo { args.extend(["--logo".into(),path.clone().into_os_string()]); }
         if let Some(path)=&self.brand_mark { args.extend(["--brand-mark".into(),path.clone().into_os_string()]); }
+        if let Some(path)=&self.assistant_image { args.extend(["--assistant-image".into(),path.clone().into_os_string()]); }
         args
     }
 }
 
 #[derive(Default)]
-pub struct Brand { pub name:String,pub logo:Option<Vec<u8>>,pub mark:bool }
+pub struct Brand { pub name:String,pub logo:Option<Vec<u8>>,pub mark:bool,pub assistant_image:Option<PathBuf> }
 impl Brand {
-    /// Read a bounded, actual PNG once, never expose the arbitrary filesystem path over HTTP.
+    /// Load header logos once and retain the character path for live reads without exposing it over HTTP.
     pub fn read(args:&crate::Args)->Result<Self> {
         let logo=if let Some(path)=args.logo.as_ref().or(args.brand_mark.as_ref()) {
             use std::io::Read;
@@ -71,11 +73,17 @@ impl Brand {
             ensure!(width>0 && height>0 && width<=4096 && height<=4096,"Logo must be at most 4096 × 4096 pixels");
             Some(bytes)
         } else { None };
-        Ok(Self { name:args.name.clone(),logo,mark:args.brand_mark.is_some() })
+        if let Some(path)=&args.assistant_image {
+            use std::io::Read;
+            let mut signature=[0;8];
+            std::fs::File::open(path)?.read_exact(&mut signature).context("Cannot read the PNG assistant image")?;
+            ensure!(signature==*b"\x89PNG\r\n\x1a\n","Assistant image must be a PNG");
+        }
+        Ok(Self { name:args.name.clone(),logo,mark:args.brand_mark.is_some(),assistant_image:args.assistant_image.clone() })
     }
-    /// Fingerprint bytes to detect a changed logo when reusing an existing daemon.
+    /// Detect changed branding or character paths when reusing a daemon; character bytes stay live.
     pub fn metadata(&self)->Value {
-        json!({"name":self.name,"logo":self.logo.as_ref().map(|bytes|format!("{:x}",Sha256::digest(bytes))),"mark":self.mark})
+        json!({"name":self.name,"logo":self.logo.as_ref().map(|bytes|format!("{:x}",Sha256::digest(bytes))),"mark":self.mark,"assistant_image":self.assistant_image.as_ref().map(|path|format!("{:x}",Sha256::digest(path.as_os_str().as_encoded_bytes())))})
     }
 }
 

@@ -11,6 +11,9 @@ backend = "ai.slax.org"
 # PNG replaces BOTH the header icon and name; use an absolute path.
 # logo = "/usr/share/slax-ai/logo.png"
 
+# Sign-in character; replace this PNG and refresh the browser to see changes.
+# assistant-image = "/usr/share/slax-ai/assistant.png"
+
 # With neither mode enabled, print the URL and leave browser selection to you.
 # desktop = false
 # cli = false

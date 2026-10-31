@@ -61,6 +61,8 @@ The browser uses embedded SVG icons in both themes and keeps credits and account
 
 `--name` changes the browser title, header, terminal greeting and generated Linux launcher. `--brand-mark /path/to/clover.png` shows a square PNG beside the name. `--logo` replaces both the icon and text in the browser header with a PNG; the name remains the accessible label and page title. Logo files are read once, at most 1 MiB and 4096 × 4096 pixels. Stop an existing daemon before changing its backend or branding.
 
+`--assistant-image /path/to/assistant.png` replaces the sign-in character with a PNG from disk. The built-in character is used when omitted. The file is read on each request without browser caching: replace the file and refresh to update the picture without rebuilding or restarting. Restart the daemon to choose a different path.
+
 The client reads `/etc/linux-assistant/config` on Linux and `%ProgramData%\linux-assistant\config` on Windows. Use `--config PATH` for another file. All operational argument names are accepted as TOML keys; unknown keys fail startup. Command-line values take precedence, including `--desktop=false`. An explicit launch mode overrides configured launch modes. Use absolute logo paths. See [the commented example](deploy/client-config.example).
 
 ### Attachments
