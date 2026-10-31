@@ -193,6 +193,7 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
     // Attachment validation and durable admission must not occupy the async network workers.
     let (user,input,reservation)=tokio::task::spawn_blocking(move||->ApiResult<_> {
         let user = admission.user(&headers)?;
+        if !streaming { return Err(ApiError::bad("Native assistant requests require Accept: text/event-stream")); }
         let bytes = serde_json::to_vec(&input)?;
         if input.messages.is_empty() || bytes.len()>protocol::MAX_UPLOAD_BYTES || protocol::display_messages(&input.messages).to_string().len()>MAX_REQUEST_BYTES || input.cwd.len()>4096 {
             return Err(ApiError::bad("New input is empty or exceeds the per-request limit"));
@@ -213,7 +214,6 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
     let reply: db::Completed = match reservation {
         Reservation::Cached(value) => serde_json::from_str(&value)?,
         Reservation::Failed(error) => {
-            if !streaming { return Err(ApiError::busy(&error)); }
             events.send_replace(ChatEvent::Error { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
@@ -228,13 +228,27 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
         Reservation::New => {
             let (controls,mut control_receiver)=tokio::sync::mpsc::channel(16);
             let (cancel,mut cancellation)=tokio::sync::watch::channel(false);
-            app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls,cancel,events:receiver.clone() });
+            app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls.clone(),cancel,events:receiver.clone() });
             let task_app = app.clone();
             let task_events=events.clone();
-            let task=tokio::spawn(async move {
-                let result = tokio::select! {
-                    answer=task_app.pool.answer_stream(&config,&task_app.db,user,&input,streaming.then_some(&task_events),Some(&mut control_receiver))=>answer,
-                    _=cancellation.changed()=>Err(anyhow::Error::from(turns::Interrupted)),
+            tokio::spawn(async move {
+                let result={
+                    let generation=task_app.pool.answer_stream(&config,&task_app.db,user,&input,Some(&task_events),Some(&mut control_receiver));
+                    tokio::pin!(generation);
+                    tokio::select! {
+                        biased;
+                        answer=&mut generation=>answer,
+                        _=cancellation.changed()=>Err(anyhow::Error::from(turns::Interrupted)),
+                        _=disconnected(&task_events)=> {
+                            let (reply,_)=tokio::sync::oneshot::channel();
+                            let _=controls.try_send(turns::Control::Stop(reply));
+                            // Keep polling briefly so interruption can publish its final usage counters.
+                            match tokio::time::timeout(Duration::from_secs(3),&mut generation).await {
+                                Ok(Ok(answer))=>Ok(answer),
+                                _=>Err(anyhow::anyhow!("Client disconnected for 5 minutes; the pending AI turn was cancelled")),
+                            }
+                        }
+                    }
                 };
                 task_app.turns.lock().unwrap().remove(&(user,request_id));
                 // Moving the request avoids copying attachments while SQLite commits on a blocking thread.
@@ -281,15 +295,12 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                 }
                 result
             });
-            if streaming { return Ok(chat_stream(receiver)); }
-            task.await??
+            return Ok(chat_stream(receiver));
         }
     };
     let response=ChatResponse { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None, reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
-    if streaming {
-        events.send_replace(ChatEvent::Complete { response });
-        Ok(chat_stream(receiver))
-    } else { Ok(Json(response).into_response()) }
+    events.send_replace(ChatEvent::Complete { response });
+    Ok(chat_stream(receiver))
 }
 
 /// Heartbeats keep idle proxy connections open; close the body after the terminal snapshot.
@@ -299,4 +310,15 @@ fn chat_stream(receiver: tokio::sync::watch::Receiver<ChatEvent>) -> Response {
     let mut response=Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10))).into_response();
     response.headers_mut().insert("x-accel-buffering","no".parse().unwrap());
     response
+}
+
+/// One receiver belongs to the active-turn registry; additional receivers are connected SSE clients.
+async fn disconnected(events:&tokio::sync::watch::Sender<ChatEvent>) {
+    let mut absent=None;
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if events.receiver_count()>1 { absent=None; continue; }
+        let since=absent.get_or_insert_with(tokio::time::Instant::now);
+        if since.elapsed()>=Duration::from_secs(300) { return; }
+    }
 }

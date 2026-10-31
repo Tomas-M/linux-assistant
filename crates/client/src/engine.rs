@@ -255,7 +255,7 @@ impl Engine {
             for event in decoder.push(&bytes)? {
                 match serde_json::from_value::<protocol::ChatEvent>(event)? {
                     protocol::ChatEvent::Progress { progress } => {
-                        self.live.0.send_modify(|view|view["can_steer"]=json!(true));
+                        self.live.0.send_modify(|view|view["can_steer"]=json!(!self.controls.stopped.load(Ordering::SeqCst)));
                         let activity=progress.activity.clone();
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
                         if let (Some(account),Some(credits))=(&mut self.account,progress.credits) { account.credits=credits; self.live.state(self.state()); }

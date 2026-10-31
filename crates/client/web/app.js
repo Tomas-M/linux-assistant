@@ -191,20 +191,26 @@ function updateAction(row,key,icon,label,output,process,change)
         element.className='action-item';
         summary.innerHTML='<svg aria-hidden="true"><use href="#icon-'+icon+'"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
         element.append(summary,pre);
-        if (process)
-        {
-            const button=document.createElement('button'); button.className='quiet'; button.dataset.process=process; button.textContent='Open in task manager'; element.append(button);
-        }
         item={element,summary,pre}; row.actions.set(key,item); row.body.append(element);
     }
     const position=row.body.children[row.actionPosition++];
     if (position!==item.element) row.body.insertBefore(item.element,position || null);
-    item.summary.querySelector('span').textContent=label;
-    item.summary.title=label;
-    if (item.pre.textContent!==output) item.pre.textContent=output;
-    if (change && change.added!==null)
+    if (item.summary.querySelector('span').textContent!==label) item.summary.querySelector('span').textContent=label;
+    if (item.summary.title!==label) item.summary.title=label;
+    const use=item.summary.querySelector('use');
+    if (use.getAttribute('href')!=='#icon-'+icon) use.setAttribute('href','#icon-'+icon);
+    if (process && !item.button)
     {
-        if (item.count) item.count.remove();
+        item.button=document.createElement('button'); item.button.className='quiet'; item.button.textContent='Open in task manager'; item.element.append(item.button);
+    }
+    if (item.button) { item.button.hidden=!process; if (process) item.button.dataset.process=process; }
+    if (item.pre.textContent!==output) item.pre.textContent=output;
+    const counts=change && change.added!==null?change.added+':'+change.removed:null;
+    if (item.counts!==counts)
+    {
+        item.counts=counts;
+        if (item.count) { item.count.remove(); item.count=null; }
+        if (counts===null) return;
         item.count=document.createElement('small'); item.count.className='diff-count';
         const added=document.createElement('span'), removed=document.createElement('span');
         added.className='added'; added.textContent='+'+change.added;

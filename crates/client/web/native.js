@@ -9,7 +9,7 @@ function renderProgress(container,parts,active=false,steers=[])
     const groups=[];
     for (let index=0;index<=parts.length;index++)
     {
-        for (const input of steers.filter(input=>input.progress_after===index)) groups.push({key:'steer:'+input.id,kind:'steer',input});
+        for (const input of steers.filter(input=>Math.min(input.progress_after,parts.length)===index)) groups.push({key:'steer:'+input.id,kind:'steer',input});
         const part=parts[index];
         if (!part?.text.trim()) continue;
         const work=['reasoning','action','web_search'].includes(part.kind), previous=groups.at(-1);
@@ -75,14 +75,17 @@ function renderWork(row,parts,active)
         label=[changes.length?'Edited files':files?'Read files':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':''].filter(Boolean).join(', ');
         label=label?label[0].toUpperCase()+label.slice(1):'Completed actions';
     }
-    row.label.textContent=progressTitle(parts) || label; row.label.classList.toggle('working',active);
+    const title=progressTitle(parts) || label;
+    if (row.label.textContent!==title) row.label.textContent=title;
+    row.label.classList.toggle('working',active);
     const icon=row.element.querySelector('summary>svg:first-child'); icon.toggleAttribute('hidden',!actions.length);
     const hasCommands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
     let groupIcon='list-ul';
     if (changes.length) groupIcon='edit';
     else if (hasCommands) groupIcon='terminal';
     else if (actions.some(part=>part.kind==='web_search')) groupIcon='external';
-    icon.querySelector('use').setAttribute('href','#icon-'+groupIcon);
+    const use=icon.querySelector('use');
+    if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
     const sessions=new Map(), present=new Set(), reasoning=new Set();
     for (const part of actions)
     {
@@ -102,7 +105,9 @@ function renderWork(row,parts,active)
                 element.innerHTML='<summary><span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-body"></div>';
                 row.reasoning.set(part.id,element);
             }
-            element.querySelector('summary span').textContent=progressTitle([part]) || 'Thinking'; renderAnswer(element.lastChild,part.text);
+            const title=progressTitle([part]) || 'Thinking', label=element.querySelector('summary span');
+            if (label.textContent!==title) label.textContent=title;
+            renderAnswer(element.lastChild,part.text);
             const position=row.body.children[row.actionPosition++]; if (position!==element) row.body.insertBefore(element,position || null);
             reasoning.add(part.id); continue;
         }
@@ -111,16 +116,19 @@ function renderWork(row,parts,active)
         const last=session.parts.at(-1), latest=view.tool_results[last.id], args=part.data?.arguments || {};
         const output=session.parts.map(item=>view.tool_results[item.id]?.output || '').filter(Boolean).join('\n\n');
         const command=part.data?.tool==='local_exec_command';
-        const caption=command?(latest?.running?'Running ':'Ran ')+args.cmd:part.text;
+        const running=latest?.running ?? !last.completed;
+        const caption=command?(running?'Running ':'Ran ')+args.cmd:part.text;
         const toolIcon=part.kind==='web_search'?'external':command || args.session_id?'terminal':(result?.changes || []).length?'edit':'list-ul';
-        present.add(id); updateAction(row,id,toolIcon,caption,output || JSON.stringify(part.data?.action || args,null,2),command || args.session_id?id:null);
+        // The first native item stays stable when the local session ID arrives later.
+        const key=session.first, process=result?.session_id || args.session_id;
+        present.add(key); updateAction(row,key,toolIcon,caption,output || JSON.stringify(part.data?.action || args,null,2),process);
+        const changes=new Map();
         for (const item of session.parts)
+            for (const change of view.tool_results[item.id]?.changes || []) changes.set(change.path,change);
+        for (const change of changes.values())
         {
-            for (const change of view.tool_results[item.id]?.changes || [])
-            {
-                const key=id+':'+change.path; if (present.has(key)) continue;
-                present.add(key); updateAction(row,key,'edit',change.kind+' '+change.path,change.diff,null,change);
-            }
+            const key=session.first+':'+change.path;
+            present.add(key); updateAction(row,key,'edit',change.kind+' '+change.path,change.diff,null,change);
         }
     }
     for (const [key,item] of row.actions) if (!present.has(key)) { item.element.remove(); row.actions.delete(key); }
@@ -139,20 +147,20 @@ function renderQuestions()
         const heading=document.createElement('h2'); heading.textContent=request.type==='questions'?'Your input is needed':'Allow access on your computer?'; form.append(heading);
         if (request.type==='questions')
         {
-            for (const question of request.questions)
+            for (const [questionIndex,question] of request.questions.entries())
             {
                 const field=document.createElement('fieldset'), legend=document.createElement('legend'); legend.textContent=question.question; field.append(legend);
                 for (const [index,option] of (question.options || []).entries())
                 {
                     const label=document.createElement('label'), radio=document.createElement('input'), text=document.createElement('span'), title=document.createElement('strong'), description=document.createElement('small');
-                    radio.type='radio'; radio.name=question.id; radio.value=String(index); radio.required=true;
+                    radio.type='radio'; radio.name='q'+questionIndex; radio.value=String(index); radio.required=true;
                     title.textContent=option.label; description.textContent=option.description; text.append(title,description); label.append(radio,text); field.append(label);
                 }
                 if (question.isOther || !question.options?.length)
                 {
                     const label=document.createElement('label'), radio=document.createElement('input'), input=document.createElement('textarea');
-                    radio.type='radio'; radio.name=question.id; radio.value='custom'; radio.setAttribute('aria-label','Custom answer');
-                    input.name=question.id+':custom'; input.placeholder='Your own answer'; input.rows=2; input.maxLength=8000;
+                    radio.type='radio'; radio.name='q'+questionIndex; radio.value='custom'; radio.setAttribute('aria-label','Custom answer');
+                    input.name='custom'+questionIndex; input.placeholder='Your own answer'; input.rows=2; input.maxLength=8000;
                     if (question.isSecret) { const secret=document.createElement('input'); secret.type='password'; secret.name=input.name; secret.placeholder=input.placeholder; secret.maxLength=8000; label.append(radio,secret); secret.addEventListener('input',()=>{ radio.checked=true; }); }
                     else { label.append(radio,input); input.addEventListener('input',()=>{ radio.checked=true; }); }
                     field.append(label);
@@ -180,11 +188,11 @@ function renderQuestions()
             else
             {
                 const answers=Object.create(null);
-                for (const question of request.questions)
+                for (const [index,question] of request.questions.entries())
                 {
-                    const value=data.get(question.id);
+                    const value=data.get('q'+index);
                     if (value===null) { status.textContent='Please answer every question'; return; }
-                    const text=value==='custom'?String(data.get(question.id+':custom') || '').trim():question.options[Number(value)].label;
+                    const text=value==='custom'?String(data.get('custom'+index) || '').trim():question.options[Number(value)].label;
                     if (!text) { status.textContent='Please enter your answer'; return; }
                     answers[question.id]=[text];
                 }

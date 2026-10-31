@@ -99,10 +99,13 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     let processes=engine.processes.clone();
     let state = Local { brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
+    let controls=state.controls.clone();
     tokio::select! {
         result=axum::serve(listener,router(state)).into_future() => result?,
         _=async { tokio::select! { _=stop.notified()=>{}, _=tokio::signal::ctrl_c()=>{} } } => {
+            controls.cancel_local();
             processes.stop_foreground(None);
+            let _=tokio::time::timeout(Duration::from_secs(3),controls.interrupt()).await;
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
@@ -274,6 +277,7 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
 async fn interrupt(State(state):State<Local>)->LocalResult {
     state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
     state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
+    state.controls.cancel_local();
     let ids={
         let view=state.live.0.borrow();
         let start=view["runs"].as_array().and_then(|runs|runs.last()).filter(|run|run["finished_at"].is_null()).and_then(|run|run["start"].as_u64()).unwrap_or(u64::MAX);

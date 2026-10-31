@@ -74,6 +74,8 @@ impl LocalAction {
     }
     /// Polling only reads an already-authorized local session and needs no new execution approval.
     pub fn is_poll(&self)->bool { matches!(self,Self::WriteStdin { chars,close_stdin:false,.. } if chars.is_empty()) }
+    /// Recovery may safely repeat reads and idempotent Stop, but never stdin delivery or filesystem writes.
+    pub fn replay_safe(&self)->bool { self.is_poll() || matches!(self,Self::ReadFile { .. }|Self::ListDirectory { .. }|Self::SearchFiles { .. }|Self::StopProcess { .. }) }
     /// Session identities are native-owned UUIDs; an execution's approval ID becomes its session ID.
     pub fn session_id(&self,id:Uuid)->Uuid { match self { Self::ExecCommand { .. }=>id,Self::WriteStdin { session_id,.. }|Self::StopProcess { session_id,.. }=>*session_id,_=>id } }
     /// Keep the permission UI and provider validation on the same explanation.

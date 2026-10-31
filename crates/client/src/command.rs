@@ -12,7 +12,7 @@ mod windows_tests;
 
 /// Refuse unsupported hosts rather than executing with a guessed shell.
 #[cfg(not(any(target_os = "linux",windows)))]
-pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize, _completed:Option<tokio::sync::oneshot::Sender<()>>, _input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, _timeout_ms:Option<u64>) -> Result<()> {
+pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize, _completed:Option<tokio::sync::oneshot::Sender<()>>, _input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, _timeout_ms:Option<u64>,_cancelled:Arc<std::sync::atomic::AtomicBool>,_launch:Arc<Mutex<()>>) -> Result<()> {
     anyhow::bail!("Local command execution requires Linux or Windows")
 }
 
@@ -21,7 +21,7 @@ pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _
 pub async fn run(proposal: &CommandProposal) -> Result<String> {
     let record=Arc::new(Mutex::new(Record::new(uuid::Uuid::new_v4(),proposal.clone())));
     let (_cancel,receiver)=tokio::sync::watch::channel(false);
-    execute(proposal,record.clone(),receiver,24_000,None,Arc::new(Default::default()),None).await?;
+    execute(proposal,record.clone(),receiver,24_000,None,Arc::new(Default::default()),None,Arc::new(std::sync::atomic::AtomicBool::new(false)),Arc::new(Mutex::new(()))).await?;
     let mut output=record.lock().unwrap().result();
     if record.lock().unwrap().stdout_bytes>24_000 { output.push_str("\n[output truncated]"); }
     if record.lock().unwrap().stderr_bytes>24_000 { output.push_str("\n[output truncated]"); }
@@ -30,7 +30,7 @@ pub async fn run(proposal: &CommandProposal) -> Result<String> {
 
 /// Stream into the independent process record while retaining native process-tree ownership.
 #[cfg(any(target_os = "linux",windows))]
-pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize, completed:Option<tokio::sync::oneshot::Sender<()>>, input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, timeout_ms:Option<u64>) -> Result<()> {
+pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize, completed:Option<tokio::sync::oneshot::Sender<()>>, input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>, timeout_ms:Option<u64>,cancelled:Arc<std::sync::atomic::AtomicBool>,launch:Arc<Mutex<()>>) -> Result<()> {
     use std::{process::Stdio, time::Duration};
     use tokio::process::Command;
     anyhow::ensure!(std::path::Path::new(&proposal.cwd).is_absolute(),"Command directory must be absolute");
@@ -62,13 +62,18 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
         record.program=command.as_std().get_program().to_string_lossy().into_owned();
         record.arguments=command.as_std().get_args().map(|arg|arg.to_string_lossy().into_owned()).collect();
     }
-    let mut child = command.spawn()?;
+    let (mut child,mut group)={
+        let _launch=launch.lock().unwrap();
+        anyhow::ensure!(!cancelled.load(std::sync::atomic::Ordering::SeqCst) && !*cancel.borrow(),"Command cancelled before startup");
+        let child=command.spawn()?;
+        record.lock().unwrap().pid=child.id();
+        #[cfg(target_os = "linux")]
+        let group=linux::ProcessGroup::contain(&child)?;
+        #[cfg(windows)]
+        let group=windows::ProcessGroup::contain(&child)?;
+        (child,group)
+    };
     *input.lock().await=child.stdin.take();
-    record.lock().unwrap().pid=child.id();
-    #[cfg(target_os = "linux")]
-    let mut group = linux::ProcessGroup::contain(&child)?;
-    #[cfg(windows)]
-    let mut group = windows::ProcessGroup::contain(&child)?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let out_record=record.clone();

@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context,Result};
+use anyhow::{ensure,Result};
 use protocol::{ChatEvent, Progress, ProgressText,ProgressKind};
 use serde_json::Value;
 use tokio::sync::watch;
@@ -28,7 +28,9 @@ impl Reporter {
             Some("turn/plan/updated")=> {
                 let id=format!("plan:{}",params["turnId"].as_str().unwrap_or_default());
                 let part=self.part(&id,&id,ProgressKind::Plan)?;
-                part.text="Plan".into(); part.data=Some(params.clone());
+                part.text="Plan".into();
+                let plan=params["plan"].as_array().into_iter().flatten().take(64).map(|step|serde_json::json!({"step":clip(step["step"].as_str().unwrap_or_default(),512),"status":step["status"]})).collect::<Vec<_>>();
+                part.data=Some(serde_json::json!({"explanation":clip(params["explanation"].as_str().unwrap_or_default(),4000),"plan":plan}));
                 part.completed=params["plan"].as_array().is_some_and(|steps|steps.iter().all(|step|step["status"]=="completed"));
             }
             Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch"))=> {
@@ -37,7 +39,11 @@ impl Reporter {
                 let part=self.part(id,id,kind)?;
                 part.text=if kind==ProgressKind::WebSearch { format!("{}: {}",if event["method"]=="item/completed" { "Searched the web" } else { "Searching the web" },item["query"].as_str().unwrap_or_default()) } else { item["arguments"]["reason"].as_str().unwrap_or("Working on your computer").into() };
                 let arguments=&item["arguments"];
-                part.data=Some(serde_json::json!({"tool":item["tool"],"status":item["status"],"action":item["action"],"arguments":{"cmd":arguments["cmd"],"path":arguments["path"],"workdir":arguments["workdir"],"session_id":arguments["session_id"]}}));
+                part.data=Some(serde_json::json!({
+                    "tool":item["tool"],"status":item["status"],
+                    "action":if kind==ProgressKind::WebSearch { serde_json::json!({"type":item["action"]["type"],"query":clip(item["action"]["query"].as_str().unwrap_or_default(),2048),"url":clip(item["action"]["url"].as_str().unwrap_or_default(),2048),"pattern":clip(item["action"]["pattern"].as_str().unwrap_or_default(),512)}) } else { Value::Null },
+                    "arguments":{"cmd":clip(arguments["cmd"].as_str().unwrap_or_default(),2048),"path":clip(arguments["path"].as_str().unwrap_or_default(),4096),"workdir":clip(arguments["workdir"].as_str().unwrap_or_default(),4096),"session_id":arguments["session_id"]}
+                }));
                 part.completed=event["method"]=="item/completed";
             }
             Some("item/started"|"item/completed") if params["item"]["type"]=="contextCompaction" => {
@@ -51,7 +57,7 @@ impl Reporter {
             }
             Some("item/started") if params["item"]["type"]=="agentMessage" => {
                 self.item=params["item"]["id"].as_str().unwrap_or_default().into();
-                self.commentary=params["item"]["phase"]=="commentary";
+                self.commentary=matches!(params["item"]["phase"].as_str(),Some("commentary"|"partial_answer"));
                 self.json.clear();
                 self.snapshot.text.clear();
             }
@@ -59,14 +65,14 @@ impl Reporter {
                 let item=params["itemId"].as_str().unwrap_or_default();
                 let id=format!("{item}:{}",params["summaryIndex"]);
                 let delta=params["delta"].as_str().unwrap_or_default();
-                ensure!(self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>()+delta.len()<=64_000,"Progress summary too long");
-                self.part(&id,item,ProgressKind::Reasoning)?.text.push_str(delta);
+                let part=self.part(&id,item,ProgressKind::Reasoning)?;
+                if part.text.len()<16_000 { part.text.push_str(&clip(delta,16_000-part.text.len())); }
             }
             Some("item/completed") if params["item"]["type"]=="reasoning"=> {
                 let item=params["item"]["id"].as_str().unwrap_or_default();
                 for (index,text) in params["item"]["summary"].as_array().into_iter().flatten().enumerate() {
                     let part=self.part(&format!("{item}:{index}"),item,ProgressKind::Reasoning)?;
-                    part.text=text.as_str().unwrap_or_default().into();
+                    part.text=clip(text.as_str().unwrap_or_default(),16_000);
                     part.completed=true;
                 }
                 for part in self.snapshot.summaries.iter_mut().filter(|part|part.item_id==item) { part.completed=true; }
@@ -75,29 +81,27 @@ impl Reporter {
                 let id=params["itemId"].as_str().unwrap_or_default();
                 if self.item!=id { self.item=id.into(); self.commentary=false; self.json.clear(); self.snapshot.text.clear(); }
                 let delta=params["delta"].as_str().unwrap_or_default();
-                ensure!(self.json.len()+delta.len()<=512_000,"Streamed answer too long");
-                self.json.push_str(delta);
                 if self.commentary {
-                    ensure!(self.json.len()<=16_000,"Progress commentary too long");
+                    if self.json.len()<16_000 { self.json.push_str(&clip(delta,16_000-self.json.len())); }
                     let text=self.json.clone();
                     self.part(id,id,ProgressKind::Commentary)?.text=text;
-                } else { self.snapshot.text=text_prefix(&self.json).unwrap_or_default(); }
+                } else {
+                    ensure!(self.json.len()+delta.len()<=512_000,"Streamed answer too long");
+                    self.json.push_str(delta);
+                    self.snapshot.text=clip(&text_prefix(&self.json).unwrap_or_default(),64_000);
+                }
             }
             Some("item/completed") if params["item"]["type"]=="agentMessage" => {
                 let text=params["item"]["text"].as_str().unwrap_or_default();
-                ensure!(text.len()<=512_000,"Streamed answer too long");
-                if params["item"]["phase"]=="commentary" {
-                    ensure!(text.len()<=16_000,"Progress commentary too long");
+                if matches!(params["item"]["phase"].as_str(),Some("commentary"|"partial_answer")) {
                     let id=params["item"]["id"].as_str().unwrap_or_default();
                     let part=self.part(id,id,ProgressKind::Commentary)?;
-                    part.text=text.into(); part.completed=true;
+                    part.text=clip(text,16_000); part.completed=true;
                     self.snapshot.text.clear();
-                } else { self.snapshot.text=text_prefix(text).unwrap_or_default(); }
+                } else { self.snapshot.text=clip(&text_prefix(text).unwrap_or_default(),64_000); }
             }
             _ => return Ok(()),
         }
-        ensure!(self.snapshot.text.len()<=64_000,"Answer preview too long");
-        ensure!(self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>()<=64_000,"Progress summary too long");
         self.publish(matches!(event["method"].as_str(),Some("item/started"|"item/completed")));
         Ok(())
     }
@@ -106,7 +110,7 @@ impl Reporter {
     fn part(&mut self,id:&str,item:&str,kind:ProgressKind)->Result<&mut ProgressText> {
         if let Some(index)=self.snapshot.summaries.iter().position(|part|part.id==id) { return Ok(&mut self.snapshot.summaries[index]); }
         if self.snapshot.summaries.len()>=128 {
-            let index=self.snapshot.summaries.iter().position(|part|part.completed && part.kind!=ProgressKind::Plan).context("Too many active progress items")?;
+            let index=self.snapshot.summaries.iter().position(|part|part.completed && part.kind!=ProgressKind::Plan).unwrap_or(0);
             self.snapshot.summaries.remove(index);
         }
         self.snapshot.summaries.push(ProgressText { id:id.into(),item_id:item.into(),kind,completed:false,data:None,text:String::new() });
@@ -116,6 +120,12 @@ impl Reporter {
     /// Coalesce token bursts to ten snapshots per second; stage changes bypass the delay.
     pub(super) fn publish(&mut self,force:bool) {
         if !force && self.published.elapsed()<Duration::from_millis(100) { return; }
+        for part in &mut self.snapshot.summaries { if part.text.len()>16_000 { part.text=clip(&part.text,16_000); } }
+        // Evict display history, never fail the paid turn because public progress is long.
+        while self.snapshot.summaries.len()>1 && self.snapshot.summaries.iter().map(|part|part.text.len()+part.data.as_ref().map_or(0,|data|data.to_string().len())+256).sum::<usize>()>96_000 {
+            let index=self.snapshot.summaries.iter().position(|part|part.completed && part.kind!=ProgressKind::Plan).unwrap_or(0);
+            self.snapshot.summaries.remove(index);
+        }
         if let Some(sender)=&self.sender { sender.send_replace(ChatEvent::Progress { progress:self.snapshot.clone() }); }
         self.published=Instant::now();
     }
@@ -124,9 +134,17 @@ impl Reporter {
 impl Drop for Reporter {
     /// Completion, Stop and disconnected clients retain the latest valid partial answer.
     fn drop(&mut self) {
-        let summaries=self.snapshot.summaries.iter().map(|part|part.text.len()).sum::<usize>();
-        if self.snapshot.text.len()<=64_000 && summaries<=64_000 { self.publish(true); }
+        self.publish(true);
     }
+}
+
+/// Bound public display metadata at UTF-8 boundaries without changing actual tool arguments or model history.
+fn clip(text:&str,limit:usize)->String {
+    if text.len()<=limit { return text.into(); }
+    if limit<3 { return String::new(); }
+    let mut end=limit.saturating_sub(3);
+    while !text.is_char_boundary(end) { end-=1; }
+    format!("{}…",&text[..end])
 }
 
 /// Decode only the root text string, including split escapes and UTF-16 surrogate pairs.

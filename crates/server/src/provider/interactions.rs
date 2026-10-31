@@ -5,35 +5,50 @@ use serde_json::{json,Value};
 use uuid::Uuid;
 use super::progress::Reporter;
 
+#[derive(Debug)]
+pub(super) struct InvalidRequest(pub anyhow::Error);
+impl std::fmt::Display for InvalidRequest { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { self.0.fmt(f) } }
+impl std::error::Error for InvalidRequest {}
+
 #[derive(Default)]
 pub(super) struct Requests { pending:HashMap<Uuid,(Value,Interaction)> }
 impl Requests {
     /// Only advertised client tools and user questions may cross the backend-to-client boundary.
     pub fn receive(&mut self,event:&Value,enabled:bool,reporter:&mut Reporter,db:&crate::db::Db,user:Option<i64>,request_id:Uuid)->Result<()> {
-        let params=&event["params"];
-        let (item_id,kind)=match event["method"].as_str() {
-            Some("item/tool/call")=> {
-                ensure!(params["namespace"].is_null(),"Unexpected tool namespace");
-                let action=protocol::tool_action(params["tool"].as_str().context("Missing tool name")?,params["arguments"].clone())?;
-                ensure!(enabled || action.is_poll(),"Local access is disabled");
-                (params["callId"].as_str().context("Missing tool call ID")?,InteractionKind::Tool { action })
-            }
-            Some("item/tool/requestUserInput")=> {
-                let questions:Vec<protocol::Question>=serde_json::from_value(params["questions"].clone())?;
-                ensure!(!questions.is_empty() && questions.len()<=3 && params["questions"].to_string().len()<=24_000,"Invalid question request");
-                let unique=questions.iter().map(|question|&question.id).collect::<std::collections::HashSet<_>>();
-                ensure!(unique.len()==questions.len(),"Question IDs must be unique");
-                (params["itemId"].as_str().context("Missing question item ID")?,InteractionKind::Questions { questions })
-            }
-            _=>anyhow::bail!("Unsupported server request"),
-        };
-        ensure!(self.pending.len()<16,"Too many simultaneous client requests");
-        let request=Interaction { id:Uuid::new_v4(),item_id:item_id.into(),kind };
+        let request=(||->Result<Interaction> {
+            let params=&event["params"];
+            let (item_id,kind)=match event["method"].as_str() {
+                Some("item/tool/call")=> {
+                    ensure!(params["namespace"].is_null(),"Unexpected tool namespace");
+                    let action=protocol::tool_action(params["tool"].as_str().context("Missing tool name")?,params["arguments"].clone())?;
+                    ensure!(enabled || action.is_poll(),"Local access is disabled");
+                    (params["callId"].as_str().context("Missing tool call ID")?,InteractionKind::Tool { action })
+                }
+                Some("item/tool/requestUserInput")=> {
+                    let questions:Vec<protocol::Question>=serde_json::from_value(params["questions"].clone())?;
+                    ensure!(!questions.is_empty() && questions.len()<=3 && params["questions"].to_string().len()<=24_000,"Invalid question request");
+                    let unique=questions.iter().map(|question|&question.id).collect::<std::collections::HashSet<_>>();
+                    ensure!(unique.len()==questions.len(),"Question IDs must be unique");
+                    (params["itemId"].as_str().context("Missing question item ID")?,InteractionKind::Questions { questions })
+                }
+                _=>anyhow::bail!("Unsupported server request"),
+            };
+            ensure!(self.pending.len()<16,"Too many simultaneous client requests");
+            Ok(Interaction { id:Uuid::new_v4(),item_id:item_id.into(),kind })
+        })().map_err(InvalidRequest)?;
         if let Some(user)=user { db.0.lock().unwrap().execute("INSERT INTO tool_calls(id,user_id,request_id,interaction) VALUES(?1,?2,?3,?4)",rusqlite::params![request.id.to_string(),user,request_id.to_string(),serde_json::to_string(&request)?])?; }
         self.pending.insert(request.id,(event["id"].clone(),request.clone()));
         reporter.snapshot.requests.push(request);
         reporter.publish(true);
         Ok(())
+    }
+
+    /// Codex may resolve a request after cancellation or timeout before the client answers.
+    pub fn resolved(&mut self,event:&Value,reporter:&mut Reporter) {
+        let rpc=&event["params"]["requestId"];
+        let ids=self.pending.iter().filter_map(|(id,(pending,_))|(pending==rpc).then_some(*id)).collect::<Vec<_>>();
+        for id in ids { self.pending.remove(&id); reporter.snapshot.requests.retain(|request|request.id!=id); }
+        reporter.publish(true);
     }
 
     /// Validate an answer against its actual pending question/tool and acknowledge exact retries once.

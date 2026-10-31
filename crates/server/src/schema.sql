@@ -36,3 +36,4 @@ CREATE INDEX IF NOT EXISTS quota_history_time ON quota_history(checked_at);
 
 CREATE TABLE IF NOT EXISTS tool_calls(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, request_id TEXT NOT NULL, interaction TEXT NOT NULL, answer TEXT);
 CREATE INDEX IF NOT EXISTS tool_calls_request ON tool_calls(user_id,request_id);
+CREATE TABLE IF NOT EXISTS provider_counters(thread_id TEXT PRIMARY KEY,counters TEXT NOT NULL);

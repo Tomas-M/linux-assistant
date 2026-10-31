@@ -29,8 +29,12 @@ impl<'a> Attempt<'a> {
             end.checked_sub(start).filter(|value|*value>=0)
         }).collect();
         if let Some(c)=counts {
-            self.db.0.lock().unwrap().execute("UPDATE usage SET input_tokens=?1,cached_tokens=?2,output_tokens=?3,reasoning_tokens=?4,total_tokens=?5 WHERE id=?6",
+            let mut conn=self.db.0.lock().unwrap();
+            let tx=conn.transaction()?;
+            tx.execute("UPDATE usage SET input_tokens=MAX(COALESCE(input_tokens,0),?1),cached_tokens=MAX(COALESCE(cached_tokens,0),?2),output_tokens=MAX(COALESCE(output_tokens,0),?3),reasoning_tokens=MAX(COALESCE(reasoning_tokens,0),?4),total_tokens=MAX(COALESCE(total_tokens,0),?5) WHERE id=?6",
                 params![c[0],c[1],c[2],c[3],c[4],self.id])?;
+            tx.execute("INSERT INTO provider_counters(thread_id,counters) SELECT thread_id,?1 FROM usage WHERE id=?2 AND thread_id IS NOT NULL AND purpose='conversation' ON CONFLICT(thread_id) DO UPDATE SET counters=excluded.counters WHERE json_extract(excluded.counters,'$.totalTokens')>=json_extract(provider_counters.counters,'$.totalTokens')",params![serde_json::to_string(total)?,self.id])?;
+            tx.commit()?;
         }
         Ok(())
     }

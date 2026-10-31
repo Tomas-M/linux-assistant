@@ -3,6 +3,8 @@ use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use uuid::Uuid;
 
+pub const TOOL_OUTPUT_BYTES:usize=8_000;
+
 #[derive(Clone,Debug,Deserialize,Serialize)]
 pub struct Interaction { pub id:Uuid,pub item_id:String,#[serde(flatten)] pub kind:InteractionKind }
 #[derive(Clone,Debug,Deserialize,Serialize)]
@@ -57,7 +59,7 @@ pub fn validate_answers(questions:&[Question],answers:&std::collections::HashMap
         let answer=answers.get(&question.id).ok_or_else(||anyhow::anyhow!("Missing answer for {}",question.header))?;
         anyhow::ensure!(answer.len()==1 && !answer[0].trim().is_empty() && answer[0].len()<=8000,"Enter one answer per question, up to 8000 bytes");
         if !question.is_other {
-            if let Some(options)=&question.options { anyhow::ensure!(options.iter().any(|option|option.label==answer[0]),"Choose an advertised answer"); }
+            if let Some(options)=question.options.as_ref().filter(|options|!options.is_empty()) { anyhow::ensure!(options.iter().any(|option|option.label==answer[0]),"Choose an advertised answer"); }
         }
     }
     Ok(())

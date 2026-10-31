@@ -7,7 +7,7 @@ mod tests;
 
 /// Bound connection attempts separately from long-running streamed responses.
 pub fn client(timeout:u64)->Result<reqwest::Client> {
-    let mut builder=reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).redirect(reqwest::redirect::Policy::none());
+    let mut builder=reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).read_timeout(Duration::from_secs(45)).redirect(reqwest::redirect::Policy::none());
     if timeout>0 { builder=builder.timeout(Duration::from_secs(timeout)); }
     Ok(builder.build()?)
 }

@@ -13,7 +13,7 @@ fn contents(path:&Path)->Option<Option<std::sync::Arc<Vec<u8>>>> {
     };
     if !metadata.is_file() || metadata.len()>1024*1024 { return None; }
     let mut bytes=Vec::new();
-    std::fs::File::open(path).ok()?.take(1024*1024+1).read_to_end(&mut bytes).ok()?;
+    crate::files::open_file(path).ok()?.take(1024*1024+1).read_to_end(&mut bytes).ok()?;
     (bytes.len()<=1024*1024).then_some(Some(std::sync::Arc::new(bytes)))
 }
 

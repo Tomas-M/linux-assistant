@@ -1,4 +1,4 @@
-use std::{collections::HashMap,path::Path,process::Stdio,sync::Arc};
+use std::{path::Path,process::Stdio,sync::Arc};
 use anyhow::{bail, ensure, Context, Result};
 use protocol::{AssistantReply, ChatRequest};
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use super::QuotaReached;
 
 pub(super) struct Rpc {
     transport:Arc<Transport>, owner:uuid::Uuid, thread:Option<String>, events:Option<mpsc::Receiver<Value>>,
-    global:broadcast::Receiver<Value>, usage:HashMap<String,Value>,
+    global:broadcast::Receiver<Value>,
 }
 
 impl Rpc {
@@ -29,7 +29,7 @@ impl Rpc {
         }
         #[cfg(windows)] { command.creation_flags(0x08000000); }
         let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?,home.to_string_lossy().into_owned());
-        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,usage:HashMap::new() };
+        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None };
         rpc.call("initialize",json!({"clientInfo":{"name":"linux_assistant","title":"Linux Assistant","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true}})).await?;
         rpc.transport.initialized()?;
@@ -46,7 +46,7 @@ impl Rpc {
 
     /// Each caller gets its own thread subscription on the same authenticated account process.
     pub(super) fn session(&self)->Self {
-        Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None,usage:HashMap::new() }
+        Self { transport:self.transport.clone(),owner:uuid::Uuid::new_v4(),global:self.transport.global.subscribe(),thread:None,events:None }
     }
 
     /// Removal waits for the account worker to exit before deleting its private home.
@@ -77,9 +77,6 @@ impl Rpc {
             None=>self.global.recv().await?,
         };
         ensure!(message["method"]!="assistant/transportClosed","{}",self.transport.failure());
-        if message["method"]=="thread/tokenUsage/updated" {
-            if let Some(thread)=message["params"]["threadId"].as_str() { self.usage.insert(thread.into(),message["params"]["tokenUsage"]["total"].clone()); }
-        }
         Ok(message)
     }
 
@@ -147,9 +144,9 @@ impl Rpc {
         let input = serde_json::to_string(&json!({"platform":request.platform,"shell":request.platform.shell(),
             "commands_enabled":request.commands_enabled,"cwd":request.cwd,"messages":messages,
             "recovery_checkpoint_requested":checkpoint,"recovery":if thread.is_none() { recovery.clone() } else if recovery["local_operations"]["operations"].as_array().is_some_and(|operations|!operations.is_empty()) { json!({"local_operations":recovery["local_operations"]}) } else { Value::Null }}))?;
-        let mut baseline=self.usage.get(&thread_id).cloned().unwrap_or_else(||if thread.is_none() {
+        let mut baseline=if thread.is_none() {
             json!({"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0})
-        } else { Value::Null });
+        } else { attempt.db.provider_counters(&thread_id)?.context("Missing recorded token baseline; start a new chat")? };
         // An empty environment selection prevents access to the backend host, including on resumed threads.
         let started=self.call("turn/start",json!({"threadId":thread_id,"environments":[],"input":protocol::provider_input(input,&request.messages),
             "effort":config.reasoning_effort,"summary":"auto","outputSchema":schema})).await?;
@@ -218,9 +215,15 @@ impl Rpc {
             }
             if interrupted.is_none() {
                 if event.get("id").is_some() {
-                    requests.receive(&event,request.commands_enabled,reporter,attempt.db,user,request.request_id)?;
+                    if let Err(error)=requests.receive(&event,request.commands_enabled,reporter,attempt.db,user,request.request_id) {
+                        if error.downcast_ref::<super::interactions::InvalidRequest>().is_none() { return Err(error); }
+                        let message=if event["method"]=="item/tool/call" { format!("Local tool request rejected: {error}. Correct the arguments or respect the local access setting.") } else { format!("Question request rejected: {error}. Ask a valid, short question.") };
+                        let response=if event["method"]=="item/tool/call" { json!({"contentItems":[{"type":"inputText","text":message}],"success":false}) } else { json!({"answers":{}}) };
+                        self.transport.respond(&thread_id,self.owner,event["id"].clone(),response)?;
+                    }
                     continue;
                 }
+                if event["method"]=="serverRequest/resolved" { requests.resolved(&event,reporter); }
                 reporter.event(&event)?;
             }
             match event["method"].as_str() {
@@ -240,7 +243,7 @@ impl Rpc {
                 Some("model/rerouted") if event["params"]["turnId"]==turn_id => {
                     attempt.identify(&thread_id,turn_id,event["params"]["toModel"].as_str())?;
                 }
-                Some("item/completed") if event["params"]["item"]["type"]=="agentMessage" && event["params"]["item"]["phase"]!="commentary" => {
+                Some("item/completed") if event["params"]["item"]["type"]=="agentMessage" && !matches!(event["params"]["item"]["phase"].as_str(),Some("commentary"|"partial_answer")) => {
                     answer=event["params"]["item"]["text"].as_str().unwrap_or_default().to_owned();
                 }
                 Some("item/started") if matches!(event["params"]["item"]["type"].as_str(),

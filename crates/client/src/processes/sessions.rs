@@ -11,7 +11,7 @@ impl Processes {
     pub(crate) fn output(&self,id:Uuid)->Result<OperationOutput> { storage::read(&self.directory.join("operations").join(format!("{id}.json"))) }
 
     /// Execute one approved operation and commit its output before advancing the session cursors.
-    pub(crate) async fn perform(&self,id:Uuid,action:&LocalAction,cwd:&str,yield_now:&tokio::sync::Notify)->Result<()> {
+    pub(crate) async fn perform(&self,id:Uuid,action:&LocalAction,cwd:&str,yield_now:&tokio::sync::Notify,cancelled:&Arc<std::sync::atomic::AtomicBool>)->Result<()> {
         action.validate()?;
         let directory=self.directory.join("operations");
         std::fs::create_dir_all(&directory)?;
@@ -21,7 +21,7 @@ impl Processes {
         let result:Result<()>=async {
             let session=action.session_id(id);
             if let LocalAction::ExecCommand { cmd,workdir,reason,files,yield_time_ms,timeout_ms }=action {
-                self.start(session,&CommandProposal { command:cmd.clone(),cwd:workdir.clone(),reason:reason.clone(),files:Some(files.clone()) },*yield_time_ms,*timeout_ms,yield_now).await?;
+                self.start(session,&CommandProposal { command:cmd.clone(),cwd:workdir.clone(),reason:reason.clone(),files:Some(files.clone()) },*yield_time_ms,*timeout_ms,yield_now,cancelled).await?;
             }
             let (record,input,cursor,files)={
                 let entries=self.entries.lock().unwrap();
@@ -34,6 +34,7 @@ impl Processes {
                     if !chars.is_empty() || *close_stdin {
                         ensure!(record.lock().unwrap().finished_at.is_none(),"Session has finished");
                         let mut pipe=input.lock().await;
+                        ensure!(!cancelled.load(std::sync::atomic::Ordering::SeqCst),"Input delivery cancelled");
                         let stdin=pipe.as_mut().context("Session stdin is closed")?;
                         tokio::time::timeout(Duration::from_secs(5),stdin.write_all(chars.as_bytes())).await.context("Input delivery timed out; some bytes may have been sent. Do not resend automatically")??;
                         if *close_stdin { pipe.take(); }
@@ -64,11 +65,11 @@ impl Processes {
                 current.changes=Some(changes);
                 if current.finished_at.is_none() && current.background_pids.is_none() { *files.lock().unwrap()=Some(before); }
             }
-            let (text,next,cwd)={
+            let (text,next,cwd,success)={
                 let record=record.lock().unwrap();
                 let running=record.finished_at.is_none() && record.background_pids.is_none();
                 let exit=record.exit_code.map_or_else(||"not available".into(),|code|code.to_string());
-                let mut output=format!("Session ID: {}\nRunning: {running}\nLauncher exit code: {exit}\n",record.id);
+                let mut output=format!("Session ID: {}\nRunning: {running}\nLauncher exit code: {exit}\nCaptured output record: {}\n",record.id,self.directory.join(format!("{}.json",record.id)).display());
                 if let Some(error)=&record.error { output.push_str(&format!("Error: {error}\n")); }
                 if let Some(pids)=record.background_pids.as_ref().filter(|pids|!pids.is_empty()) { output.push_str(&format!("Background PIDs: {pids:?}. The launcher has finished; do not rerun it.\n")); }
                 let mut next=[0,0];
@@ -91,9 +92,10 @@ impl Processes {
                     output.push('\n');
                     next[index]=total-(bytes.len()-end);
                 }
-                (output,(next[0],next[1]),record.proposal.cwd.clone())
+                let success=record.error.is_none() || matches!(action,LocalAction::StopProcess { .. });
+                (output,(next[0],next[1]),record.proposal.cwd.clone(),success)
             };
-            storage::write(&path,&OperationOutput { cwd,text,success:true })?;
+            storage::write(&path,&OperationOutput { cwd,text,success })?;
             *cursor=next;
             Ok(())
         }.await;

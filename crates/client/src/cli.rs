@@ -153,7 +153,7 @@ async fn live_post(connection: &Connection, path: &str, body: Value) -> Result<V
                                     for (index,option) in options.iter().enumerate() { println!("{}. {} - {}",index+1,safe(&option.label),safe(&option.description)); }
                                     if question.is_secret { anyhow::bail!("Answer this private question in the browser at {}",connection.url); }
                                     loop {
-                                        let input=read_line(if question.is_other { "Choose a number or type your own answer: " } else { "Choose a number: " })?;
+                                        let input=read_line(if options.is_empty() { "Your answer: " } else if question.is_other { "Choose a number or type your own answer: " } else { "Choose a number: " })?;
                                         let Some(input)=input else { connection.post("/api/interrupt",json!({})).await?; anyhow::bail!("Task stopped after terminal input closed"); };
                                         let input=input.trim();
                                         let selected=input.parse::<usize>().ok().and_then(|index|index.checked_sub(1)).and_then(|index|options.get(index));

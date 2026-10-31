@@ -10,7 +10,8 @@ use crate::{storage,stream::Live};
 pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
-pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<String>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,tokio::task::AbortHandle>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
+pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<String>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
+struct LocalTask { handle:tokio::task::AbortHandle,cancelled:Arc<AtomicBool> }
 pub struct Active(Arc<Controls>);
 mod interactions;
 
@@ -107,10 +108,17 @@ impl Controls {
         if action=="steer" { self.command_yield.notify_waiters(); }
         Ok(value)
     }
+    /// Cancel leases permanently, including blocking file jobs that may outlive their async caller.
+    pub fn cancel_local(&self) {
+        self.stopped.store(true,Ordering::SeqCst);
+        for (_,task) in self.tasks.lock().unwrap().drain() { task.cancelled.store(true,Ordering::SeqCst); task.handle.abort(); }
+        self.pending.lock().unwrap().clear();
+        self.command_yield.notify_waiters();
+        self.live.0.send_modify(|view| { view["can_steer"]=json!(false); view["interactions"]=json!([]); });
+    }
     /// Stop applies to the whole local task, including its automatic-command loop and queued follow-ups.
     pub async fn interrupt(&self)->Result<()> {
-        self.stopped.store(true,Ordering::SeqCst);
-        self.command_yield.notify_waiters();
+        self.cancel_local();
         if self.remote.lock().unwrap().is_some() { self.send("stop",json!({})).await?; }
         Ok(())
     }
@@ -119,7 +127,7 @@ impl Drop for Active {
     /// Clear steering availability on success, transport failure, and cancellation alike.
     fn drop(&mut self) {
         *self.0.remote.lock().unwrap()=None;
-        for (_,task) in self.0.tasks.lock().unwrap().drain() { task.abort(); }
+        for (_,task) in self.0.tasks.lock().unwrap().drain() { task.cancelled.store(true,Ordering::SeqCst); task.handle.abort(); }
         self.0.pending.lock().unwrap().clear();
         self.0.live.0.send_modify(|view| { view["can_steer"]=json!(false); view["interactions"]=json!([]); });
     }

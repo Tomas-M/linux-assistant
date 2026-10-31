@@ -34,6 +34,12 @@ impl Db {
         }).collect::<Vec<_>>()}))
     }
 
+    /// Resume from the last recorded cumulative provider counters, independently of transient RPC wrappers.
+    pub fn provider_counters(&self,thread:&str)->Result<Option<serde_json::Value>> {
+        let counters:Option<String>=self.0.lock().unwrap().query_row("SELECT counters FROM provider_counters WHERE thread_id=?1",[thread],|row|row.get(0)).optional()?;
+        counters.map(|counters|Ok(serde_json::from_str(&counters)?)).transpose()
+    }
+
     /// Create the initial schema; early development databases can be recreated.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
