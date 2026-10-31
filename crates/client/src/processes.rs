@@ -16,6 +16,7 @@ pub struct Record {
     pub program: String,
     pub arguments: Vec<String>,
     pub pid: Option<u32>,
+    pub background_pids: Option<Vec<u32>>,
     pub started_at: u64,
     pub finished_at: Option<u64>,
     pub exit_code: Option<i32>,
@@ -35,13 +36,18 @@ fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_milli
 impl Record {
     /// Register the approved command before spawning any operating-system process.
     pub fn new(id: Uuid, proposal: CommandProposal) -> Self {
-        Self { id,proposal,program:String::new(),arguments:vec![],pid:None,started_at:now(),finished_at:None,exit_code:None,
+        Self { id,proposal,program:String::new(),arguments:vec![],pid:None,background_pids:None,started_at:now(),finished_at:None,exit_code:None,
             error:None,stdout:String::new(),stderr:String::new(),stdout_bytes:0,stderr_bytes:0 }
     }
 
     /// Keep execution failures distinct from text written to the command's stderr pipe.
     pub fn result(&self) -> String {
-        let status=self.error.clone().unwrap_or_else(||format!("Exit status: exit code: {}",self.exit_code.unwrap_or(-1)));
+        let mut status=self.error.clone().unwrap_or_else(||format!("Exit status: exit code: {}",self.exit_code.unwrap_or(-1)));
+        if self.finished_at.is_none() {
+            if let Some(pids)=self.background_pids.as_ref().filter(|pids|!pids.is_empty()) {
+                status.push_str(&format!("\nBackground processes are still running (PIDs: {}). The launcher has finished; do not rerun it. They can be stopped in Tasks.",pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")));
+            }
+        }
         format!("{status}\nstdout:\n{}{}\nstderr:\n{}{}",self.stdout,
             if self.stdout_bytes>OUTPUT_LIMIT { "\n[output truncated at 1 MiB]" } else { "" },self.stderr,
             if self.stderr_bytes>OUTPUT_LIMIT { "\n[output truncated at 1 MiB]" } else { "" })
@@ -61,6 +67,7 @@ impl Processes {
             let mut record: Record=storage::read(&file.path())?;
             if record.finished_at.is_none() {
                 record.finished_at=Some(now());
+                record.background_pids=None;
                 record.error=Some("Assistant restarted; command outcome is unknown. It was not rerun.".into());
                 storage::write(&file.path(),&record)?;
             }
@@ -76,7 +83,7 @@ impl Processes {
         let mut records: Vec<_>=entries.values().map(|entry| {
             let r=entry.record.lock().unwrap();
             json!({"id":r.id,"command":r.proposal.command,"pid":r.pid,"started_at":r.started_at,"finished_at":r.finished_at,
-                "exit_code":r.exit_code,"error":r.error,"stdout_bytes":r.stdout_bytes,"stderr_bytes":r.stderr_bytes})
+                "exit_code":r.exit_code,"background_pids":r.background_pids,"error":r.error,"stdout_bytes":r.stdout_bytes,"stderr_bytes":r.stderr_bytes})
         }).collect();
         records.sort_by_key(|r|std::cmp::Reverse(r["started_at"].as_u64().unwrap()));
         json!(records)
@@ -97,9 +104,12 @@ impl Processes {
         entry.cancel.send(true).context("Process has already finished")
     }
 
-    /// Signal all owned process trees before shutting down the daemon.
-    pub fn stop_all(&self) {
-        for entry in self.entries.lock().unwrap().values() { let _=entry.cancel.send(true); }
+    /// Conversation Stop and daemon shutdown leave previously launched background applications alone.
+    pub fn stop_foreground(&self) {
+        for entry in self.entries.lock().unwrap().values() {
+            let record=entry.record.lock().unwrap();
+            if record.finished_at.is_none() && record.background_pids.is_none() { let _=entry.cancel.send(true); }
+        }
     }
 
     /// Run a tracked process tree and preserve its captured output even on failure or cancellation.
@@ -118,10 +128,21 @@ impl Processes {
             for (id,_) in completed.into_iter().skip(49) { entries.remove(&id); }
             entries.insert(id,Entry { record:record.clone(),cancel });
         }
-        let result=command::execute(proposal,record.clone(),receiver,OUTPUT_LIMIT).await;
-        let mut record=record.lock().unwrap();
-        if let Err(error)=result { record.error=Some(error.to_string()); }
-        record.finished_at=Some(now());
+        let (completed,launcher)=tokio::sync::oneshot::channel();
+        let (running,proposal,directory)=(record.clone(),proposal.clone(),self.directory.clone());
+        // The monitor outlives the launcher so AI follow-ups do not wait for background applications.
+        let task=tokio::spawn(async move {
+            let result=command::execute(&proposal,running.clone(),receiver,OUTPUT_LIMIT,Some(completed)).await;
+            let mut record=running.lock().unwrap();
+            if let Err(error)=result { record.error=Some(error.to_string()); }
+            record.finished_at=Some(now());
+            if let Some(pids)=&mut record.background_pids { pids.clear(); }
+            let result=storage::write(&directory.join(format!("{id}.json")),&*record);
+            if let Err(error)=&result { record.error=Some(format!("Could not save process result: {error:#}")); }
+            result
+        });
+        if launcher.await.is_err() { task.await??; }
+        let record=record.lock().unwrap();
         storage::write(&self.directory.join(format!("{id}.json")),&*record)?;
         Ok(record.clone())
     }

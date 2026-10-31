@@ -1073,9 +1073,13 @@ function renderProcess(record)
     processRecord=record;
     elements['process-detail'].hidden=false;
     elements['process-metadata'].replaceChildren();
-    const metadata={PID:record.pid || 'Not started',Directory:record.proposal.cwd,Started:new Date(record.started_at).toLocaleString(),
+    let result='Running';
+    if (record.finished_at) result='Exit code: '+record.exit_code;
+    else if (record.background_pids) result='Launcher exit code: '+record.exit_code+' · Background processes running';
+    const metadata={'Launcher PID':record.pid || 'Not started',Directory:record.proposal.cwd,Started:new Date(record.started_at).toLocaleString(),
         Finished:record.finished_at?new Date(record.finished_at).toLocaleString():'Still running',
-        Result:record.error || (record.finished_at?'Exit code: '+record.exit_code:'Running')};
+        Result:record.error || result};
+    if (record.background_pids?.length) metadata['Background PIDs']=record.background_pids.join(', ');
     for (const [label,value] of Object.entries(metadata))
     {
         const term=document.createElement('dt'), detail=document.createElement('dd');
@@ -1141,7 +1145,10 @@ async function pollProcesses()
             row.cells[0].firstChild.textContent=record.command;
             row.cells[0].firstChild.title=record.command;
             row.cells[0].firstChild.setAttribute('aria-pressed',String(record.id===selectedProcess));
-            row.cells[1].textContent=record.pid || 'Starting';
+            const pids=record.background_pids?.length?record.background_pids:[record.pid].filter(Boolean);
+            row.cells[1].textContent=pids[0] || 'Starting';
+            if (pids.length>1) row.cells[1].textContent+=' +'+(pids.length-1);
+            row.cells[1].title=pids.join(', ');
             row.cells[2].textContent=Math.floor((Date.now()-record.started_at)/1000)+'s';
         }
         const history=records.filter(record=>record.finished_at), key=JSON.stringify(history);
@@ -1161,7 +1168,8 @@ async function pollProcesses()
         }
         for (const button of elements['process-history'].children) button.setAttribute('aria-pressed',String(button.dataset.select===selectedProcess));
         const selected=records.find(record=>record.id===selectedProcess);
-        const changed=selected && (!processRecord || ['id','pid','finished_at','exit_code','error','stdout_bytes','stderr_bytes'].some(key=>selected[key]!==processRecord[key]));
+        const pidsChanged=selected && JSON.stringify(selected.background_pids)!==JSON.stringify(processRecord?.background_pids);
+        const changed=selected && (!processRecord || pidsChanged || ['id','pid','finished_at','exit_code','error','stdout_bytes','stderr_bytes'].some(key=>selected[key]!==processRecord[key]));
         if (changed)
         {
             const id=selectedProcess, record=await api('processes/'+id);

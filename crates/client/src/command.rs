@@ -5,12 +5,14 @@ use crate::processes::Record;
 
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(all(test,windows))]
 mod windows_tests;
 
 /// Refuse unsupported hosts rather than executing with a guessed shell.
 #[cfg(not(any(target_os = "linux",windows)))]
-pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize) -> Result<()> {
+pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _cancel: tokio::sync::watch::Receiver<bool>, _output_limit: usize, _completed:Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
     anyhow::bail!("Local command execution requires Linux or Windows")
 }
 
@@ -19,7 +21,7 @@ pub async fn execute(_proposal: &CommandProposal, _record: Arc<Mutex<Record>>, _
 pub async fn run(proposal: &CommandProposal) -> Result<String> {
     let record=Arc::new(Mutex::new(Record::new(uuid::Uuid::new_v4(),proposal.clone())));
     let (_cancel,receiver)=tokio::sync::watch::channel(false);
-    execute(proposal,record.clone(),receiver,24_000).await?;
+    execute(proposal,record.clone(),receiver,24_000,None).await?;
     let mut output=record.lock().unwrap().result();
     if record.lock().unwrap().stdout_bytes>24_000 { output.push_str("\n[output truncated]"); }
     if record.lock().unwrap().stderr_bytes>24_000 { output.push_str("\n[output truncated]"); }
@@ -28,7 +30,7 @@ pub async fn run(proposal: &CommandProposal) -> Result<String> {
 
 /// Stream into the independent process record while retaining native process-tree ownership.
 #[cfg(any(target_os = "linux",windows))]
-pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize) -> Result<()> {
+pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut cancel: tokio::sync::watch::Receiver<bool>, output_limit: usize, completed:Option<tokio::sync::oneshot::Sender<()>>) -> Result<()> {
     use std::{process::Stdio, time::Duration};
     use tokio::process::Command;
     anyhow::ensure!(std::path::Path::new(&proposal.cwd).is_absolute(),"Command directory must be absolute");
@@ -62,40 +64,74 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
     let mut child = command.spawn()?;
     record.lock().unwrap().pid=child.id();
     #[cfg(target_os = "linux")]
-    let group = ProcessGroup(child.id().unwrap() as i32);
+    let mut group = linux::ProcessGroup::contain(&child)?;
     #[cfg(windows)]
-    let group = windows::contain(&child)?;
+    let mut group = windows::ProcessGroup::contain(&child)?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let out_record=record.clone();
     let err_record=record.clone();
-    let out = tokio::spawn(async move { capture(stdout,out_record,false,output_limit).await });
-    let err = tokio::spawn(async move { capture(stderr,err_record,true,output_limit).await });
+    let mut captures=tokio::task::JoinSet::new();
+    captures.spawn(async move { capture(stdout,out_record,false,output_limit).await });
+    captures.spawn(async move { capture(stderr,err_record,true,output_limit).await });
     let status = tokio::select! {
         status=child.wait() => Some(status),
-        _=async { if !*cancel.borrow() { let _=cancel.changed().await; } } => {
+        _=stopped(&mut cancel) => {
             record.lock().unwrap().error=Some("Stopped by user; command process tree terminated.".into());
             None
         },
     };
-    drop(group);
-    if let Some(status)=status { record.lock().unwrap().exit_code=status?.code(); }
-    else { let _=child.wait().await; }
-    for mut task in [out,err] {
-        match tokio::time::timeout(Duration::from_secs(1),&mut task).await {
-            Ok(result) => result??,
-            Err(_) => { task.abort(); record.lock().unwrap().error=Some("Output pipe left open by a detached process; capture is incomplete.".into()); }
+    let pids=if let Some(status)=status {
+        record.lock().unwrap().exit_code=status?.code();
+        group.preserve()?
+    } else {
+        group.stop()?;
+        let _=child.wait().await;
+        vec![]
+    };
+    drop(child);
+    if !pids.is_empty() { record.lock().unwrap().background_pids=Some(pids); }
+    // Flush the launcher's last output without waiting for pipes inherited by background applications.
+    if let Ok(Err(error))=tokio::time::timeout(Duration::from_millis(100),drain(&mut captures)).await {
+        record.lock().unwrap().error=Some(format!("Could not capture command output: {error:#}"));
+    }
+    if record.lock().unwrap().background_pids.is_some() {
+        if let Some(completed)=completed { let _=completed.send(()); }
+        loop {
+            tokio::select! {
+                _=stopped(&mut cancel)=> {
+                    group.stop()?;
+                    record.lock().unwrap().error=Some("Stopped by user; command process tree terminated.".into());
+                    break;
+                }
+                _=tokio::time::sleep(Duration::from_millis(500))=> {
+                    let pids=group.pids()?;
+                    let finished=pids.is_empty();
+                    record.lock().unwrap().background_pids=Some(pids);
+                    if finished { break; }
+                }
+            }
         }
+    }
+    match tokio::time::timeout(Duration::from_secs(1),drain(&mut captures)).await {
+        Ok(result)=>result?,
+        Err(_)=> { captures.abort_all(); record.lock().unwrap().error=Some("Output pipe left open outside the tracked process group; capture is incomplete.".into()); }
     }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-struct ProcessGroup(i32);
-#[cfg(target_os = "linux")]
-impl Drop for ProcessGroup {
-    /// Also kill descendants when execution is cancelled or its shell exits early.
-    fn drop(&mut self) { unsafe { libc::kill(-self.0,libc::SIGKILL); } }
+/// Only an explicit cancellation value requests termination; a closed observer is not a Stop.
+#[cfg(any(target_os = "linux",windows))]
+async fn stopped(cancel:&mut tokio::sync::watch::Receiver<bool>) {
+    let closed=cancel.wait_for(|stop|*stop).await.is_err();
+    if closed { std::future::pending::<()>().await; }
+}
+
+/// Completed readers are removed from the set while a timeout leaves the others capturing live output.
+#[cfg(any(target_os = "linux",windows))]
+async fn drain(captures:&mut tokio::task::JoinSet<Result<()>>)->Result<()> {
+    while let Some(result)=captures.join_next().await { result??; }
+    Ok(())
 }
 
 /// Retain a bounded prefix, expose live output, and continue draining both pipes after the cap.

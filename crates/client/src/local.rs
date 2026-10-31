@@ -102,7 +102,7 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     tokio::select! {
         result=axum::serve(listener,router(state)).into_future() => result?,
         _=async { tokio::select! { _=stop.notified()=>{}, _=tokio::signal::ctrl_c()=>{} } } => {
-            processes.stop_all();
+            processes.stop_foreground();
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
@@ -271,7 +271,7 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
 async fn interrupt(State(state):State<Local>)->LocalResult {
     state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
     state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
-    state.processes.stop_all();
+    state.processes.stop_foreground();
     state.controls.interrupt().await?;
     Ok(Json(json!({"ok":true})))
 }

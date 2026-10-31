@@ -19,7 +19,7 @@ impl Engine {
     /// Send one bounded result in the original conversation; retry never executes the command again.
     pub(super) fn finish_output(&mut self) -> Result<()> {
         let record=self.processes.get(self.saved.pending_output.unwrap())?;
-        ensure!(record.finished_at.is_some(),"Command is still running");
+        ensure!(record.finished_at.is_some() || record.background_pids.is_some(),"Command is still running");
         self.saved.messages.push(Message { attachments:None, role:Role::Tool,text:preview(&record.result()) });
         self.saved.pending_output=None;
         if let Err(error)=self.prepare(record.proposal.cwd.clone(),Uuid::new_v4()) {
