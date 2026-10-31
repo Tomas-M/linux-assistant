@@ -67,7 +67,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .tool-result summary:hover,.past-progress summary:hover { color:var(--text); background:var(--surface); }
 .tool-result summary:focus-visible,.past-progress summary:focus-visible { outline:0.125rem solid var(--accent); outline-offset:0.1875rem; }
 .tool-result summary svg,.past-progress summary svg { width:1rem; height:1rem; flex-shrink:0; }
-.tool-result summary>svg:first-child { width:calc(1rem + 1px); height:calc(1rem + 1px); }
+
 .tool-result .disclosure-arrow,.past-progress summary svg { opacity:.5; transition:transform .15s; }
 .tool-result[open] .disclosure-arrow,.past-progress[open] summary svg { transform:rotate(90deg); }
 .tool-result pre { max-height:20rem; overflow:auto; margin:0.75rem 0; }
@@ -76,7 +76,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .activity { margin:1.75rem 0; }
 .activity-heading { display:flex; align-items:center; gap:0.625rem; color:var(--muted); font-size:0.875rem; margin-bottom:1rem; }
 #elapsed { margin-left:auto; font-size:0.8125rem; }
-.activity-heading>svg { width:1rem; height:1rem; flex-shrink:0; }
+.tool-result summary>svg:first-child,.activity-heading>svg { width:18px; height:18px; flex-shrink:0; }
 .working { background:linear-gradient(100deg,var(--muted) 25%,var(--text) 45%,var(--muted) 65%); background-size:250% 100%; background-clip:text; -webkit-background-clip:text; color:transparent; animation:working-light 2.4s linear infinite; }
 @keyframes working-light { from { background-position:150% 0; } to { background-position:-100% 0; } }
 .summaries { padding-left:1.0625rem; margin:0 0 1.25rem 0.1875rem; border-left:0.0625rem solid var(--border); font-size:0.875rem; color:var(--muted); }
