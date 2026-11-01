@@ -1077,7 +1077,7 @@ async function pollProcesses()
                 const select=document.createElement('button'), stop=document.createElement('button');
                 select.className='process-select';
                 select.dataset.select=record.id;
-                stop.textContent='Stop';
+                stop.className='process-stop'; setIcon(stop,'stop'); stop.append(document.createTextNode('Stop'));
                 stop.dataset.stop=record.id;
                 stop.setAttribute('aria-label','Kill this command and its child processes');
                 command.append(select); action.append(stop); row.append(command,pid,elapsed,action);

@@ -286,10 +286,8 @@ fn record_steering(state:&Local,input:&protocol::Steering) {
         }
     });
 }
-/// Stop the current task and its owned command; queued messages remain paused.
+/// Stop the current task and its owned command, preserving the Full access preference.
 async fn interrupt(State(state):State<Local>)->LocalResult {
-    state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
-    state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
     state.controls.cancel_local();
     let ids={
         let view=state.live.0.borrow();
@@ -373,10 +371,8 @@ async fn process_list(State(state): State<Local>) -> Json<Value> { Json(state.pr
 async fn process_detail(State(state): State<Local>, axum::extract::Path(id): axum::extract::Path<Uuid>) -> LocalResult {
     Ok(Json(serde_json::to_value(state.processes.get(id)?)?))
 }
-/// Stop only a daemon-owned process tree identified by its opaque execution ID.
+/// Stop a daemon-owned process tree without changing the Full access preference.
 async fn process_stop(State(state): State<Local>, axum::extract::Path(id): axum::extract::Path<Uuid>) -> LocalResult {
-    state.full_access.store(false,std::sync::atomic::Ordering::SeqCst);
-    state.live.0.send_modify(|view|view["state"]["full_access"]=json!(false));
     state.processes.stop(id)?;
     Ok(Json(json!({"ok":true})))
 }

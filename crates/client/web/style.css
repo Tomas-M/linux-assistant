@@ -181,7 +181,10 @@ input[type=checkbox] { accent-color:var(--accent); }
 .task-table th,.task-table td { text-align:left; padding:0.625rem 0.5rem; border-bottom:0.0625rem solid var(--border); }
 .task-table th { color:var(--muted); font-weight:500; }
 .task-table th:nth-child(2),.task-table th:nth-child(3) { width:5rem; }
-.task-table th:last-child { width:4.375rem; }
+/* The action column includes cell padding so its button cannot overflow a fixed-width table. */
+.task-table th:last-child { width:5.5rem; }
+.process-stop { display:inline-flex; align-items:center; justify-content:center; gap:0.375rem; padding:0.3125rem 0.5rem; font-size:0.8125rem; white-space:nowrap; }
+.process-stop svg { width:0.625rem; height:0.625rem; flex-shrink:0; }
 .process-select { width:100%; border:0; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:none; padding:0.375rem 0; font-size:0.875rem; }
 .process-select[aria-pressed=true] { color:var(--accent); font-weight:600; }
 .task-table tr:has([aria-pressed=true]) { background:var(--accent-soft); }
