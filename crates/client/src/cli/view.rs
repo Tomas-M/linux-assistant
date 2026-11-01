@@ -78,7 +78,7 @@ impl App {
         let hints=if size.width>=105 { "Enter send · Ctrl+Enter steer · F2 Tasks · F3 Access · F6 Credits · F1 Help" }
             else if size.width>=75 { "Enter send · F5 steer · F2 Tasks · F3 Access · F1 Help" }
             else { "F1 Help · F2 Tasks" };
-        label(frame,Rect::new(17,footer.y,size.width.saturating_sub(18),1),hints,dim());
+        label(frame,Rect::new(17,footer.y,size.width.saturating_sub(18),1),format!("· {hints}"),dim());
         let connection=self.view["connections"].as_object().and_then(|map|map.values().next()).map(|v|format!("Connecting to backend · attempt {}/5",v["attempt"]));
         let status=if !self.status.is_empty() { self.status.clone() } else if let Some(connection)=connection { connection } else if self.pending { "Please wait…".into() } else { self.view["error"].as_str().unwrap_or_default().into() };
         let mut body=Rect::new(1,2,size.width-2,size.height-3);
