@@ -554,7 +554,7 @@ function renderLogin()
     elements['code-digits'].disabled=loginBusy;
     elements.resend.disabled=loginBusy || remaining>0;
     elements.resend.textContent=remaining?'Resend in '+remaining+'s':'Resend code';
-    elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification || !elements['code-form'].hidden;
+    elements['social-providers'].hidden=!enabledProviders.length || !!socialLogin?.verification;
     for (const button of document.querySelectorAll('[data-provider]'))
     {
         button.hidden=!enabledProviders.includes(button.dataset.provider);
@@ -573,7 +573,7 @@ function signedIn(current)
     delete elements.status.dataset.taskError;
     elements['auth-status'].textContent='';
     elements['code-form'].hidden=true;
-    elements['email-form'].hidden=false;
+    elements['auth-methods'].hidden=false;
     for (const input of codeInputs) input.value='';
     renderLogin(); render();
     elements.prompt.focus();
@@ -649,7 +649,7 @@ async function cancelSocial()
     {
         await api('login/cancel',{id:socialLogin.id});
         socialLogin.popup?.close(); socialLogin=undefined;
-        elements['email-form'].hidden=false; elements['code-form'].hidden=true;
+        elements['auth-methods'].hidden=false; elements['code-form'].hidden=true;
         elements['auth-status'].textContent='';
         elements.email.focus();
     }
@@ -668,9 +668,8 @@ async function requestCode()
     {
         const result=await api('login',{email:elements.email.value.trim()});
         resendAt=Date.now()+60000;
-        elements['email-form'].hidden=true;
+        elements['auth-methods'].hidden=true;
         elements['code-form'].hidden=false;
-        elements['login-email'].textContent=elements.email.value.trim();
         elements['development-code'].hidden=!result.development_code;
         elements['development-code'].textContent=result.development_code?'Development code: '+result.development_code:'';
         for (const input of codeInputs) input.value='';
@@ -682,7 +681,7 @@ elements['email-form'].addEventListener('submit',event=>{event.preventDefault();
 elements.resend.addEventListener('click',requestCode);
 elements['change-email'].addEventListener('click',()=>
 {
-    elements['email-form'].hidden=false;
+    elements['auth-methods'].hidden=false;
     elements['code-form'].hidden=true;
     elements['auth-status'].textContent='';
     elements.email.focus();
