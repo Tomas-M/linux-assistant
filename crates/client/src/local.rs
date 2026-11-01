@@ -26,6 +26,7 @@ impl IntoResponse for LocalError {
 
 impl Connection {
     /// Send requests only to the exact loopback origin.
+    #[cfg(test)]
     pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
         self.request(reqwest::Method::POST,path,Some(body)).await
     }
@@ -272,31 +273,10 @@ async fn steer(State(state):State<Local>,Json(input):Json<protocol::Steering>)->
     Ok(Json(result))
 }
 /// Show accepted live input from either the composer or queue without waiting for the turn to finish.
-fn record_steering(state:&Local,input:&protocol::Steering) {
-    state.live.0.send_modify(|view| {
-        if view["busy"]==true {
-            let progress_after=view["activity"]["progress"]["summaries"].as_array().map_or(0,Vec::len);
-            let inputs=view["steering"].as_array_mut().unwrap();
-            if !inputs.iter().any(|old|old["id"]==input.id.to_string()) {
-                let mut value=protocol::display_messages(&[input])[0].clone();
-                value["attachments"]=crate::media::attachments(&input.id.to_string(),input.attachments.as_deref());
-                value["progress_after"]=json!(progress_after);
-                inputs.push(value);
-            }
-        }
-    });
-}
+fn record_steering(state:&Local,input:&protocol::Steering) { crate::session::record_steering(&state.live,input); }
 /// Stop the current task and its owned command, preserving the Full access preference.
 async fn interrupt(State(state):State<Local>)->LocalResult {
-    state.controls.cancel_local();
-    let ids={
-        let view=state.live.0.borrow();
-        let start=view["runs"].as_array().and_then(|runs|runs.last()).filter(|run|run["finished_at"].is_null()).and_then(|run|run["start"].as_u64()).unwrap_or(u64::MAX);
-        view["commands"].as_array().unwrap().iter().filter(|command|command["id"]==command["action_id"])
-            .filter(|command|command["after"].as_u64().is_some_and(|after|after>=start)).filter_map(|command|command["id"].as_str()?.parse().ok()).collect::<Vec<Uuid>>()
-    };
-    state.processes.stop_foreground(Some(&ids));
-    state.controls.interrupt().await?;
+    crate::session::interrupt(&state.controls,&state.live,&state.processes).await?;
     Ok(Json(json!({"ok":true})))
 }
 /// Removing queued input never sends it to the model.
@@ -330,39 +310,8 @@ enum Operation { Next, Retry }
 
 /// Own the task independently of browser connections; consume every approved proposal exactly once.
 async fn run(state: Local, operation: Operation) -> LocalResult {
-    let mut engine=match state.engine.clone().try_lock_owned() {
-        Ok(engine)=>engine,
-        Err(_) if matches!(operation,Operation::Next)=>return Ok(Json(state.live.0.borrow()["state"].clone())),
-        Err(error)=>return Err(anyhow::anyhow!(error).into()),
-    };
-    state.controls.stopped.store(false,std::sync::atomic::Ordering::SeqCst);
-    state.live.0.send_modify(|view| { view["busy"]=json!(true); view["error"]=Value::Null; view["activity"]=Value::Null; view["steering"]=json!([]); });
-    Ok(Json(tokio::spawn(async move {
-        let result=async {
-            match operation {
-                Operation::Next=> { engine.next().await?; }
-                Operation::Retry=> { engine.retry().await?; }
-            }
-            loop {
-                if state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) { break; }
-                if !engine.next().await? { break; }
-            }
-            Ok::<_,anyhow::Error>(engine.state())
-        }.await;
-        let presentation=if result.is_err() || state.controls.stopped.load(std::sync::atomic::Ordering::SeqCst) {
-            engine.finish_activity(result.as_ref().err().map(ToString::to_string))
-        } else { Ok(()) };
-        let result=result.and_then(|_|presentation.map(|_|engine.state()));
-        state.live.state(engine.state());
-        state.live.0.send_modify(|view| {
-            view["busy"]=json!(false);
-            view["can_steer"]=json!(false);
-            view["steering"]=json!([]);
-            view["error"]=json!(result.as_ref().err().map(ToString::to_string));
-            if result.is_ok() { view["activity"]=Value::Null; }
-        });
-        result
-    }).await??))
+    let result=crate::session::run(state.engine,matches!(operation,Operation::Retry)).await?;
+    Ok(Json(if result.is_null() { state.live.0.borrow()["state"].clone() } else { result }))
 }
 
 /// Process polling and stopping never wait for the assistant or an AI request.
@@ -388,17 +337,9 @@ async fn purchases(State(state): State<Local>) -> LocalResult {
 }
 /// Forward account requests with durable authentication without exposing the token to the browser.
 async fn account_request(state:&Local,method:reqwest::Method,path:&str,body:Option<Value>)->LocalResult {
-    // Durable authentication can be read while a task holds the engine, without exposing it to the browser.
-    let saved:crate::engine::Saved=storage::read(&state.session_path)?;
-    let mut request=crate::backend::client(60)?.request(method,format!("{}{path}",saved.settings.backend)).bearer_auth(saved.token.context("Sign in first")?);
-    if let Some(body)=body { request=request.json(&body); }
-    let response=crate::backend::send(request,&state.live,None).await?;
-    let status=response.status();
-    let value:Value=response.json().await?;
-    if !status.is_success() { return Err(anyhow::anyhow!("{}",value["error"].as_str().unwrap_or("Account request failed")).into()); }
-    Ok(Json(value))
+    Ok(Json(crate::session::account(&state.session_path,&state.live,method,path,body).await?))
 }
-/// Stop explicitly; closing a browser tab leaves the assistant available to the CLI.
+/// Stop the browser service explicitly; closing its tab leaves the local engine running.
 async fn stop(State(state): State<Local>) -> Json<Value> { state.stop.notify_one(); Json(json!({"ok":true})) }
 
 #[cfg(test)]

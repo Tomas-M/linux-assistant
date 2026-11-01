@@ -24,7 +24,7 @@ pub struct Saved {
 pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<social::LoginAttempt>, account: Option<Account> }
 
 impl Engine {
-    /// One daemon owns settings and conversation state for both frontends.
+    /// One interface owns the saved settings and conversation state at a time.
     pub async fn open(directory: &Path, backend:&str) -> Result<Self> {
         let platform = match std::env::consts::OS {
             "linux" => Platform::Linux, "windows" => Platform::Windows,

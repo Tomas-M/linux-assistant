@@ -64,8 +64,6 @@ impl Default for Decoder {
 }
 
 impl Decoder {
-    /// Local authenticated snapshots include the entire visible history and can exceed a model request.
-    pub fn local()->Self { Self { buffer:vec![],limit:usize::MAX } }
     /// Parse SSE across arbitrary UTF-8/chunk boundaries, accepting CRLF and heartbeat comments.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>> {
         self.buffer.extend_from_slice(bytes);

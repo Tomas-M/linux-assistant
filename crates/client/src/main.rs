@@ -1,4 +1,5 @@
 mod cli;
+mod session;
 mod config;
 mod changes;
 mod files;
@@ -50,10 +51,11 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::load()?;
     anyhow::ensure!([args.desktop,args.cli,args.daemon].into_iter().filter(|value|*value).count()<=1,"Choose only one launch mode: --desktop, --cli or --daemon");
-    let brand=config::Brand::read(&args)?;
     let directory = storage::directory()?;
     if args.reset_chat { storage::reset_chat(&directory)?; println!("Local chat reset; sign-in and settings retained."); return Ok(()); }
     if args.install_desktop { return install_desktop(&args); }
+    if args.cli { return cli::run(directory,&args.backend,&args.name).await; }
+    let brand=config::Brand::read(&args)?;
     if args.daemon {
         #[cfg(windows)]
         windows_launcher::redirect_log(&directory)?;
@@ -64,7 +66,6 @@ async fn main() -> Result<()> {
         webbrowser::open(&connection.url)?;
         return Ok(());
     }
-    if args.cli { return cli::run(connection).await; }
     println!("{}",connection.url);
     Ok(())
 }
