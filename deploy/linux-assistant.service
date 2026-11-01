@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 User=linux-assistant
 Group=linux-assistant
+StateDirectory=linux-assistant
+StateDirectoryMode=0700
 WorkingDirectory=/var/lib/linux-assistant
 ExecStart=/usr/local/bin/assistant-server
 Restart=on-failure
