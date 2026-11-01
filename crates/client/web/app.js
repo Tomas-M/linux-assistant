@@ -210,6 +210,7 @@ function updateAction(row,key,icon,label,output,process,change)
     if (item.summary.title!==label) item.summary.title=label;
     const use=item.summary.querySelector('use');
     if (use.getAttribute('href')!=='#icon-'+icon) use.setAttribute('href','#icon-'+icon);
+    use.parentElement.classList.toggle('list-icon',icon==='list-ul');
     if (process && !item.button)
     {
         item.button=document.createElement('button'); item.button.className='quiet'; item.button.textContent='Open in task manager'; item.element.append(item.button);
