@@ -3,6 +3,7 @@ mod session;
 mod config;
 mod changes;
 mod files;
+mod downloads;
 mod media;
 mod backend;
 mod controls;

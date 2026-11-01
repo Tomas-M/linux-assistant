@@ -11,7 +11,7 @@ use crate::{engine::Engine, processes::Processes, storage};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection { pub url: String }
 #[derive(Clone)]
-struct Local { brand:Arc<crate::config::Brand>, session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
+struct Local { downloads:Arc<crate::downloads::Downloads>, brand:Arc<crate::config::Brand>, session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
 struct LocalError(anyhow::Error);
 type LocalResult = std::result::Result<Json<Value>,LocalError>;
 
@@ -98,7 +98,7 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     storage::write(&discovery,&connection)?;
     engine.live.0.send_modify(|view|view["brand"]=brand.metadata());
     let processes=engine.processes.clone();
-    let state = Local { brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let state = Local { downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
     let controls=state.controls.clone();
     tokio::select! {
@@ -130,6 +130,7 @@ fn router(state: Local) -> Router {
             Ok::<_,LocalError>(([(header::CONTENT_TYPE,"image/png"),(header::CACHE_CONTROL,"no-store")],bytes))
         }))
         .route("/images.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/images.js")) }))
+        .route("/files.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/files.js")) }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
         .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
         .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
@@ -141,6 +142,7 @@ fn router(state: Local) -> Router {
         .route("/api/media/{scope}/{index}",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,false).await }))
         .route("/api/media/{scope}/{index}/thumbnail",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,true).await }))
         .route("/api/health",get(||async { Json(json!({"ok":true})) }))
+        .route("/api/files",post(resolve_files)).route("/api/download/{id}",get(download_file))
         .route("/api/events",get(events)).route("/api/access",post(access))
         .route("/api/state",get(state_view)).route("/api/account",post(account))
         .route("/api/settings",post(settings))
@@ -162,6 +164,17 @@ async fn media_response(state:Local,scope:String,index:usize,thumbnail:bool)->Re
         Ok(Ok((mime,bytes)))=>([(header::CONTENT_TYPE,mime)],bytes).into_response(),
         _=>StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Resolve paths independently of a running AI turn, using the native client's filesystem permissions.
+async fn resolve_files(State(state):State<Local>,Json(paths):Json<Vec<String>>)->LocalResult {
+    let home=dirs::home_dir().context("Home directory not found")?;
+    Ok(Json(tokio::task::spawn_blocking(move||state.downloads.resolve(paths,&home)).await??))
+}
+
+/// File IDs reveal no paths and use the same loopback origin checks as every local API route.
+async fn download_file(State(state):State<Local>,axum::extract::Path(id):axum::extract::Path<Uuid>)->Response {
+    crate::downloads::response(state.downloads,id).await
 }
 
 /// Keep the local API accessible to local users while rejecting unrelated websites and DNS rebinding.
@@ -357,7 +370,7 @@ mod tests {
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -403,7 +416,7 @@ mod tests {
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("checkout-fixture".into());
         engine.settings(false)?;
-        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let _busy=local.engine.lock().await;
         let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()),Json(protocol::CheckoutRequest { price_id:"price_fixture".into() }))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
@@ -428,7 +441,7 @@ mod tests {
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("fixture".into()); engine.settings(true)?;
-        let local=Local { brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let metadata=local.clone();
         let discovery=tokio::spawn(async move { auth_providers(State(metadata)).await.map_err(|error|error.0) });
         tokio::time::timeout(Duration::from_secs(1),entered.notified()).await?;
@@ -450,7 +463,7 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false,assistant_image:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false,assistant_image:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;

@@ -26,11 +26,13 @@ OTHER DEALINGS IN THE SOFTWARE.
 'use strict';
 const answerMarkdown=new markdownit({html:false,linkify:false,typographer:false}).disable('image');
 const renderedAnswers=new WeakMap(),validateMarkdownLink=answerMarkdown.validateLink;
-// Keep the parser's URL checks and permit only web, email and fragment links.
-answerMarkdown.validateLink=href=>validateMarkdownLink(href) && /^(?:https?:\/\/|mailto:|#)/iu.test(href);
+// Local file destinations are resolved by the native client; other links keep the parser's URL checks.
+answerMarkdown.validateLink=href=>!!localFilePath(href,true,true) || validateMarkdownLink(href) && /^(?:https?:\/\/|mailto:|#)/iu.test(href);
 answerMarkdown.renderer.rules.link_open=(tokens,index,options,environment,renderer)=>
 {
-    if (!tokens[index].attrGet('href').startsWith('#')) tokens[index].attrSet('target','_blank');
+    const path=localFilePath(tokens[index].attrGet('href'),true,true);
+    if (path) { tokens[index].attrSet('data-local-file',path); tokens[index].attrSet('href','#'); }
+    else if (!tokens[index].attrGet('href').startsWith('#')) tokens[index].attrSet('target','_blank');
     tokens[index].attrSet('rel','noopener noreferrer');
     return renderer.renderToken(tokens,index,options);
 };
@@ -50,6 +52,7 @@ function renderAnswer(element,text)
 {
     if (renderedAnswers.get(element)===text) return;
     element.innerHTML=answerMarkdown.render(text);
+    linkLocalFiles(element);
     renderedAnswers.set(element,text);
 }
 
