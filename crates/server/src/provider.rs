@@ -5,6 +5,7 @@ mod progress;
 mod monitor;
 mod accounts;
 mod backup;
+mod storage;
 pub use backup::AccountBackup;
 #[cfg(test)]
 mod tests;
@@ -19,7 +20,7 @@ use tokio::sync::{Mutex,RwLock as AsyncRwLock};
 use crate::{config::Config, db::{now, Db}};
 use rpc::Rpc;
 
-pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, login:Mutex<Option<accounts::Login>>, executable:PathBuf, selection:Mutex<()> }
+pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, login:Mutex<Option<accounts::Login>>, executable:PathBuf, runtime:Mutex<Option<(tempfile::TempDir,PathBuf)>>, selection:Mutex<()> }
 struct ProviderAccount { home: String, access:AsyncRwLock<()>, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>>, probe_retry_at:AtomicI64 }
 #[derive(Clone, Copy, Debug)]
 struct Limits { used:f64, retry_at:i64, checked_at:i64, api_key:bool }
@@ -46,7 +47,7 @@ impl Pool {
             }
             accounts.push(Arc::new(ProviderAccount { home,access:AsyncRwLock::new(()),worker:Mutex::new(None),limits:Mutex::new(None),probe_retry_at:AtomicI64::new(0) }));
         }
-        Ok(Self { accounts:RwLock::new(accounts),managed,login:Mutex::new(None),executable:std::env::current_exe()?,selection:Mutex::new(()) })
+        Ok(Self { accounts:RwLock::new(accounts),managed,login:Mutex::new(None),executable:std::env::current_exe()?,runtime:Mutex::new(None),selection:Mutex::new(()) })
     }
 
     /// Snapshot shared account handles without holding the registry lock across network operations.
@@ -58,7 +59,7 @@ impl Pool {
     /// Lock only worker startup; each conversation then owns an independent session on that transport.
     async fn rpc(&self,account:&ProviderAccount)->Result<Rpc> {
         let mut worker=account.worker.lock().await;
-        if worker.as_ref().is_none_or(|rpc|!rpc.alive()) { *worker=Some(Rpc::start(&self.executable,&account.home).await?); }
+        if worker.as_ref().is_none_or(|rpc|!rpc.alive()) { *worker=Some(Rpc::start(&self.runtime_executable().await?,&account.home).await?); }
         Ok(worker.as_ref().unwrap().session())
     }
 

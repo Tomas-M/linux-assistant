@@ -191,7 +191,8 @@ impl Transport {
             routes.lock().unwrap().clear();
             let _=notifications.send(json!({"method":"assistant/transportClosed"}));
             stop_writer.abort();
-            let _=child.kill().await;
+            // Closing stdin lets Codex flush SQLite and rollouts; a stuck child is still bounded.
+            if stopped.is_none() || tokio::time::timeout(std::time::Duration::from_secs(5),child.wait()).await.is_err() { let _=child.kill().await; }
             if let Some(reply)=stopped { let _=reply.send(()); }
         });
         Arc::new(Self { sender,threads,global,task,failure,writer,stderr })

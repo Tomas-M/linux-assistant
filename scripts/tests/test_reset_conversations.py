@@ -12,8 +12,8 @@ spec.loader.exec_module(reset)
 
 
 class ConversationReset(unittest.TestCase):
-    # Reset preserves settled credits, never invents refunds, and creates a readable backup.
-    def test_preserves_business_data_and_backs_up(self):
+    # Reset preserves settled credits and creates no automatic backup.
+    def test_preserves_business_data_without_backups(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'assistant.db'
             schema=(ROOT/'crates/server/src/schema.sql').read_text(encoding='utf-8')
@@ -36,9 +36,7 @@ class ConversationReset(unittest.TestCase):
                 self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name IN ('conversations','requests','billing_tasks')").fetchall())
                 db.executescript(schema)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM conversations').fetchone()[0],0)
-            with closing(sqlite3.connect(next(Path(directory).glob('*.before-conversation-reset-*')))) as backup:
-                self.assertEqual(backup.execute('SELECT COUNT(*) FROM requests').fetchone()[0],2)
-                self.assertEqual(backup.execute('SELECT SUM(delta) FROM ledger').fetchone()[0],8)
+            self.assertFalse(list(Path(directory).glob('*.before-conversation-reset-*')))
 
 
 if __name__=='__main__':

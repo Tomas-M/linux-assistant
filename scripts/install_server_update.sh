@@ -5,24 +5,20 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test "$(id -u)" -eq 0
 test -x target/release/assistant-server
 
-# Stop before copying SQLite and its WAL so the backup is consistent.
+# SIGTERM drains active turns and closes workers before the executable is replaced.
 systemctl stop linux-assistant.service
 trap 'systemctl start linux-assistant.service' EXIT
-backup="/var/backups/linux-assistant-$(date +%Y%m%d-%H%M%S)"
-install -d -m 700 "$backup"
-cp -p /usr/local/bin/assistant-server "$backup/assistant-server"
-for suffix in '' '-wal' '-shm'; do
-    file="/var/lib/linux-assistant/assistant.db$suffix"
-    if [ -f "$file" ]; then cp -p "$file" "$backup/"; fi
-done
-
 # No configuration import: settings are entered in the admin dashboard.
-install -m 755 target/release/assistant-server /usr/local/bin/assistant-server.new
-mv /usr/local/bin/assistant-server.new /usr/local/bin/assistant-server
+# Keep the helper in our own directory, avoiding collisions with a separately installed Codex.
+install -d -m 755 /usr/local/lib/linux-assistant
+install -m 755 target/release/assistant-server /usr/local/lib/linux-assistant/assistant-server.new
+mv /usr/local/lib/linux-assistant/assistant-server.new /usr/local/lib/linux-assistant/assistant-server
+ln -sfn assistant-server /usr/local/lib/linux-assistant/codex-code-mode-host
+ln -sfn ../lib/linux-assistant/assistant-server /usr/local/bin/assistant-server
 
 install -m 644 deploy/linux-assistant.service /etc/systemd/system/linux-assistant.service
 systemctl daemon-reload
 systemctl start linux-assistant.service
 trap - EXIT
-printf 'Backend installed. Private backup: %s\n' "$backup"
+printf '%s\n' 'Backend installed. No automatic backup was created.'
 printf '%s\n' 'Open https://ai.slax.org/admin. On first run, set the password and enter backend settings manually.'

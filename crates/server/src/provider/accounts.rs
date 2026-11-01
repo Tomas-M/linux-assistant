@@ -89,7 +89,7 @@ impl Pool {
             for directory in [&self.managed,&home] { std::fs::set_permissions(directory,std::fs::Permissions::from_mode(0o700))?; }
         }
         let home=home.canonicalize()?.to_string_lossy().into_owned();
-        let mut rpc=tokio::time::timeout(Duration::from_secs(30),Rpc::start_unauthenticated(&self.executable,&home)).await.context("Account worker startup timed out")??;
+        let mut rpc=tokio::time::timeout(Duration::from_secs(30),Rpc::start_unauthenticated(&self.runtime_executable().await?,&home)).await.context("Account worker startup timed out")??;
         let api=key.is_some();
         let params=match key { Some(key)=>json!({"type":"apiKey","apiKey":key}),None=>json!({"type":"chatgptDeviceCode"}) };
         let result=tokio::time::timeout(Duration::from_secs(30),rpc.call("account/login/start",params)).await.context("Starting account sign-in timed out")??;

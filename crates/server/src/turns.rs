@@ -8,6 +8,11 @@ use crate::{App,ApiError,ApiResult};
 pub type Active=Mutex<HashMap<(i64,Uuid),ActiveTurn>>;
 #[derive(Clone)]
 pub struct ActiveTurn { pub sender:mpsc::Sender<Control>,pub cancel:tokio::sync::watch::Sender<bool>,pub events:tokio::sync::watch::Receiver<protocol::ChatEvent> }
+pub struct Registration { pub active:std::sync::Arc<Active>,pub key:(i64,Uuid) }
+impl Drop for Registration {
+    /// Shutdown must wait for billing and terminal events, including early error returns.
+    fn drop(&mut self) { self.active.lock().unwrap().remove(&self.key); }
+}
 pub enum Control {
     Respond(protocol::InteractionResponse,oneshot::Sender<Result<(),String>>),
     Steer(Steering,oneshot::Sender<Result<(),String>>),

@@ -181,6 +181,7 @@ impl Db {
         let result=Completed { reply:reply.clone(),revision:messages.len(),steering };
         // Large attachment histories are encoded before acquiring the shared billing connection.
         let response=serde_json::to_string(&result)?;
+        crate::storage::trim_history(&mut messages,if checkpoint.is_some() { result.revision } else { session.checkpoint_at });
         let history=serde_json::to_string(&messages)?;
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;

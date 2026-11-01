@@ -9,7 +9,7 @@ use super::QuotaReached;
 
 pub(super) struct Rpc {
     transport:Arc<Transport>, owner:uuid::Uuid, thread:Option<String>, events:Option<mpsc::Receiver<Value>>,
-    global:broadcast::Receiver<Value>, runtime:Arc<tempfile::TempDir>,
+    global:broadcast::Receiver<Value>, runtime:Option<Arc<tempfile::TempDir>>,
 }
 
 impl Rpc {
@@ -19,7 +19,8 @@ impl Rpc {
         ensure!(!home.join("config.toml").exists(),"Use dedicated operator directories without config.toml");
         let workspace = home.join("assistant-empty-workspace");
         std::fs::create_dir_all(&workspace)?;
-        let (runtime,worker)=crate::embedded::runtime(executable,home)?;
+        let (runtime,worker)=if crate::embedded::installed_helper(executable) { (None,executable.to_path_buf()) }
+            else { let (runtime,worker)=crate::embedded::runtime(executable,home)?; (Some(Arc::new(runtime)),worker) };
         let mut command = Command::new(worker);
         command.arg("--provider-worker").env("CODEX_HOME",home).env_remove("OPENAI_API_KEY").env_remove("CODEX_API_KEY")
             .env("RUST_LOG","warn").current_dir(workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -28,9 +29,18 @@ impl Rpc {
             let name = key.to_string_lossy().to_ascii_uppercase();
             if ["ASSISTANT_","LINUX_ASSISTANT_","STRIPE_","GOOGLE_","MICROSOFT_","GITHUB_"].iter().any(|prefix|name.starts_with(prefix)) { command.env_remove(key); }
         }
+        #[cfg(target_os="linux")] unsafe {
+            let parent=libc::getpid();
+            // A crash or SIGKILL must not leave an authenticated account worker behind.
+            command.pre_exec(move|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG,libc::SIGKILL)!=0 { return Err(std::io::Error::last_os_error()); }
+                if libc::getppid()!=parent { return Err(std::io::ErrorKind::Interrupted.into()); }
+                Ok(())
+            });
+        }
         #[cfg(windows)] { command.creation_flags(0x08000000); }
         let transport=Transport::start(command.spawn().context("Cannot start embedded Codex worker")?,home.to_string_lossy().into_owned());
-        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,runtime:Arc::new(runtime) };
+        let mut rpc=Self { global:transport.global.subscribe(),transport,owner:uuid::Uuid::new_v4(),thread:None,events:None,runtime };
         rpc.call("initialize",json!({"clientInfo":{"name":"linux_assistant","title":"Linux Assistant","version":env!("CARGO_PKG_VERSION")},
             "capabilities":{"experimentalApi":true}})).await?;
         rpc.transport.initialized()?;
@@ -58,6 +68,9 @@ impl Rpc {
 
     /// Derive active conversation counts from the dispatcher's subscriptions.
     pub(super) fn active(&self)->usize { self.transport.threads.lock().unwrap().len() }
+
+    /// A cleanup request must never delete a thread still owned by a live generation.
+    pub(super) fn has_thread(&self,thread:&str)->bool { self.transport.threads.lock().unwrap().contains_key(thread) }
 
     /// Subscribe before resume/start can emit usage or progress for the requested thread.
     async fn subscribe(&mut self,thread:&str)->Result<()> {
@@ -137,7 +150,7 @@ impl Rpc {
                 id.to_owned()
             }
             None => {
-                let response = self.call("thread/start",json!({"model":config.model,"ephemeral":attempt.purpose=="admin_test","environments":[],
+                let response = self.call("thread/start",json!({"model":config.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],
                     "sandbox":"read-only","approvalPolicy":"never","baseInstructions":instructions,"serviceName":"linux_assistant","dynamicTools":if attempt.purpose=="admin_test" { vec![] } else { protocol::tool_specs() }})).await?;
                 if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
                 response["thread"]["id"].as_str().context("Provider did not return a thread ID")?.to_owned()

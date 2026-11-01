@@ -39,7 +39,6 @@ pub fn reset_chat(directory:&Path)->Result<()> {
     let path=directory.join("state.json");
     if path.exists() {
         let previous:serde_json::Value=read(&path)?;
-        fs::copy(&path,directory.join(format!("state-before-reset-{}.json",uuid::Uuid::new_v4())))?;
         let saved=crate::engine::Saved { conversation_id:uuid::Uuid::new_v4(),settings:serde_json::from_value(previous["settings"].clone())?,
             task_id:None,token:serde_json::from_value(previous["token"].clone())?,messages:vec![],committed:0,request:None };
         write(&path,&saved)?;

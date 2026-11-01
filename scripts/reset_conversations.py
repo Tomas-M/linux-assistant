@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Back up SQLite and reset conversation state while retaining accounts, payments and usage."""
+"""Reset conversation state without creating backups; retain accounts, payments and usage."""
 from contextlib import closing
 import os
 from pathlib import Path
@@ -15,10 +15,7 @@ def reset(path):
         if os.name=='posix':
             import fcntl
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        backup=path.with_name(path.name+'.before-conversation-reset-'+str(time.time_ns()))
-        with closing(sqlite3.connect(path)) as db, closing(sqlite3.connect(backup)) as copy:
-            os.chmod(backup,0o600)
-            db.backup(copy)
+        with closing(sqlite3.connect(path)) as db:
             with db:
                 db.execute("UPDATE usage SET finished_at=?,error='Conversation reset; token counts may be partial' WHERE finished_at IS NULL",(int(time.time()),))
                 db.execute('DROP TABLE IF EXISTS provider_counters')
@@ -26,7 +23,9 @@ def reset(path):
                 db.execute('DROP TABLE requests')
                 db.execute('DROP TABLE conversations')
                 db.execute('DROP TABLE IF EXISTS billing_tasks')
-        print('Conversation state reset. Private database backup:',backup)
+            db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            db.execute('VACUUM')
+        print('Conversation state reset. No backup was created.')
         print('Users, sessions, credits, purchases, settings and usage records were retained.')
 
 

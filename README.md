@@ -195,6 +195,22 @@ Each conversation stays on its assigned account and persistent provider thread. 
 
 An account can change when the operator pauses it, removes it from configuration, a preflight usage snapshot reports exhaustion, or a typed `usageLimitExceeded` error occurs. The exhausted account is skipped until its reset time (or briefly when no reset is supplied). Failover creates a **new thread on another account and receives the latest recovery checkpoint and only the messages since it**, consuming additional provider usage; it is not a free transfer of the original session. Failed or interrupted turns also discard the unconfirmed thread position and replay the checkpoint and recent committed messages on the same account on retry. Authentication and unrelated protocol errors do not trigger failover. If no account is available before any measured work, no credits are charged. Live account rotation still needs validation with your signed-in accounts.
 
+## Backend storage and shutdown
+
+Conversation data is a cache, not a permanent server-side archive. Maintenance runs every five minutes:
+
+- Inactive conversations expire after seven days. Application conversation/replay/tool payloads share a 256 MiB budget; older inactive chats can expire sooner when it is exceeded. The local client transcript is unaffected; an expired server conversation requires a new chat.
+- Completed-response and steering replay payloads expire after 24 hours. Small request identities remain so retries cannot charge the same task twice. Quota snapshots retain 30 days; usage totals, token records, users, credits, payments, settings and AI credentials are retained.
+- Native Codex conversation caches share a 1 GiB budget across all accounts and expire after seven days. Unreferenced interrupted threads are removed after a one-minute safety interval. Cleanup uses `thread/delete`, including its SQLite history. Native diagnostic logs retain at most seven days and target 16 MiB per account. An evicted native thread can recover from the application checkpoint and recent messages.
+- Already checkpointed message bodies and redundant historical image pixels are not kept in application recovery history. Original image quality is unchanged. Native threads still retain the input needed to resume while they remain cached.
+- Active turns are never evicted. Budgets are cleanup targets, not hard disk quotas: active inputs can temporarily exceed them. Durable accounting metadata continues to grow with actual usage. SQLite free pages are reused/reclaimed and WAL files are checkpointed.
+
+The Linux installer puts the binary in `/usr/local/lib/linux-assistant/` and creates `codex-code-mode-host` beside it as a symlink to `assistant-server`. `/usr/local/bin/assistant-server` is also a symlink to that one binary. All account workers and the tool host then execute the original binary directly, with no runtime copies. Running without this installation layout uses one shared runtime image; a service unable to hard-link the executable copies it once for the whole backend, rather than once per account. Startup removes abandoned root/account `runtime-*` directories and automatically generated `assistant.db.before-conversation-reset-*` files. Credentials in `auth.json` are preserved.
+
+SIGTERM and Ctrl+C stop admission, interrupt active AI turns, drain their final usage notifications, settle recorded charges and close account workers before exit. The systemd unit sends SIGTERM to the main process first and allows 45 seconds before killing remaining processes. Linux workers also terminate if their backend parent dies unexpectedly.
+
+Updates, conversation resets and client chat resets no longer create automatic backups. Manual Admin backup/restore remains available; database backups are the operator's responsibility.
+
 ## Updating embedded Codex
 
 Upstream source lives untouched in the `vendor/codex` Git submodule. Its exact commit, the root `Cargo.lock`, dependency patches, and `rust-toolchain.toml` make builds reproducible. The small Rust API adapter is in `crates/server/src/embedded.rs`; our JSONL integration and tests live under `crates/server/src/provider/`. The backend's first source build is substantially larger and slower than the client build.
@@ -314,4 +330,4 @@ Backend validation includes real embedded-runtime token counters, resumed thread
 
 The existing backend is deployed on ai.slax.org; local source changes still require a server build and installation. Google and Stripe require their own configuration. The client UI remains a functional preview pending the separate design decision.
 
-Conversation protocol validation also covers transcripts above the old 96 KB limit, checkpoint-based account failover, idempotent steering, native Codex compaction and interruption, queued-message crash recovery, and stopping real PowerShell commands from the task manager. The database reset test checks preserved users, sessions, credits, purchases, and usage plus a readable backup. Browser checks exercise queue/steer/Stop, paused queues after interruption, mobile layout, and dark mode with a local simulated backend; these do not consume real AI usage.
+Conversation protocol validation also covers transcripts above the old 96 KB limit, checkpoint-based account failover, idempotent steering, native Codex compaction and interruption, queued-message crash recovery, and stopping real PowerShell commands from the task manager. The database reset test checks preserved users, sessions, credits, purchases, and usage without creating a backup. Browser checks exercise queue/steer/Stop, paused queues after interruption, mobile layout, and dark mode with a local simulated backend; these do not consume real AI usage.

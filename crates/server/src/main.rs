@@ -14,6 +14,7 @@ mod provider;
 mod usage;
 mod billing;
 mod turns;
+mod storage;
 #[cfg(test)]
 mod tests;
 
@@ -29,7 +30,7 @@ use crate::db::{hash, Db, Reservation};
 use crate::config::Config;
 
 #[derive(Clone)]
-pub struct App { turns: Arc<turns::Active>, settings: Arc<std::sync::RwLock<Arc<settings::Runtime>>>, db: Arc<Db>, http: reqwest::Client, pool: Arc<provider::Pool> }
+pub struct App { stopping:Arc<std::sync::atomic::AtomicBool>, turns: Arc<turns::Active>, settings: Arc<std::sync::RwLock<Arc<settings::Runtime>>>, db: Arc<Db>, http: reqwest::Client, pool: Arc<provider::Pool> }
 pub struct ApiError(StatusCode, String);
 pub type ApiResult<T> = Result<T, ApiError>;
 
@@ -52,7 +53,7 @@ impl App {
     #[cfg(test)]
     /// Isolate route tests from production accounts, databases and SMTP transports.
     fn testing(config:Config)->anyhow::Result<Self> {
-        Ok(Self { turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime { config,mail:None }))),
+        Ok(Self { stopping:Arc::new(Default::default()),turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime { config,mail:None }))),
             db:Arc::new(Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new() })
     }
 
@@ -95,6 +96,7 @@ async fn run() -> anyhow::Result<()> {
         println!("{}\n{}",include_str!("../../../vendor/codex/LICENSE"),include_str!("../../../vendor/codex/NOTICE"));
         return Ok(());
     }
+    let mut shutdown_signal=tokio::spawn(storage::signal());
     let database=args.database.unwrap_or_else(config::database_path);
     std::fs::create_dir_all(database.parent().unwrap())?;
     #[cfg(unix)] {
@@ -113,12 +115,25 @@ async fn run() -> anyhow::Result<()> {
     if config.dev { config.public_url=format!("http://{}",listener.local_addr()?); }
     diagnostics::init(&config)?;
     let pool=Arc::new(provider::Pool::new(&config)?);
-    let app=App { turns:Arc::new(Default::default()),pool,settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime::new(config)?))),db,
+    let app=App { stopping:Arc::new(Default::default()),turns:Arc::new(Default::default()),pool,settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime::new(config)?))),db,
         http:reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build()? };
     println!("Linux Assistant backend on {}{}",listener.local_addr()?,if args.dev { " (DEVELOPMENT, simulated AI)" } else { "" });
     diagnostics::record("info","startup",None,None,&format!("Backend started; Codex {}; configure at /admin",env!("CODEX_VERSION")));
-    if !args.dev { tokio::spawn(app.pool.clone().monitor(app.db.clone())); }
-    axum::serve(listener,router(app)).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
+    storage::startup(&app)?;
+    let monitor=if args.dev { None } else { Some(tokio::spawn(app.pool.clone().monitor(app.db.clone()))) };
+    let maintenance=tokio::spawn(storage::maintain(app.clone()));
+    let (stop,stopped)=tokio::sync::oneshot::channel();
+    let server_app=app.clone();
+    let mut server=tokio::spawn(async move { axum::serve(listener,router(server_app)).with_graceful_shutdown(async { let _=stopped.await; }).await });
+    let result=tokio::select! { result=&mut server=>Some(result),_=&mut shutdown_signal=>None };
+    app.stopping.store(true,std::sync::atomic::Ordering::SeqCst);
+    shutdown_signal.abort();
+    if let Some(monitor)=monitor { monitor.abort(); let _=monitor.await; }
+    maintenance.abort(); let _=maintenance.await;
+    let _=stop.send(());
+    storage::shutdown(&app).await;
+    if let Some(result)=result { result??; }
+    else if tokio::time::timeout(Duration::from_secs(2),&mut server).await.is_err() { server.abort(); }
     Ok(())
 }
 
@@ -143,6 +158,7 @@ fn router(app: App) -> Router {
 
 /// Public bearer-token APIs allow any origin; cookie-based admin and OAuth routes stay same-origin.
 async fn browser_security(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
+    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) { return ApiError::busy("Backend is restarting; retry shortly").into_response(); }
     let config=app.config();
     let admin=request.uri().path().starts_with("/admin");
     let payment=request.uri().path().starts_with("/payment/");
@@ -238,10 +254,18 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
         Reservation::New => {
             let (controls,mut control_receiver)=tokio::sync::mpsc::channel(16);
             let (cancel,mut cancellation)=tokio::sync::watch::channel(false);
-            app.turns.lock().unwrap().insert((user,input.request_id),turns::ActiveTurn { sender:controls.clone(),cancel,events:receiver.clone() });
+            {
+                let mut turns=app.turns.lock().unwrap();
+                if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    app.db.settle(user,&id,Err("Backend is restarting; retry with a new request".into()))?;
+                    return Err(ApiError::busy("Backend is restarting; retry shortly"));
+                }
+                turns.insert((user,input.request_id),turns::ActiveTurn { sender:controls.clone(),cancel,events:receiver.clone() });
+            }
             let task_app = app.clone();
             let task_events=events.clone();
             tokio::spawn(async move {
+                let _registration=turns::Registration { active:task_app.turns.clone(),key:(user,request_id) };
                 let result={
                     let generation=task_app.pool.answer_stream(&config,&task_app.db,user,&input,Some(&task_events),Some(&mut control_receiver));
                     tokio::pin!(generation);
@@ -260,7 +284,6 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                         }
                     }
                 };
-                task_app.turns.lock().unwrap().remove(&(user,request_id));
                 // Moving the request avoids copying attachments while SQLite commits on a blocking thread.
                 let result=match result {
                     Ok(answer)=> {
@@ -274,7 +297,10 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                     Ok(reply) => Ok(reply),
                     Err(error) => {
                         diagnostics::record("error","chat",Some(&id),None,&format!("{error:#}"));
-                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() { "Stopped by user. Recorded token usage was charged.".to_owned() } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
+                        let message = if error.downcast_ref::<turns::Interrupted>().is_some() {
+                            if task_app.stopping.load(std::sync::atomic::Ordering::SeqCst) { "Backend is restarting. Recorded token usage was charged.".to_owned() }
+                            else { "Stopped by user. Recorded token usage was charged.".to_owned() }
+                        } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
                         if let Err(error)=task_app.db.settle(user,&id,Err(message.clone())) {
                             task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
                             return Err(ApiError::from(error));

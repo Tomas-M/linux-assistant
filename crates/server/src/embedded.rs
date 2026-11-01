@@ -24,6 +24,12 @@ pub async fn run(paths: codex_arg0::Arg0DispatchPaths) -> Result<()> {
     Ok(())
 }
 
+/// An installer-created helper symlink lets every worker run the original executable directly.
+pub fn installed_helper(executable:&std::path::Path)->bool {
+    let helper=executable.with_file_name(if cfg!(windows) { "codex-code-mode-host.exe" } else { "codex-code-mode-host" });
+    match (helper.canonicalize(),executable.canonicalize()) { (Ok(helper),Ok(executable))=>helper==executable,_=>false }
+}
+
 /// One source-linked executable supplies both App Server and its sandboxed JavaScript tool orchestrator.
 pub fn runtime(executable:&std::path::Path,home:&std::path::Path)->Result<(tempfile::TempDir,std::path::PathBuf)> {
     let directory=tempfile::Builder::new().prefix("runtime-").tempdir_in(home)?;
