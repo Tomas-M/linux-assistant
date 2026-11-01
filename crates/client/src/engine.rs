@@ -137,14 +137,28 @@ impl Engine {
         self.refresh_account().await
     }
 
+    /// Forget only the rejected session, leaving newer logins and the access preference untouched.
+    pub async fn expire_session(&mut self,expired:&crate::backend::SessionExpired)->Result<()> {
+        if self.saved.token.as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
+        self.controls.cancel_local();
+        self.saved.token=None;
+        self.login=None;
+        *self.account.write().unwrap()=None;
+        self.new_chat().await
+    }
+
+    /// Apply authentication failures to the durable session before publishing another state snapshot.
+    async fn send_authenticated(&mut self,request:reqwest::RequestBuilder,interruptible:bool)->Result<reqwest::Response> {
+        let result=crate::backend::send(request,&self.live,interruptible.then_some(self.controls.stopped.as_ref())).await;
+        if let Err(error)=&result {
+            if let Some(expired)=error.downcast_ref::<crate::backend::SessionExpired>() { self.expire_session(expired).await?; }
+        }
+        result
+    }
+
     /// Query the authoritative balance rather than estimating provider usage locally.
     pub async fn refresh_account(&mut self) -> Result<Value> {
-        let response = crate::backend::send(self.backend(reqwest::Method::GET,"/v1/me"),&self.live,None).await?;
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            self.saved.token = None;
-            *self.account.write().unwrap()=None;
-            self.save()?;
-        }
+        let response=self.send_authenticated(self.backend(reqwest::Method::GET,"/v1/me"),false).await?;
         let account=Self::response(response).await?;
         *self.account.write().unwrap()=Some(account);
         self.live.state(self.state());
@@ -214,7 +228,7 @@ impl Engine {
         self.record_credits(None);
         let _active=self.controls.active(crate::controls::Remote { backend:self.saved.settings.backend.clone(),token:self.saved.token.clone().unwrap(),request:request.request_id });
         self.live.activity("Waiting for assistant…",Some(Default::default()));
-        let response = crate::backend::send(self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request),&self.live,Some(&self.controls.stopped)).await?;
+        let response=self.send_authenticated(self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request),true).await?;
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::PAYMENT_REQUIRED {
@@ -250,9 +264,18 @@ impl Engine {
         let mut decoder=crate::stream::Decoder::default();
         let mut failures=self.controls.failures.subscribe();
         loop {
+            // A control request can fail before the stream subscribes, so also inspect the current value.
+            let failure=failures.borrow_and_update().clone();
+            if let Some(error)=failure {
+                if let Some(expired)=error.downcast_ref::<crate::backend::SessionExpired>() {
+                    self.expire_session(expired).await?;
+                    return Err(expired.clone().into());
+                }
+                bail!("{error:#}");
+            }
             let bytes=tokio::select! {
                 chunk=response.chunk()=>chunk?,
-                _=failures.changed()=>bail!("{}",failures.borrow().as_deref().unwrap_or("Local result delivery failed; retry the unfinished request")),
+                _=failures.changed()=>continue,
             };
             let Some(bytes)=bytes else { break; };
             for event in decoder.push(&bytes)? {

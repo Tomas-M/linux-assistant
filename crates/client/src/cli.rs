@@ -157,7 +157,13 @@ impl App {
         self.pending=true;
         self.status.clear();
         let (client,send)=(client.clone(),send.clone());
-        tokio::spawn(async move { let result=client.action(&action).await; let _=send.send(Completed { action,result }); });
+        tokio::spawn(async move {
+            let mut result=client.action(&action).await;
+            if let Some(expired)=result.as_ref().err().and_then(|error|error.downcast_ref::<crate::backend::SessionExpired>()).cloned() {
+                if let Err(error)=crate::session::expire(&client.engine,&client.controls,&client.path,&expired).await { result=Err(error); }
+            }
+            let _=send.send(Completed { action,result });
+        });
     }
     /// Keep failed drafts intact and transition login only after the backend accepts it.
     fn completed(&mut self,done:Completed) {

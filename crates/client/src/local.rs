@@ -21,7 +21,13 @@ impl<E: Into<anyhow::Error>> From<E> for LocalError {
 }
 impl IntoResponse for LocalError {
     /// Both frontends consume the same error envelope.
-    fn into_response(self) -> Response { (StatusCode::BAD_REQUEST,Json(json!({"error":self.0.to_string()}))).into_response() }
+    fn into_response(self) -> Response {
+        let expired=self.0.downcast_ref::<crate::backend::SessionExpired>().cloned();
+        let status=if expired.is_some() { StatusCode::UNAUTHORIZED } else { StatusCode::BAD_REQUEST };
+        let mut response=(status,Json(json!({"error":self.0.to_string()}))).into_response();
+        if let Some(expired)=expired { response.extensions_mut().insert(expired); }
+        response
+    }
 }
 
 impl Connection {
@@ -188,6 +194,10 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
         return StatusCode::FORBIDDEN.into_response();
     }
     let mut response = next.run(request).await;
+    // Handle expired sessions for every browser API, including controls that bypass the engine lock.
+    if let Some(expired)=response.extensions_mut().remove::<crate::backend::SessionExpired>() {
+        if let Err(error)=crate::session::expire(&state.engine,&state.controls,&state.session_path,&expired).await { response=LocalError(error).into_response(); }
+    }
     for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
         ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
         // Inline file documents provide their own sandbox policy.

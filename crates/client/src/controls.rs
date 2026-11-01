@@ -10,7 +10,7 @@ use crate::{storage,stream::Live};
 pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
-pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<String>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
+pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<Arc<anyhow::Error>>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
 struct LocalTask { handle:tokio::task::AbortHandle,cancelled:Arc<AtomicBool> }
 pub struct Active(Arc<Controls>);
 mod interactions;

@@ -24,7 +24,7 @@ impl Controls {
             let task=tokio::spawn(async move {
                 let result=controls.execute(&request,&processes,&full_access,enabled,&cwd,&lease).await;
                 if let Err(error)=result {
-                    controls.failures.send_replace(Some(format!("Could not deliver the local result: {error:#}. Retry the unfinished request; the operation will not be repeated.")));
+                    controls.failures.send_replace(Some(Arc::new(error.context("Could not deliver the local result; retry the unfinished request. The operation will not be repeated"))));
                 }
             });
             tasks.insert(id,LocalTask { handle:task.abort_handle(),cancelled });

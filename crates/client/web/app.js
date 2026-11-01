@@ -96,6 +96,7 @@ function render()
     if (!state.authenticated)
     {
         toggleProcesses(false); toggleMemories(false);
+        for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close('cancel');
         memoryRequest++; memoryDocument=undefined; memoryLoading=false; memorySaving=false;
         elements['memories-text'].value=''; elements['memories-status'].textContent=''; memoryControls();
     }

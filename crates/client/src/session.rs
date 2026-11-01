@@ -63,6 +63,15 @@ pub async fn interrupt(controls:&Controls,live:&Live,processes:&Processes)->Resu
     controls.interrupt().await
 }
 
+/// A rejected control/account request wakes a busy turn before clearing that exact saved session.
+pub async fn expire(engine:&Arc<Mutex<Engine>>,controls:&Controls,path:&Path,expired:&crate::backend::SessionExpired)->Result<()> {
+    let saved:crate::engine::Saved=crate::storage::read(path)?;
+    if saved.token.as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
+    controls.failures.send_replace(Some(Arc::new(expired.clone().into())));
+    controls.cancel_local();
+    engine.lock().await.expire_session(expired).await
+}
+
 /// Account reads stay available during generation; credentials never enter display snapshots.
 pub async fn account(path:&Path,live:&Live,method:reqwest::Method,route:&str,body:Option<Value>)->Result<Value> {
     use anyhow::Context;
