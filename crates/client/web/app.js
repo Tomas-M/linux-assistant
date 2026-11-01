@@ -15,6 +15,15 @@ function setIcon(button,name)
     button.innerHTML='<svg aria-hidden="true"><use href="#icon-'+name+'"/></svg>';
 }
 
+// Return conversation actions to the prompt without interrupting a dialog or another text field.
+function focusPrompt()
+{
+    if (elements.prompt.disabled || document.querySelector('dialog[open]')) return;
+    const active=document.activeElement;
+    if (active!==elements.prompt && !active.disabled && active.matches('textarea,input:not([type=checkbox]):not([type=radio]),[contenteditable]')) return;
+    elements.prompt.focus({preventScroll:true});
+}
+
 // Match Codex's latest-summary-line status title without treating Markdown punctuation as protocol events.
 function progressTitle(parts)
 {
@@ -440,7 +449,7 @@ async function action(callback)
     if (busy) return false;
     acting=true;
     elements.status.textContent='';
-    render();
+    render(); focusPrompt();
     try
     {
         await callback();
@@ -724,6 +733,7 @@ codeInputs.forEach((input,index)=>
 elements['full-access'].addEventListener('change',async()=>
 {
     const enabled=elements['full-access'].checked;
+    focusPrompt();
     try
     {
         if (enabled && !state.settings.commands_enabled)
@@ -752,7 +762,8 @@ function renderComposer()
         const queued=blocked && (view.queue || []).some(input=>input.id===startingId);
         if (accepted || queued) { startingId=null; clearPrompt(); }
     }
-    elements.prompt.disabled=!state.authenticated || queueAction || !!startingId;
+    elements.prompt.disabled=!state.authenticated;
+    elements.prompt.readOnly=queueAction || !!startingId;
     const dispatched=new Set(view.runs.map(run=>run.id));
     const queue=(view.queue || []).filter(input=>input.id!==startingId && !dispatched.has(input.id)), held=queue.find(input=>input.editing);
     if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value && !draftAttachments.length)
@@ -768,7 +779,7 @@ function renderComposer()
     setIcon(elements.send,stop?'stop':'send');
     elements.send.setAttribute('aria-label',stop?'Stop conversation':queueing?'Queue message':'Send message');
     if (startingId) elements.send.setAttribute('aria-label','Sending message');
-    elements.send.disabled=elements.prompt.disabled || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
+    elements.send.disabled=elements.prompt.disabled || elements.prompt.readOnly || attaching || (!view.busy && state.retry_available) || (!stop && !hasInput);
     renderAttachments();
     const inputs=(view.steering || []).filter(input=>input.message_index===undefined), steering=JSON.stringify(inputs);
     if (steering!==steeringKey)
@@ -825,6 +836,7 @@ function renderComposer()
 async function submitPrompt(steer=false)
 {
     const text=elements.prompt.value, attachments=draftAttachments;
+    focusPrompt();
     if (!text.trim() && !attachments.length)
     {
         if (view.busy) try { await api('interrupt',{}); } catch (error) { elements.status.textContent=error.message; }
@@ -868,7 +880,7 @@ async function submitPrompt(steer=false)
 // Start typing at the end of the prompt without taking over dialogs, text fields or shortcuts.
 document.addEventListener('keydown',event=>
 {
-    if (!state?.authenticated || elements.prompt.disabled) return;
+    if (!state?.authenticated || elements.prompt.disabled || elements.prompt.readOnly) return;
     if (event.defaultPrevented || document.querySelector('dialog[open]') || event.target.closest('#questions')) return;
     const shortcut=(event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState('AltGraph');
     if (shortcut || event.target.closest('textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio])')) return;
@@ -890,13 +902,13 @@ elements.prompt.addEventListener('paste',event=>
     if (!files.length) return;
     event.preventDefault(); addAttachments(files);
 });
-elements.attach.addEventListener('click',()=>elements['attachment-input'].click());
+elements.attach.addEventListener('click',()=>{focusPrompt(); elements['attachment-input'].click();});
 elements['attachment-input'].addEventListener('change',event=>addAttachments([...event.target.files]));
 elements.attachments.addEventListener('click',event=>
 {
     const button=event.target.closest('[data-attachment]');
-    if (!button || attaching || elements.prompt.disabled) return;
-    draftAttachments.splice(Number(button.dataset.attachment),1); steerId=null; renderComposer();
+    if (!button || attaching || elements.prompt.disabled || elements.prompt.readOnly) return;
+    draftAttachments.splice(Number(button.dataset.attachment),1); steerId=null; renderComposer(); focusPrompt();
 });
 for (const type of ['dragenter','dragover','dragleave','drop']) elements['chat-form'].addEventListener(type,event=>
 {
@@ -909,7 +921,11 @@ for (const type of ['dragover','drop']) window.addEventListener(type,event=>{ if
 elements['chat-form'].addEventListener('submit',event=>{event.preventDefault(); submitPrompt();});
 elements.prompt.addEventListener('keydown',event=>
 {
-    if (event.key==='Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submitPrompt(event.ctrlKey || event.metaKey); }
+    if (event.key==='Enter' && !event.shiftKey && !event.isComposing)
+    {
+        event.preventDefault();
+        if (elements.prompt.value.trim() || draftAttachments.length) submitPrompt(event.ctrlKey || event.metaKey);
+    }
 });
 elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(162,elements.prompt.scrollHeight)+'px'; renderComposer();});
 elements['queued-messages'].addEventListener('click',async event=>
@@ -919,14 +935,14 @@ elements['queued-messages'].addEventListener('click',async event=>
     const {id,action}=button.dataset;
     if (action==='edit' && (elements.prompt.value || draftAttachments.length || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
     queueAction=true;
-    renderComposer();
+    renderComposer(); focusPrompt();
     try
     {
         const result=await api('queue/'+id+'/'+action,action==='edit'?{editing:true}:{});
         if (action==='edit') { editingId=id; elements.prompt.value=result.text; draftAttachments=result.attachments || []; }
     }
     catch (error) { elements.status.textContent=error.message; }
-    finally { queueAction=false; renderComposer(); if (action==='edit' && editingId===id) elements.prompt.focus(); }
+    finally { queueAction=false; renderComposer(); focusPrompt(); }
 });
 elements['cancel-edit'].addEventListener('click',async()=>
 {
@@ -934,7 +950,7 @@ elements['cancel-edit'].addEventListener('click',async()=>
     const id=editingId;
     pendingIds.add(id);
     queueAction=true;
-    renderComposer();
+    renderComposer(); focusPrompt();
     try { await api('queue/'+id+'/edit',{editing:false}); editingId=null; elements.prompt.value=''; draftAttachments=[]; }
     catch (error) { pendingIds.delete(id); elements.status.textContent=error.message; }
     finally { queueAction=false; renderComposer(); }

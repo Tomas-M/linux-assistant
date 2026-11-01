@@ -21,7 +21,7 @@ async function imageDimensions(content)
 // Preserve original bytes and dimensions for picker, drop, and clipboard input.
 async function addAttachments(files)
 {
-    if (attaching || elements.prompt.disabled) return;
+    if (attaching || elements.prompt.disabled || elements.prompt.readOnly) return;
     attaching=true; attachmentError=''; renderComposer();
     try
     {
@@ -53,7 +53,7 @@ async function addAttachments(files)
         draftAttachments.push(...added); steerId=null; elements.status.textContent='';
     }
     catch (error) { attachmentError=error.name==='NotReadableError'?'The browser could not read the selected file. Check read permissions for the user running the browser.':error.message; }
-    finally { attaching=false; elements['attachment-input'].value=''; renderComposer(); }
+    finally { attaching=false; elements['attachment-input'].value=''; renderComposer(); focusPrompt(); }
 }
 
 // This deliberately rough estimate excludes history, cached context, responses, and command follow-ups.
@@ -91,12 +91,12 @@ async function confirmInputCost(text,attachments)
 // Display file names safely; deleting a chip only changes the unsent draft.
 function renderAttachments()
 {
-    elements['attach'].disabled=attaching || elements.prompt.disabled;
+    elements['attach'].disabled=attaching || elements.prompt.disabled || elements.prompt.readOnly;
     elements['attachments'].hidden=!draftAttachments.length;
     elements['attachment-note'].hidden=!attaching && !attachmentError;
     elements['attachment-note'].classList.toggle('error',!!attachmentError);
     elements['attachment-note'].textContent=attachmentError || (attaching?'Preparing attachments…':'');
-    for (const button of elements.attachments.querySelectorAll('button')) button.disabled=attaching || elements.prompt.disabled;
+    for (const button of elements.attachments.querySelectorAll('button')) button.disabled=attaching || elements.prompt.disabled || elements.prompt.readOnly;
     const previous=elements.attachments.attachmentFiles;
     if (previous?.length===draftAttachments.length && previous.every((file,index)=>file===draftAttachments[index])) return;
     elements.attachments.attachmentFiles=[...draftAttachments];
@@ -105,7 +105,7 @@ function renderAttachments()
     {
         const chip=document.createElement('span'), name=document.createElement('span'), remove=document.createElement('button');
         chip.className='attachment'; name.textContent=file.name; name.title=file.kind==='image'?file.name+' · '+file.width+'×'+file.height+' · Original':file.name;
-        remove.type='button'; remove.disabled=attaching || elements.prompt.disabled; remove.dataset.attachment=index; remove.setAttribute('aria-label','Remove '+file.name); setIcon(remove,'close');
+        remove.type='button'; remove.disabled=attaching || elements.prompt.disabled || elements.prompt.readOnly; remove.dataset.attachment=index; remove.setAttribute('aria-label','Remove '+file.name); setIcon(remove,'close');
         chip.append(file.kind==='image'?attachmentElement(file):name,remove); elements.attachments.append(chip);
     });
 }

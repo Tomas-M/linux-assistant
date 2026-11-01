@@ -187,10 +187,11 @@ function createQuestionForm(request)
         answers[question.id]=[value];
         if (index<request.questions.length-1)
         {
-            index++; showQuestion(); form.querySelector('.question-option,input,textarea').focus({preventScroll:true}); return;
+            index++; showQuestion(); focusPrompt(); return;
         }
         form.setAttribute('aria-busy','true'); status.textContent='';
         for (const control of form.elements) control.disabled=true;
+        focusPrompt();
         try { await api('respond',{id:request.id,answer:{type:'questions',answers}}); }
         catch (error)
         {
@@ -224,6 +225,7 @@ function renderQuestions()
         {
             event.preventDefault();
             for (const control of form.elements) control.disabled=true;
+            focusPrompt();
             try { await api('respond',{id:request.id,answer:{type:'approval',approve:event.submitter?.name!=='decline'}}); }
             catch (error) { status.textContent=error.message; for (const control of form.elements) control.disabled=false; }
         });
