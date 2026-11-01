@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Slax Assistant · Terminal interface concepts</title>
+    <style>
+        :root { color-scheme:light; font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --terminal-font:14px/22px ui-monospace,Consolas,"Liberation Mono",monospace; }
+        * { box-sizing:border-box; }
+        body { margin:0; padding:28px; color:#171717; background:#f3f3f3; }
+        main { max-width:1480px; margin:auto; }
+        h1 { font-size:36px; line-height:1.2; letter-spacing:-1px; margin:0 0 12px; }
+        p { margin:0; }
+        .intro { color:#626262; font-size:14px; max-width:850px; }
+        .toolbar { display:flex; align-items:center; gap:10px 20px; flex-wrap:wrap; margin:24px 0 16px; }
+        .choices { display:flex; gap:6px; flex-wrap:wrap; }
+        button,select { font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:inherit; background:#fff; border:1px solid #cecece; border-radius:7px; padding:7px 11px; cursor:pointer; }
+        button:hover,select:hover { border-color:#777; }
+        button[aria-pressed=true] { color:#fff; background:#171717; border-color:#171717; }
+        button:focus-visible,select:focus-visible { outline:2px solid #171717; outline-offset:3px; }
+        .label { color:#686868; font-size:13px; margin-right:2px; }
+        .description { margin:0 0 16px; font-size:14px; color:#555; }
+        .terminal-window { width:min(100%,1050px); height:min(780px,calc(100dvh - 260px)); min-width:min(100%,360px); min-height:462px; max-width:100%; max-height:max(462px,calc(100dvh - 260px)); resize:both; overflow:hidden; border:1px solid #363636; border-radius:10px; background:#090909; box-shadow:0 16px 50px #0002; display:grid; grid-template-rows:32px minmax(0,1fr); font:var(--terminal-font); }
+        .window-bar { display:flex; align-items:center; justify-content:space-between; padding:0 14px; color:#bebebe; background:#202020; border-bottom:1px solid #353535; font-size:13px; user-select:none; }
+        .surface { padding:12px; min-height:0; min-width:0; }
+        #screen { margin:0; height:100%; width:100%; outline:none; overflow:hidden; color:#dcdcdc; background:#090909; font:var(--terminal-font); white-space:pre; tab-size:4; }
+        #screen:focus-visible { outline:1px solid #484848; outline-offset:5px; }
+        .dim { color:#9a9a9a; }
+        .strong { color:#fff; font-weight:700; }
+        .inverse { color:#080808; background:#ececec; }
+        #measure { position:absolute; visibility:hidden; font:var(--terminal-font); }
+        .below { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; max-width:1100px; margin-top:12px; color:#666; font-size:13px; }
+        .notes { max-width:1000px; margin-top:28px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; font-size:14px; color:#555; }
+        .notes strong { color:#171717; display:block; margin-bottom:5px; font-size:16px; }
+        code { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+        @media (max-width:700px) { body { padding:18px 12px; } h1 { font-size:30px; } .terminal-window { min-height:460px; } .notes { grid-template-columns:1fr; gap:16px; } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>A terminal assistant that feels at home</h1>
+        <p class="intro">Three monochrome layouts for the proposed standalone console mode. This is a visual prototype: sign-in, responses, credits and commands are simulated. It does not contact the backend or run programs.</p>
+        <div class="toolbar">
+            <div class="choices" id="layouts" aria-label="Choose a layout">
+                <button data-layout="A" aria-pressed="true">A · Clean chat</button>
+                <button data-layout="B" aria-pressed="false">B · Workbench</button>
+                <button data-layout="C" aria-pressed="false">C · Compact</button>
+            </div>
+            <label><span class="label">Screen</span>
+                <select id="scene">
+                    <option value="chat">Chat</option><option value="login">Email sign-in</option><option value="code">Verification code</option><option value="question">Structured question</option><option value="tasks">Task manager</option><option value="detail">Command details</option><option value="account">Credits & account</option><option value="help">Keyboard help</option>
+                </select>
+            </label>
+            <button id="play">Simulate a response</button>
+        </div>
+        <p id="description" class="description">A · A quiet, full-width conversation. Tasks open only when you need them.</p>
+        <div class="toolbar" style="margin-top:0">
+            <span class="label">Terminal size</span>
+            <button data-size="80,24">80 × 24</button><button data-size="110,32">110 × 32</button><button data-size="140,40">140 × 40</button><button data-size="fill">Fit window</button>
+        </div>
+        <div id="terminal" class="terminal-window">
+            <div class="window-bar"><span>linux-assistant --cli --backend ai.slax.org</span><span id="dimensions"></span></div>
+            <div class="surface"><pre id="screen" tabindex="0" aria-label="Interactive terminal design preview"></pre></div>
+        </div>
+        <span id="measure" aria-hidden="true">M</span>
+        <div class="below"><span>Click inside to type. Try Enter, Ctrl+Enter, F2, F3, F4, F6, Page Up/Down and Esc.</span><span>Drag the lower-right corner to resize.</span></div>
+        <div class="notes">
+            <p><strong>A · Clean chat</strong>Closest to the web experience. A readable transcript, compact progress, a fixed composer and an on-demand task panel.</p>
+            <p><strong>B · Workbench</strong>A persistent task sidebar on wide terminals. Commands, elapsed time and Stop stay in view. Narrow windows switch to a full-screen task view.</p>
+            <p><strong>C · Compact</strong>A denser frame for an 80 × 24 terminal, SSH sessions and smaller windows. Tasks and details use the full available area.</p>
+        </div>
+    </main>
+    <script>
+        'use strict';
+        const screen=document.getElementById('screen'),terminal=document.getElementById('terminal');
+        const descriptions={A:'A · A quiet, full-width conversation. Tasks open only when you need them.',B:'B · Conversation and running commands side by side. The task panel becomes full-screen when space is tight.',C:'C · A denser layout with a clear frame and fewer decorative gaps, suited to small terminals.'};
+        const reply='Your connection is working. The default route uses enp0s3, DNS resolves correctly, and the gateway responds without packet loss. The slow response came from the remote download server.';
+        const state={layout:'A',scene:'chat',cols:110,rows:32,draft:'',email:'',code:'',full:true,credits:1755,tasksOpen:false,task:0,choice:0,scroll:0,busy:false,frame:0,attachments:[],queue:[],status:''};
+        const messages=[{user:true,text:'Check why my internet connection is slow',files:['network-info.txt']},{user:false,text:reply,done:'Worked for 42s · 4 credits'}];
+        const tasks=[{command:'pxe enp0s3',pid:4651,elapsed:'10m 40s',running:true,output:'Slax PXE server is running on enp0s3.\nDHCP range: 10.0.0.2–10.0.0.250\nTFTP root: /var/lib/tftpboot\nWaiting for clients…'},{command:'journalctl -f -u dnsmasq',pid:4688,elapsed:'1m 25s',running:true,output:'dnsmasq: started\ndnsmasq: DHCP, IP range 10.0.0.2 -- 10.0.0.250\ndnsmasq: TFTP root is /var/lib/tftpboot'}];
+        const options=[['Normal network with a router','Inspect the existing DHCP server and consider proxyDHCP.'],['Isolated network for PXE','Start the standard PXE server, including DHCP address allocation.']];
+        let grid=[],hits=[],cell=8.4;
+
+        // Write clipped character cells; only fixed style names become HTML classes.
+        function text(x,y,value,style='')
+        {
+            if (y<0 || y>=state.rows) return;
+            for (const char of Array.from(String(value)))
+            {
+                if (x>=state.cols) break;
+                if (x>=0) grid[y][x]=[char,style];
+                x++;
+            }
+        }
+
+        // Wrap words within the available terminal width, preserving explicit newlines.
+        function wrap(value,width)
+        {
+            const result=[];
+            for (const paragraph of String(value).split('\n'))
+            {
+                let line='';
+                for (const word of paragraph.split(/\s+/u))
+                {
+                    if (line && Array.from(line+' '+word).length>width) { result.push(line); line=''; }
+                    const chars=Array.from(word);
+                    while (chars.length>width) { if (line) result.push(line); line=''; result.push(chars.splice(0,width).join('')); }
+                    line+=(line?' ':'')+chars.join('');
+                }
+                result.push(line);
+            }
+            return result;
+        }
+
+        // Draw a terminal frame and clear its interior before placing an overlay.
+        function box(x,y,width,height,title='')
+        {
+            for (let row=y;row<y+height;row++) text(x,row,' '.repeat(width));
+            text(x,y,'┌'+'─'.repeat(width-2)+'┐','dim'); text(x,y+height-1,'└'+'─'.repeat(width-2)+'┘','dim');
+            for (let row=y+1;row<y+height-1;row++) { text(x,row,'│','dim'); text(x+width-1,row,'│','dim'); }
+            if (title) text(x+2,y,' '+title+' ','strong');
+        }
+
+        // Associate a visible text target with its simulated action and hover explanation.
+        function control(x,y,label,action,inverse=false,hint='')
+        {
+            text(x,y,label,inverse?'inverse':''); hits.push({x,y,width:Array.from(label).length,action,hint});
+        }
+
+        // Switch screens without sending requests or changing the real assistant session.
+        function scene(name)
+        {
+            state.scene=name; state.draft=''; state.status=''; state.scroll=0;
+            document.getElementById('scene').value=name; draw();
+        }
+
+        // Keep the account balance and navigation visible in every signed-in screen.
+        function header()
+        {
+            text(1,0,'Slax Assistant','strong');
+            const credits=state.scene==='login' || state.scene==='code'?'Sign in':state.credits+' credits';
+            control(state.cols-credits.length-2,0,' '+credits+' ',()=>scene('account'),true);
+            text(0,1,'─'.repeat(state.cols),'dim');
+            if (state.cols>96 && !['login','code'].includes(state.scene)) control(23,0,'[F2 Tasks '+tasks.filter(task=>task.running).length+']',()=>{state.tasksOpen=!state.tasksOpen; draw();});
+        }
+
+        // Display the same conversation at each width, keeping attachments outside the user-text highlight.
+        function chat(width)
+        {
+            const compact=state.layout==='C',question=state.scene==='question',promptTop=state.rows-(question?5:7),lines=[];
+            if (compact) box(0,2,width,state.rows-4,'Conversation');
+            const inner=width-(compact?6:4);
+            for (const message of messages)
+            {
+                for (const file of message.files || []) lines.push({value:'[file] '+file,user:true,style:'dim'});
+                for (const line of wrap(message.text,Math.max(20,inner-(message.user?8:0)))) lines.push({value:message.user?' '+line+' ':line,user:message.user,style:message.user?'inverse':''});
+                if (message.done) lines.push({value:message.done,user:false,style:'dim'});
+                lines.push({value:''});
+            }
+            if (state.busy)
+            {
+                lines.push({value:['|','/','—','\\'][state.frame%4]+' '+(state.frame<8?'Inspecting network configuration':state.frame<16?'Checking DNS and the gateway':'Preparing the result'),style:'strong'});
+                lines.push({value:'  Read files · ran 2 commands',style:'dim'});
+                if (state.frame>16) for (const line of wrap(reply.slice(0,(state.frame-16)*25),inner)) lines.push({value:line});
+            }
+            const height=Math.max(1,promptTop-5),end=Math.max(height,lines.length-state.scroll),visible=lines.slice(Math.max(0,end-height),end);
+            visible.forEach((line,index)=>text(line.user?Math.max(2,width-line.value.length-3):compact?3:2,index+3,line.value || '',line.style));
+            if (state.scroll) control(width-23,promptTop-1,'[Jump to latest '+(state.busy?'...':'v')+']',()=>{state.scroll=0; draw();});
+            if (question) questionCard(width,promptTop);
+            else if (state.queue.length) text(2,promptTop-1,'Queued: '+state.queue.length+' · Ctrl+Enter steers the first','dim');
+            if (state.layout==='B' || compact) box(0,promptTop,width,question?3:5,question?'Follow-up':'Prompt');
+            else text(1,promptTop,'─'.repeat(width-2),'dim');
+            const draft=wrap(state.draft || (question?'Ask for follow-up changes…':'Ask anything, or describe a task…'),Math.max(20,width-7));
+            text(2,promptTop+1,'>','strong');
+            draft.slice(-(question?1:3)).forEach((line,index)=>text(4,promptTop+1+index,line,state.draft?'':'dim'));
+            const footer=state.rows-2;
+            control(2,footer,(state.full?'[x]':'[ ]')+' Full access',()=>{state.full=!state.full; draw();});
+            if (width>75) text(width-23,footer,'Linux · sh · /root','dim');
+            if (state.busy) control(width-10,footer,'[ Stop ]',stop,true);
+        }
+
+        // Email and code entry share one stable, centered form.
+        function signIn()
+        {
+            const width=Math.min(57,state.cols-4),x=Math.floor((state.cols-width)/2),y=Math.max(3,Math.floor((state.rows-15)/2));
+            box(x,y,width,14,state.scene==='code'?'Check your email':'Welcome');
+            wrap('Get things done with Slax Assistant',width-6).forEach((line,index)=>text(x+3,y+2+index,line,'strong'));
+            if (state.scene==='login')
+            {
+                wrap('100 free credits when you sign in',width-6).forEach((line,index)=>text(x+3,y+4+index,line,'dim'));
+                text(x+3,y+6,'Email address','dim');
+                text(x+3,y+7,(state.email || 'you@example.com')+' '.repeat(Math.max(0,width-7-(state.email || 'you@example.com').length)),state.email?'inverse':'dim');
+                control(x+3,y+10,'[ Sign in with email ]',()=>{state.email=state.email || 'you@example.com'; scene('code');},true);
+            }
+            else
+            {
+                text(x+3,y+4,'Enter the 6-digit code sent to','dim'); text(x+3,y+5,state.email || 'you@example.com');
+                text(x+3,y+7,Array.from({length:6},(_,index)=>'['+(state.code[index] || '_')+']'+(index===2?'  ':' ')).join(''),'inverse');
+                wrap('The last digit signs you in automatically',width-6).forEach((line,index)=>text(x+3,y+9+index,line,'dim'));
+                control(x+3,y+11,'[ Change email ]',()=>scene('login'));
+            }
+        }
+
+        // Questions stay compact and keep the smaller follow-up prompt available below.
+        function questionCard(width,promptTop)
+        {
+            const y=promptTop-9; box(0,y,width,8,'Question');
+            text(2,y+2,'What kind of network is connected to enp0s3?','strong');
+            options.forEach((option,index)=>control(2,y+4+index,(index+1)+'. '+option[0],()=>choose(index),state.choice===index,option[1]));
+            text(2,y+6,'Or type your own response and press Enter','dim');
+        }
+
+        // A selected answer continues the simulated conversation immediately.
+        function choose(index)
+        {
+            messages.push({user:true,text:index===undefined?state.draft:options[index][0]});
+            state.draft=''; state.scene='chat'; state.status='Answer submitted'; state.busy=true; state.frame=0;
+            document.getElementById('scene').value='chat'; draw();
+        }
+
+        // A wide task pane and a full-screen task list use the same row contents.
+        function taskList(x,y,width,height,pane=false)
+        {
+            box(x,y,width,height,pane?'Tasks':'Task manager');
+            const running=tasks.map((task,index)=>({task,index})).filter(item=>item.task.running);
+            if (!running.length) text(x+2,y+2,'No running commands','dim');
+            for (const [row,item] of running.entries())
+            {
+                const line=y+2+row*(pane?4:3),task=item.task;
+                control(x+2,line,task.command.slice(0,width-5),()=>{state.task=item.index; scene('detail');},state.task===item.index);
+                text(x+2,line+1,'PID '+task.pid+' · '+task.elapsed,'dim');
+                control(x+width-10,line+1,'[Stop]',()=>{task.running=false; state.status='Command stopped'; draw();});
+            }
+            text(x+2,y+height-3,'Completed commands · '+(6+tasks.filter(task=>!task.running).length),'dim');
+            if (!pane) text(x+2,y+height-2,'Enter details · F8 stop · Esc back','dim');
+        }
+
+        // Command details expose the executable, arguments, working directory and captured streams.
+        function taskDetail()
+        {
+            const task=tasks[state.task]; box(0,2,state.cols,state.rows-4,'Command details');
+            const rows=[['Command',task.command],['PID',task.pid],['Status',task.running?'Running':'Stopped'],['Directory','/root'],['Executable','/bin/sh'],['Arguments','-c  '+task.command],['',''],['Standard output',''],...task.output.split('\n').map(line=>['',line]),['',''],['Standard error','(empty)']];
+            rows.slice(0,state.rows-9).forEach(([label,value],index)=>{text(2,4+index,label,'dim'); text(19,4+index,value);});
+            control(2,state.rows-4,task.running?'[F8 Stop command]':'[Stopped]',()=>{task.running=false; draw();},true);
+        }
+
+        // Purchase prices are display-only examples; the prototype never opens checkout.
+        function account()
+        {
+            const width=Math.min(66,state.cols-2),x=Math.floor((state.cols-width)/2); box(x,3,width,state.rows-6,'Account & credits');
+            text(x+3,5,state.email || 'tomas@slax.org','dim'); text(x+3,7,state.credits+' credits available','strong');
+            text(x+3,9,'Buy credits','strong');
+            ['100 credits       $2.99 USD','200 credits       $5.49 USD','500 credits       $9.99 USD','1000 credits     $14.99 USD'].forEach((value,index)=>control(x+3,11+index,'[ '+value+' ]',()=>{state.status='Design preview: checkout is not connected'; draw();}));
+            if (state.rows>26) { text(x+3,17,'Recent purchases','dim'); text(x+3,19,'+1000 credits     Oct 30, 2026'); text(x+3,20,'+500 credits      Oct 28, 2026'); }
+            text(x+3,state.rows-5,'Esc back · R refresh balance','dim');
+        }
+
+        // Keep keyboard hints discoverable without filling the main transcript.
+        function help()
+        {
+            box(0,2,state.cols,state.rows-4,'Keyboard shortcuts');
+            ['Enter          Send a message / answer a question','Shift+Enter    New line','Ctrl+Enter     Steer the current task; empty draft uses the queue','Page Up/Down   Read earlier conversation','F2             Show or hide Tasks','F3             Toggle Full access','F4             New chat','F6             Credits & account','F8             Stop the selected command','Esc            Return to the conversation','Ctrl+C         Quit the terminal client'].slice(0,state.rows-7).forEach((line,index)=>text(3,4+index,line));
+        }
+
+        // Render fixed-width character cells; user-entered text is escaped before HTML insertion.
+        function draw()
+        {
+            grid=Array.from({length:state.rows},()=>Array.from({length:state.cols},()=>[' ','' ])); hits=[];
+            header();
+            if (['login','code'].includes(state.scene)) signIn();
+            else if (state.scene==='tasks') taskList(0,2,state.cols,state.rows-4);
+            else if (state.scene==='detail') taskDetail();
+            else if (state.scene==='account') account();
+            else if (state.scene==='help') help();
+            else
+            {
+                const pane=state.tasksOpen && state.cols>=100 && state.layout!=='C',width=pane && state.layout==='B'?state.cols-35:state.cols;
+                chat(width);
+                if (pane) taskList(state.cols-34,2,34,state.rows-4,true);
+                else if (state.tasksOpen) taskList(0,2,state.cols,state.rows-4);
+            }
+            const footer=state.cols<80?'F1 Help · F2 Tasks · F3 Access · F6 Credits':'Enter send · Ctrl+Enter steer · F2 Tasks · F3 Full access · F6 Credits · F1 Help';
+            text(1,state.rows-1,(state.status || footer).slice(0,state.cols-2),'dim');
+            const escape=value=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+            screen.innerHTML=grid.map(row=>
+            {
+                let html='',style=row[0][1],part='';
+                for (const [char,next] of row)
+                {
+                    if (next!==style) { html+='<span class="'+style+'">'+escape(part)+'</span>'; part=''; style=next; }
+                    part+=char;
+                }
+                return html+'<span class="'+style+'">'+escape(part)+'</span>';
+            }).join('\n');
+            document.getElementById('dimensions').textContent=state.cols+' × '+state.rows;
+        }
+
+        // Resize redraws the same state; wide task panes become full-screen views in small terminals.
+        new ResizeObserver(entries=>
+        {
+            cell=document.getElementById('measure').getBoundingClientRect().width;
+            state.cols=Math.max(30,Math.floor(entries[0].contentRect.width/cell)); state.rows=Math.max(16,Math.floor(entries[0].contentRect.height/22)); draw();
+        }).observe(screen);
+
+        // Simulated local actions never affect the Full access preference.
+        function stop()
+        {
+            state.busy=false; state.status='Task stopped'; draw();
+        }
+
+        // Enter sends a draft, while Ctrl+Enter supplements the running task or steers the first queued draft.
+        function submit(steer=false)
+        {
+            if (!state.draft.trim())
+            {
+                if (steer && state.busy && state.queue.length) messages.push({user:true,text:state.queue.shift()});
+                draw(); return;
+            }
+            if (state.busy && !steer) state.queue.push(state.draft);
+            else
+            {
+                messages.push({user:true,text:state.draft});
+                if (!state.busy) { state.busy=true; state.frame=0; }
+            }
+            state.draft=''; state.scroll=0; draw();
+        }
+
+        // Mouse targets mirror keyboard actions; descriptions appear only as hover hints.
+        screen.addEventListener('mousemove',event=>
+        {
+            const rect=screen.getBoundingClientRect(),x=Math.floor((event.clientX-rect.left)/cell),y=Math.floor((event.clientY-rect.top)/22),hit=hits.find(hit=>y===hit.y && x>=hit.x && x<hit.x+hit.width);
+            screen.style.cursor=hit?'pointer':'text'; screen.title=hit?.hint || '';
+        });
+        screen.addEventListener('click',event=>
+        {
+            screen.focus({preventScroll:true});
+            const rect=screen.getBoundingClientRect(),x=Math.floor((event.clientX-rect.left)/cell),y=Math.floor((event.clientY-rect.top)/22);
+            hits.find(hit=>y===hit.y && x>=hit.x && x<hit.x+hit.width)?.action();
+        });
+        screen.addEventListener('wheel',event=>{event.preventDefault(); state.scroll=Math.max(0,state.scroll+Math.sign(event.deltaY)*3); draw();},{passive:false});
+
+        // Keyboard input changes only this mockup; no backend session or local command is created.
+        screen.addEventListener('keydown',event=>
+        {
+            const key=event.key;
+            if (key==='F2') { event.preventDefault(); state.tasksOpen=!state.tasksOpen; scene('chat'); return; }
+            if (key==='F3') { event.preventDefault(); state.full=!state.full; draw(); return; }
+            if (key==='F4') { event.preventDefault(); messages.length=0; state.busy=false; state.queue=[]; scene('chat'); return; }
+            if (key==='F6' || key==='F1') { event.preventDefault(); scene(key==='F6'?'account':'help'); return; }
+            if (key==='F8') { event.preventDefault(); tasks[state.task].running=false; draw(); return; }
+            if (key==='Escape') { event.preventDefault(); state.tasksOpen=false; scene('chat'); return; }
+            if (key==='PageUp' || key==='PageDown') { event.preventDefault(); state.scroll=Math.max(0,state.scroll+(key==='PageUp'?5:-5)); draw(); return; }
+            if (event.ctrlKey || event.metaKey)
+            {
+                if (key==='Enter') { event.preventDefault(); submit(true); }
+                return;
+            }
+            if (key==='Enter')
+            {
+                event.preventDefault();
+                if (state.scene==='login') { if (state.email.includes('@')) scene('code'); else state.status='Enter your email address'; }
+                else if (state.scene==='question') choose(state.draft.trim()?undefined:state.choice);
+                else if (state.scene==='tasks') scene('detail');
+                else if (event.shiftKey) state.draft+='\n';
+                else submit();
+                draw(); return;
+            }
+            if (state.scene==='question' && ['1','2'].includes(key)) { event.preventDefault(); choose(Number(key)-1); return; }
+            if (key==='Backspace') { event.preventDefault(); const field=state.scene==='login'?'email':state.scene==='code'?'code':'draft'; state[field]=Array.from(state[field]).slice(0,-1).join(''); draw(); return; }
+            if (Array.from(key).length===1 && !event.altKey)
+            {
+                event.preventDefault();
+                if (state.scene==='login') state.email+=key;
+                else if (state.scene==='code') { if (/\d/u.test(key)) state.code+=key; if (state.code.length===6) { state.code=''; scene('chat'); } }
+                else if (['chat','question'].includes(state.scene)) state.draft+=key;
+                draw();
+            }
+        });
+
+        // Layout controls and screen selectors let every state be compared without signing in.
+        document.getElementById('layouts').addEventListener('click',event=>
+        {
+            const button=event.target.closest('[data-layout]'); if (!button) return;
+            state.layout=button.dataset.layout; state.tasksOpen=state.layout==='B';
+            for (const item of document.querySelectorAll('[data-layout]')) item.setAttribute('aria-pressed',String(item===button));
+            document.getElementById('description').textContent=descriptions[state.layout]; draw();
+        });
+        document.getElementById('scene').addEventListener('change',event=>{state.tasksOpen=false; scene(event.target.value);});
+        document.getElementById('play').addEventListener('click',()=>{state.scene='chat'; state.draft='Check the network configuration'; state.busy=false; state.status=''; document.getElementById('scene').value='chat'; submit(); screen.focus();});
+        for (const button of document.querySelectorAll('[data-size]')) button.addEventListener('click',()=>
+        {
+            if (button.dataset.size==='fill') { terminal.style.width='100%'; terminal.style.height='calc(100dvh - 260px)'; return; }
+            const [cols,rows]=button.dataset.size.split(',').map(Number); terminal.style.width=(cols*cell+24)+'px'; terminal.style.height=(rows*22+56)+'px';
+        });
+
+        // Stream a canned response and integer credit charge purely within the preview.
+        setInterval(()=>
+        {
+            if (!state.busy || state.scene==='question') return;
+            state.frame++;
+            if (state.frame>=24) { state.busy=false; state.credits-=4; messages.push({user:false,text:reply,done:'Worked for 7s · 4 credits'}); }
+            draw();
+        },300);
+    </script>
+</body>
+</html>
