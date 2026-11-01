@@ -1,4 +1,4 @@
-use axum::{body::Bytes, extract::State, http::HeaderMap, Json};
+use axum::{body::Bytes, extract::{Path,State}, http::HeaderMap, Json};
 use hmac::{Hmac, Mac};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -12,6 +12,25 @@ pub async fn purchases(State(app):State<App>,headers:HeaderMap)->ApiResult<Json<
     let mut statement=connection.prepare("SELECT credits,paid_at FROM purchases WHERE user_id=?1 AND paid_at IS NOT NULL ORDER BY paid_at DESC,id DESC LIMIT 5")?;
     let purchases=statement.query_map([user],|row|Ok(json!({"credits":row.get::<_,i64>(0)?,"paid_at":row.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(Json(json!({"purchases":purchases})))
+}
+
+/// Authenticated clients check only their own purchase while a checkout window is open.
+pub async fn purchase(State(app):State<App>,headers:HeaderMap,Path(id):Path<String>)->ApiResult<Json<Value>> {
+    purchase_status(&app,&id,Some(app.user(&headers)?))
+}
+
+/// The unguessable receipt ID reveals payment confirmation without exposing account information.
+pub async fn receipt_status(State(app):State<App>,Path(id):Path<String>)->ApiResult<Json<Value>> {
+    purchase_status(&app,&id,None)
+}
+
+/// Only the signed Stripe webhook can mark a purchase paid and add its credits.
+fn purchase_status(app:&App,id:&str,user:Option<i64>)->ApiResult<Json<Value>> {
+    if id.len()!=64 || !id.bytes().all(|byte|byte.is_ascii_hexdigit()) { return Err(ApiError::bad("Invalid purchase reference")); }
+    let purchase:Option<(Option<i64>,i64)>=app.db.0.lock().unwrap().query_row(
+        "SELECT paid_at,credits FROM purchases WHERE id=?1 AND (?2 IS NULL OR user_id=?2)",params![id,user],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+    let (paid,credits)=purchase.ok_or_else(||ApiError::bad("Purchase not found"))?;
+    Ok(Json(json!({"paid":paid.is_some(),"credits":credits})))
 }
 
 /// Offer the current configured packs without exposing Stripe credentials.
@@ -40,12 +59,12 @@ pub async fn create_checkout(app: &App, user: i64,price_id:&str) -> ApiResult<Js
     let session: Value = app.http.post("https://api.stripe.com/v1/checkout/sessions").basic_auth(key,Some(""))
         .header("Idempotency-Key",&id).form(&[("mode","payment"),("line_items[0][price]",pack.price_id.as_str()),
             ("line_items[0][quantity]","1"),("metadata[purchase_id]",&id),("client_reference_id",&id),("customer_email",&email),
-            ("success_url",&format!("{}/payment/success",config.public_url)),("cancel_url",&format!("{}/payment/cancel",config.public_url))])
+            ("success_url",&format!("{}/payment/success?purchase_id={id}",config.public_url)),("cancel_url",&format!("{}/payment/cancel",config.public_url))])
         .send().await?.error_for_status()?.json().await?;
     let session_id = session["id"].as_str().ok_or_else(||ApiError::bad("Stripe did not create a session"))?;
     let url = session["url"].as_str().ok_or_else(||ApiError::bad("Stripe checkout URL missing"))?;
     app.db.0.lock().unwrap().execute("UPDATE purchases SET stripe_session=?1 WHERE id=?2",params![session_id,id])?;
-    Ok(Json(json!({"url":url})))
+    Ok(Json(json!({"url":url,"purchase_id":id})))
 }
 
 /// Only signed, paid Checkout sessions can add credits; duplicate events are harmless.

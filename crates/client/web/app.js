@@ -4,7 +4,7 @@ let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=f
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 const progressViews=new WeakMap(), steeringRows=new Map();
 let queueKey='', steeringKey='';
-let socialLogin, enabledProviders=[], emailEnabled=false;
+let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
@@ -117,7 +117,8 @@ function render()
     const depleted=state.account && state.account.credits<=0;
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
-    for (const id of ['new','credits','retry'])
+    elements.credits.disabled=refreshingBalance || !state.authenticated;
+    for (const id of ['new','retry'])
         elements[id].disabled=busy || !state.authenticated;
     elements['buy-inline'].disabled=buying || !state.account;
     for (const button of elements['credit-packs'].querySelectorAll('button')) button.disabled=buying || !state.account || elements['credit-packs'].dataset.development==='true';
@@ -476,8 +477,6 @@ async function loadPurchases()
 {
     const email=state.account?.email;
     if (!email) return;
-    elements['purchase-history'].hidden=true;
-    elements.purchases.replaceChildren();
     try
     {
         const result=await api('purchases');
@@ -502,13 +501,13 @@ async function loadCreditPacks()
 {
     const email=state.account?.email;
     if (!email) return;
-    elements['credit-packs'].replaceChildren();
-    elements['credit-packs-status'].textContent='Loading credit packs…';
+    if (!elements['credit-packs'].hasChildNodes()) elements['credit-packs-status'].textContent='Loading credit packs…';
     try
     {
         const result=await api('credit-packs');
         if (state.account?.email!==email) return;
         elements['credit-packs'].dataset.development=String(result.development);
+        const packs=document.createDocumentFragment();
         for (const [index,pack] of result.packs.entries())
         {
             const button=document.createElement('button'),icon=document.createElement('span'),amount=document.createElement('span'),credits=document.createElement('strong'),label=document.createElement('span'),price=document.createElement('span'),currency=document.createElement('span');
@@ -519,8 +518,9 @@ async function loadCreditPacks()
             price.className='credit-pack-price'; price.textContent=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(Number(pack.usd));
             currency.textContent=' USD'; price.append(currency);
             button.setAttribute('aria-label','Buy '+pack.credits+' credits for '+price.textContent);
-            button.append(icon,amount,price); elements['credit-packs'].append(button);
+            button.append(icon,amount,price); packs.append(button);
         }
+        elements['credit-packs'].replaceChildren(packs);
         elements['credit-packs-status'].textContent=result.development?'Purchases are disabled in development mode.':result.packs.length?'Choose a pack to open checkout.':'No credit packs are currently available.';
         render();
     }
@@ -537,7 +537,46 @@ function openSettings()
 }
 elements['settings-close'].addEventListener('click',()=>elements['settings-dialog'].close());
 elements['credit-balance'].addEventListener('click',openSettings);
-elements.credits.addEventListener('click',()=>elements.credits.querySelector('svg').animate([{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}],{duration:600,easing:'ease-in-out'}));
+elements.credits.addEventListener('click',()=>
+{
+    elements.credits.querySelector('svg').animate([{transform:'rotate(0deg)'},{transform:'rotate(360deg)'}],{duration:600,easing:'ease-in-out'});
+    refreshBalance();
+});
+
+// Update account figures in place; a balance refresh never clears or reloads the credit-pack cards.
+async function refreshBalance()
+{
+    if (refreshingBalance || !state?.authenticated) return false;
+    const email=state.account?.email;
+    refreshingBalance=true; elements.credits.disabled=true;
+    elements['settings-status'].textContent='';
+    try
+    {
+        const current=await api('account',{});
+        if (email && state.account?.email!==email) return;
+        state=current; render();
+        await loadPurchases();
+        return true;
+    }
+    catch (error) { elements['settings-status'].textContent=error.message; return false; }
+    finally { refreshingBalance=false; elements.credits.disabled=!state.authenticated; }
+}
+
+// The popup may lose its opener across Stripe redirects; confirmed purchases still update this window.
+async function watchPurchase(id,email)
+{
+    for (let attempt=0;attempt<450 && state.account?.email===email;attempt++)
+    {
+        await new Promise(resolve=>setTimeout(resolve,2000));
+        if (state.account?.email!==email) return;
+        try
+        {
+            const purchase=await api('purchases/'+id);
+            if (purchase.paid && await refreshBalance()) return;
+        }
+        catch { /* A temporary connection failure does not lose the payment confirmation. */ }
+    }
+}
 const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 
 // Keep the sign-in form local, including resend timing and development-only delivery hints.
@@ -980,11 +1019,10 @@ elements['cancel-edit'].addEventListener('click',async()=>
     catch (error) { pendingIds.delete(id); elements.status.textContent=error.message; }
     finally { queueAction=false; renderComposer(); }
 });
-for (const [id,path] of [['new','new'],['credits','account'],['retry','retry']])
+for (const [id,path] of [['new','new'],['retry','retry']])
     elements[id].addEventListener('click',()=>action(async()=>
     {
         await api(path,{});
-        if (id==='credits') await Promise.all([loadPurchases(),loadCreditPacks()]);
     }));
 elements['buy-inline'].addEventListener('click',openSettings);
 elements['credit-packs'].addEventListener('click',async event=>
@@ -1010,6 +1048,7 @@ elements['credit-packs'].addEventListener('click',async event=>
         if (url.protocol!=='https:' || url.hostname!=='checkout.stripe.com') throw new Error('Unexpected payment URL');
         if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.location.replace(url.href);
         else location.assign(url.href);
+        watchPurchase(checkout.purchase_id,email);
     }
     catch (error) { checkoutWindow?.close(); elements.status.textContent=error.message; elements['settings-status'].textContent=error.message; }
     finally { buying=false; render(); }

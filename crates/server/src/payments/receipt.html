@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Payment confirmation</title>
+    <link rel="stylesheet" href="/payment/receipt.css">
+    <script src="/payment/receipt.js" defer></script>
+</head>
+<body>
+    <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>{{ICONS}}</defs></svg>
+    <main class="receipt" aria-live="polite" aria-atomic="true">
+        <div class="receipt-mark" id="receipt-mark"><span class="spinner" id="spinner"></span><svg id="success-icon" hidden aria-hidden="true"><use href="#icon-check"/></svg></div>
+        <p class="eyebrow" id="eyebrow">Finishing up</p>
+        <h1 id="heading">Confirming your payment</h1>
+        <p id="description">Just a moment while we confirm that your credits have been added.</p>
+        <p class="credits" id="credits" hidden></p>
+        <p class="close-note" id="close-note">You can leave this window open while we finish.</p>
+        <button type="button" id="close">Close window</button>
+    </main>
+</body>
+</html>

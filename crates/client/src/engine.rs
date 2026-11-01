@@ -21,7 +21,7 @@ pub struct Saved {
     pub committed: usize,
     pub request: Option<ChatRequest>,
 }
-pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<social::LoginAttempt>, account: Option<Account> }
+pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<social::LoginAttempt>, pub account: Arc<std::sync::RwLock<Option<Account>>> }
 
 impl Engine {
     /// One interface owns the saved settings and conversation state at a time.
@@ -47,7 +47,7 @@ impl Engine {
             }
         }
         let controls=crate::controls::Controls::open(directory,live.clone())?;
-        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:crate::backend::client(0)?,login:None,account:None };
+        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:crate::backend::client(0)?,login:None,account:Arc::new(std::sync::RwLock::new(None)) };
         if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id).await?; }
         if engine.saved.settings.backend!=backend { engine.set_backend(backend.into()).await?; }
         engine.live.state(engine.state());
@@ -58,7 +58,7 @@ impl Engine {
     pub fn state(&self) -> Value {
         json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":crate::media::messages(self.saved.conversation_id,&self.saved.messages),
             "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),
-            "retry_available":self.saved.request.is_some(),"account":self.account})
+            "retry_available":self.saved.request.is_some(),"account":&*self.account.read().unwrap()})
     }
 
     /// Keep all state transitions durable before performing external side effects.
@@ -95,7 +95,7 @@ impl Engine {
         self.saved.token = None;
         self.saved.settings.commands_enabled = true;
         self.full_access.store(true,Ordering::SeqCst);
-        self.account = None;
+        *self.account.write().unwrap()=None;
         self.login = None;
         self.new_chat().await
     }
@@ -130,7 +130,7 @@ impl Engine {
     async fn finish_login(&mut self,result:LoginResult)->Result<Value> {
         self.saved.token=Some(result.token.context("Backend did not issue a session")?);
         self.login=None;
-        self.account=None;
+        *self.account.write().unwrap()=None;
         self.saved.settings.commands_enabled=true;
         self.full_access.store(true,Ordering::SeqCst);
         self.new_chat().await?;
@@ -142,10 +142,11 @@ impl Engine {
         let response = crate::backend::send(self.backend(reqwest::Method::GET,"/v1/me"),&self.live,None).await?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             self.saved.token = None;
-            self.account = None;
+            *self.account.write().unwrap()=None;
             self.save()?;
         }
-        self.account = Some(Self::response(response).await?);
+        let account=Self::response(response).await?;
+        *self.account.write().unwrap()=Some(account);
         self.live.state(self.state());
         Ok(self.state())
     }
@@ -157,7 +158,7 @@ impl Engine {
         self.saved.token = None;
         self.saved.settings.commands_enabled = false;
         self.full_access.store(false,Ordering::SeqCst);
-        self.account = None;
+        *self.account.write().unwrap()=None;
         self.new_chat().await
     }
 
@@ -237,7 +238,7 @@ impl Engine {
         self.saved.committed=result.revision;
         self.saved.request = None;
         self.saved.task_id=None;
-        if let Some(account) = &mut self.account { account.credits = result.credits; }
+        if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=result.credits; }
         if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
         self.finish_activity(None)?;
         Ok(self.state())
@@ -260,7 +261,7 @@ impl Engine {
                         self.live.0.send_modify(|view|view["can_steer"]=json!(!self.controls.stopped.load(Ordering::SeqCst)));
                         let activity=progress.activity.clone();
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
-                        if let (Some(account),Some(credits))=(&mut self.account,progress.credits) { account.credits=credits; self.live.state(self.state()); }
+                        if let Some(credits)=progress.credits { if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=credits; } self.live.state(self.state()); }
                         let request=self.saved.request.as_ref().unwrap();
                         self.controls.receive(&progress.requests,&self.processes,&self.full_access,self.saved.settings.commands_enabled,&request.cwd);
                         self.live.activity(label,Some(progress));
@@ -273,7 +274,7 @@ impl Engine {
                     protocol::ChatEvent::Error { message,settled,credits,task_credits,steering,progress } => {
                         self.record_credits(task_credits);
                         if let Some(progress)=progress { self.live.activity("Thinking…",Some(progress)); }
-                        if let (Some(account),Some(credits))=(&mut self.account,credits) { account.credits=credits; }
+                        if let (Some(account),Some(credits))=(self.account.write().unwrap().as_mut(),credits) { account.credits=credits; }
                         if settled {
                             let steering_ids:Vec<_>=steering.iter().map(|input|input.id).collect();
                             let steering_start=self.saved.messages.len();
@@ -368,7 +369,7 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(directory.path(),&backend).await?;
         engine.saved.token=Some("fixture".into());
-        engine.account=Some(Account { email:"fixture@example.test".into(),credits:1,development:true,input_credits_per_million:200.0 });
+        *engine.account.write().unwrap()=Some(Account { email:"fixture@example.test".into(),credits:1,development:true,input_credits_per_million:200.0 });
         assert!(engine.chat("Hello".into(),"/tmp".into()).await.is_err());
         assert_eq!(engine.state()["account"]["credits"],-2);
         let next=engine.saved.request.as_ref().unwrap();
