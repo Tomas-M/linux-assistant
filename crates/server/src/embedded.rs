@@ -11,6 +11,8 @@ pub async fn run(paths: codex_arg0::Arg0DispatchPaths) -> Result<()> {
         "code_mode","code_mode_only","request_permissions_tool","shell_snapshot","skill_search"] {
         overrides.raw_overrides.push(format!("features.{flag}=false"));
     }
+    // Intentional experimental features should not repeat a startup notice for every conversation.
+    overrides.raw_overrides.push("suppress_unstable_features_warning=true".into());
     // Backend sandbox instructions must not mislabel client-executed tools as read-only.
     overrides.raw_overrides.extend(["include_permissions_instructions=false","features.code_mode_host=true","cli_auth_credentials_store=\"file\"","web_search=\"live\"","features.default_mode_request_user_input=true","tools.experimental_request_user_input.enabled=true","tools.update_plan.enabled=true",
         "skills.bundled.enabled=false","skills.include_instructions=false","project_doc_max_bytes=0"].map(str::to_owned));
