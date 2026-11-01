@@ -190,6 +190,8 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
     let mut response = next.run(request).await;
     for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
         ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
+        // Inline file documents provide their own sandbox policy.
+        if key=="content-security-policy" && response.headers().contains_key(key) { continue; }
         response.headers_mut().insert(axum::http::HeaderName::from_static(key),value.parse().unwrap());
     }
     response

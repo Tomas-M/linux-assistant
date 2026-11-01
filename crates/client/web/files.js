@@ -58,11 +58,16 @@ async function resolveLocalFiles()
     if (pendingLocalFiles.size) localFileTimer ??=setTimeout(resolveLocalFiles,100);
 }
 
-// Links always use a same-origin capability URL and download rather than execute generated content.
+// Preview through the local server and copy the actual disk path independently of its opaque URL.
 function setLocalFileLink(link,file)
 {
-    link.href=file.url; link.download=file.name; link.classList.add('local-file-link');
-    link.title='Download '+file.name; link.removeAttribute('target');
+    link.href=file.url; link.target='_blank'; link.rel='noopener noreferrer'; link.classList.add('local-file-link');
+    link.title='Open '+file.name;
+    const wrapper=document.createElement('span'),copy=document.createElement('button');
+    wrapper.className='local-file'; copy.type='button'; copy.className='icon-button copy-file-path';
+    copy.dataset.copyFilePath=file.full_path; copy.title='Copy file path'; copy.setAttribute('aria-label','Copy file path');
+    setIcon(copy,'copy'); link.replaceWith(wrapper); wrapper.append(link,copy);
+    return wrapper;
 }
 
 // Preserve inline code and formatting, and ignore paths inside commands or fenced code blocks.
@@ -107,7 +112,7 @@ function linkLocalFiles(element)
                 if (!files[index]) return;
                 fragment.append(text.slice(offset,match.start));
                 const link=document.createElement('a'); link.textContent=text.slice(match.start,match.end);
-                setLocalFileLink(link,files[index]); fragment.append(link); offset=match.end;
+                fragment.append(setLocalFileLink(link,files[index])); offset=match.end;
             });
             fragment.append(text.slice(offset)); node.replaceWith(fragment);
         });

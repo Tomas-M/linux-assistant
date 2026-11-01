@@ -341,12 +341,13 @@ function renderCompletions()
 // Copy the final response, or its interrupted preview, without commands or progress chatter.
 elements.workspace.addEventListener('click',async event=>
 {
-    const copy=event.target.closest('[data-copy],[data-copy-prompt],[data-copy-steering]'), process=event.target.closest('[data-process]');
+    const copy=event.target.closest('[data-copy],[data-copy-prompt],[data-copy-steering],[data-copy-file-path]'), process=event.target.closest('[data-process]');
     if (copy)
     {
-        const prompt=copy.hasAttribute('data-copy-prompt') || copy.hasAttribute('data-copy-steering'), label=prompt?'Copy message':'Copy response';
-        let text;
-        if (copy.hasAttribute('data-copy-steering')) text=view.steering.find(input=>input.id===copy.dataset.copySteering).text;
+        const prompt=copy.hasAttribute('data-copy-prompt') || copy.hasAttribute('data-copy-steering');
+        let text,label=prompt?'Copy message':'Copy response';
+        if (copy.hasAttribute('data-copy-file-path')) { text=copy.dataset.copyFilePath; label='Copy file path'; }
+        else if (copy.hasAttribute('data-copy-steering')) text=view.steering.find(input=>input.id===copy.dataset.copySteering).text;
         else if (prompt) text=state.messages[Number(copy.dataset.copyPrompt)].text;
         else
         {

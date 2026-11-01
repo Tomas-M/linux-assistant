@@ -7912,6 +7912,7 @@ dependencies = [
  "fs2",
  "image",
  "libc",
+ "mime_guess",
  "protocol",
  "ratatui",
  "reqwest 0.12.28",
