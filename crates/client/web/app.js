@@ -869,7 +869,7 @@ async function submitPrompt(steer=false)
 document.addEventListener('keydown',event=>
 {
     if (!state?.authenticated || elements.prompt.disabled) return;
-    if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
+    if (event.defaultPrevented || document.querySelector('dialog[open]') || event.target.closest('#questions')) return;
     const shortcut=(event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState('AltGraph');
     if (shortcut || event.target.closest('textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio])')) return;
     if (event.key===' ' && event.target.closest('button,a,summary,input')) return;

@@ -137,74 +137,100 @@ function renderWork(row,parts,active)
     for (const [key,element] of row.reasoning) if (!reasoning.has(key)) { element.remove(); row.reasoning.delete(key); }
 }
 
-// Reuse pending forms so streaming updates and browser reconnects never clear an answer being typed.
+// Keep one question visible at a time; choices advance immediately and the last answer submits the batch.
+function createQuestionForm(request)
+{
+    const form=document.createElement('form'),answers=Object.create(null),drafts=Object.create(null);
+    let index=0;
+    form.className='question-request';
+    // Rebuilding between questions preserves custom drafts and the answers already chosen.
+    function showQuestion()
+    {
+        const question=request.questions[index],header=document.createElement('header'),back=document.createElement('button'),heading=document.createElement('span'),text=document.createElement('p'),options=document.createElement('div'),status=document.createElement('p');
+        header.className='question-heading'; heading.textContent=request.questions.length>1?'Question '+(index+1)+' of '+request.questions.length:'Question';
+        back.type='button'; back.className='icon-button question-back'; back.hidden=index===0; back.setAttribute('aria-label','Previous question'); setIcon(back,'chevron');
+        back.addEventListener('click',()=>{ index--; showQuestion(); form.querySelector('.question-option,input,textarea').focus({preventScroll:true}); });
+        header.append(heading,back); text.className='question-text'; text.textContent=question.question; options.className='question-options';
+        for (const [number,option] of (question.options || []).entries())
+        {
+            const button=document.createElement('button'),badge=document.createElement('span'),label=document.createElement('span');
+            button.type='submit'; button.name='answer'; button.value=option.label; button.className='question-option'; button.title=option.description;
+            button.setAttribute('aria-pressed',String(answers[question.id]?.[0]===option.label));
+            badge.className='question-number'; badge.textContent=number+1; badge.setAttribute('aria-hidden','true'); label.textContent=option.label;
+            button.append(badge,label); options.append(button);
+        }
+        form.replaceChildren(header,text,options);
+        if (question.isOther || !question.options?.length)
+        {
+            const row=document.createElement('div'),input=document.createElement(question.isSecret?'input':'textarea'),send=document.createElement('button');
+            row.className='question-custom'; input.name='custom'; input.maxLength=8000; input.value=drafts[question.id] || '';
+            if (question.isSecret) input.type='password';
+            else input.rows=1;
+            input.placeholder=question.options?.length?'Or write your own response':'Your response'; input.setAttribute('aria-label','Your response');
+            send.name='custom-send'; send.className='primary'; send.textContent='Send'; send.disabled=!input.value.trim();
+            input.addEventListener('input',()=>{ drafts[question.id]=input.value; send.disabled=!input.value.trim(); });
+            input.addEventListener('keydown',event=>
+            {
+                if (event.key==='Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!send.disabled) form.requestSubmit(send); }
+            });
+            row.append(input,send); form.append(row);
+        }
+        status.className='question-status'; status.setAttribute('role','status'); form.append(status);
+    }
+    form.addEventListener('submit',async event=>
+    {
+        event.preventDefault();
+        if (form.getAttribute('aria-busy')==='true') return;
+        const question=request.questions[index],input=form.querySelector('[name=custom]'),status=form.querySelector('.question-status');
+        const value=event.submitter?.name==='answer'?event.submitter.value:input?.value.trim();
+        if (!value) { status.textContent='Please enter your answer'; return; }
+        answers[question.id]=[value];
+        if (index<request.questions.length-1)
+        {
+            index++; showQuestion(); form.querySelector('.question-option,input,textarea').focus({preventScroll:true}); return;
+        }
+        form.setAttribute('aria-busy','true'); status.textContent='';
+        for (const control of form.elements) control.disabled=true;
+        try { await api('respond',{id:request.id,answer:{type:'questions',answers}}); }
+        catch (error)
+        {
+            form.removeAttribute('aria-busy'); status.textContent=error.message;
+            for (const control of form.elements) control.disabled=false;
+            if (input) form.querySelector('[name=custom-send]').disabled=!input.value.trim();
+        }
+    });
+    showQuestion(); return form;
+}
+
+// Reuse pending forms across streaming updates; questions dock above the compact composer.
 function renderQuestions()
 {
-    const requests=view.interactions, present=new Set(requests.map(request=>request.id));
+    const requests=view.interactions,present=new Set(requests.map(request=>request.id));
     for (const [id,form] of questionViews) if (!present.has(id)) { form.remove(); questionViews.delete(id); }
     for (const request of requests)
     {
         if (questionViews.has(request.id)) continue;
-        const form=document.createElement('form'); form.className='native-request';
-        const heading=document.createElement('h2'); heading.textContent=request.type==='questions'?'Your input is needed':'Allow access on your computer?'; form.append(heading);
         if (request.type==='questions')
         {
-            for (const [questionIndex,question] of request.questions.entries())
-            {
-                const field=document.createElement('fieldset'), legend=document.createElement('legend'); legend.textContent=question.question; field.append(legend);
-                for (const [index,option] of (question.options || []).entries())
-                {
-                    const label=document.createElement('label'), radio=document.createElement('input'), text=document.createElement('span'), title=document.createElement('strong'), description=document.createElement('small');
-                    radio.type='radio'; radio.name='q'+questionIndex; radio.value=String(index); radio.required=true;
-                    title.textContent=option.label; description.textContent=option.description; text.append(title,description); label.append(radio,text); field.append(label);
-                }
-                if (question.isOther || !question.options?.length)
-                {
-                    const label=document.createElement('label'), radio=document.createElement('input'), input=document.createElement('textarea');
-                    radio.type='radio'; radio.name='q'+questionIndex; radio.value='custom'; radio.setAttribute('aria-label','Custom answer');
-                    input.name='custom'+questionIndex; input.placeholder='Your own answer'; input.rows=2; input.maxLength=8000;
-                    if (question.isSecret) { const secret=document.createElement('input'); secret.type='password'; secret.name=input.name; secret.placeholder=input.placeholder; secret.maxLength=8000; label.append(radio,secret); secret.addEventListener('input',()=>{ radio.checked=true; }); }
-                    else { label.append(radio,input); input.addEventListener('input',()=>{ radio.checked=true; }); }
-                    field.append(label);
-                }
-                form.append(field);
-            }
+            const form=createQuestionForm(request); questionViews.set(request.id,form); elements.questions.append(form); continue;
         }
-        else
-        {
-            const reason=document.createElement('p'), details=document.createElement('details'), summary=document.createElement('summary'), pre=document.createElement('pre');
-            reason.textContent=request.action.reason; summary.textContent='Operation and exact arguments'; pre.textContent=JSON.stringify(request.action,null,2);
-            details.append(summary,pre); form.append(reason,details);
-        }
-        const buttons=document.createElement('div'), submit=document.createElement('button'), status=document.createElement('p');
-        buttons.className='button-row'; submit.className='primary'; submit.textContent=request.type==='questions'?'Continue':'Allow'; buttons.append(submit);
-        if (request.type==='tool')
-        {
-            const decline=document.createElement('button'); decline.type='submit'; decline.name='decline'; decline.textContent='Decline'; buttons.append(decline);
-        }
-        form.append(buttons,status);
+        const form=document.createElement('form'),heading=document.createElement('h2'),reason=document.createElement('p'),details=document.createElement('details'),summary=document.createElement('summary'),pre=document.createElement('pre');
+        form.className='native-request'; heading.textContent='Allow access on your computer?'; reason.textContent=request.action.reason;
+        summary.textContent='Operation and exact arguments'; pre.textContent=JSON.stringify(request.action,null,2); details.append(summary,pre);
+        const buttons=document.createElement('div'),submit=document.createElement('button'),decline=document.createElement('button'),status=document.createElement('p');
+        buttons.className='button-row'; submit.className='primary'; submit.textContent='Allow'; decline.type='submit'; decline.name='decline'; decline.textContent='Decline'; buttons.append(submit,decline);
+        form.append(heading,reason,details,buttons,status);
         form.addEventListener('submit',async event=>
         {
-            event.preventDefault(); const data=new FormData(form); let answer;
-            if (request.type==='tool') answer={type:'approval',approve:event.submitter?.name!=='decline'};
-            else
-            {
-                const answers=Object.create(null);
-                for (const [index,question] of request.questions.entries())
-                {
-                    const value=data.get('q'+index);
-                    if (value===null) { status.textContent='Please answer every question'; return; }
-                    const text=value==='custom'?String(data.get('custom'+index) || '').trim():question.options[Number(value)].label;
-                    if (!text) { status.textContent='Please enter your answer'; return; }
-                    answers[question.id]=[text];
-                }
-                answer={type:'questions',answers};
-            }
-            for (const input of form.elements) input.disabled=true;
-            try { await api('respond',{id:request.id,answer}); }
-            catch (error) { status.textContent=error.message; for (const input of form.elements) input.disabled=false; }
+            event.preventDefault();
+            for (const control of form.elements) control.disabled=true;
+            try { await api('respond',{id:request.id,answer:{type:'approval',approve:event.submitter?.name!=='decline'}}); }
+            catch (error) { status.textContent=error.message; for (const control of form.elements) control.disabled=false; }
         });
         questionViews.set(request.id,form); elements.interactions.append(form);
     }
-    elements.interactions.hidden=!requests.length;
+    const asking=!!elements.questions.childElementCount;
+    elements.questions.hidden=!asking;
+    elements['composer-wrap'].classList.toggle('answering-question',asking);
+    elements.interactions.hidden=!elements.interactions.childElementCount;
 }

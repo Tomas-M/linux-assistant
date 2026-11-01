@@ -216,18 +216,31 @@ input[type=checkbox] { accent-color:var(--accent); }
 .sr-only { position:absolute; width:0.0625rem; height:0.0625rem; padding:0; margin:-0.0625rem; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .native-request { margin:1.5rem 0; padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1.125rem; background:var(--card); }
 .native-request h2 { margin-bottom:1.25rem; }
-.native-request fieldset { padding:0; border:0; margin:0 0 1.25rem; min-width:0; }
-.native-request legend { margin-bottom:0.75rem; font-weight:600; font-size:1rem; }
-.native-request label { display:flex; align-items:flex-start; gap:0.75rem; border:0.0625rem solid var(--border); border-radius:0.625rem; padding:0.75rem; margin:0.5rem 0; cursor:pointer; }
-.native-request label:has(input:checked) { border-color:var(--accent); background:var(--accent-soft); }
-.native-request input[type=radio] { flex-shrink:0; width:1rem; height:1rem; margin:0.25rem 0 0; accent-color:var(--accent); }
-.native-request label>span { flex:1; min-width:0; }
-.native-request label strong,.native-request label small { display:block; }
-.native-request label strong { font-size:1rem; font-weight:500; }
-.native-request label textarea,.native-request input[type=password] { flex:1; min-width:0; padding:0; border:0; outline:none; background:transparent; resize:vertical; font-size:1rem; }
 .native-request pre { max-height:18rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:0.875rem; }
 .native-request form p:empty,.native-request>p:empty { display:none; }
 .native-request>p:last-child { color:var(--warning); margin:0.75rem 0 0; }
+/* Pending questions stay within the viewport without expanding the main message input. */
+#questions { max-height:min(55dvh,28rem); overflow-y:auto; margin-bottom:0.5rem; }
+.question-request { padding:1rem; border:0.0625rem solid var(--border); border-radius:1.25rem; background:var(--card); }
+.question-request+.question-request { margin-top:0.5rem; }
+.question-heading { display:flex; align-items:center; justify-content:space-between; min-height:1.5rem; color:var(--muted); font-size:0.8125rem; }
+.question-back { width:1.5rem; height:1.5rem; border:0; background:transparent; }
+.question-back svg { width:0.625rem; height:0.75rem; transform:rotate(180deg); }
+.question-text { margin:0.625rem 0 0.5rem; font-size:0.875rem; line-height:1.5; font-weight:500; overflow-wrap:anywhere; }
+.question-options { display:grid; gap:0.125rem; }
+.question-option { display:flex; align-items:center; gap:0.625rem; width:100%; min-height:2.25rem; padding:0.375rem 0.5rem; border:0; border-radius:0.5rem; background:transparent; font-size:0.875rem; text-align:left; }
+.question-option[aria-pressed=true] { background:var(--accent-soft); }
+.question-option>span:last-child { min-width:0; overflow-wrap:anywhere; }
+.question-number { display:grid; place-items:center; min-width:1.375rem; height:1.375rem; padding:0 0.25rem; border:0.0625rem solid var(--border); border-radius:0.3125rem; color:var(--muted); background:var(--surface); font-size:0.8125rem; flex-shrink:0; }
+.question-custom { display:flex; align-items:flex-end; gap:0.5rem; margin-top:0.625rem; }
+.question-custom textarea,.question-custom input { flex:1; min-width:0; min-height:1.75rem; max-height:5rem; padding:0.25rem 0.5rem; border:0; border-radius:0.375rem; background:transparent; resize:none; font-size:0.875rem; line-height:1.5; }
+.question-custom button { border-radius:1.5rem; padding:0.3125rem 0.75rem; font-size:0.8125rem; }
+.question-status { margin:0.5rem 0 0; color:var(--warning); font-size:0.8125rem; }
+.question-status:empty { display:none; }
+.answering-question .composer { padding:0.75rem 1rem; border-radius:1.25rem; }
+.answering-question #prompt { height:1.5rem !important; min-height:1.5rem; max-height:1.5rem; font-size:0.875rem; }
+.answering-question .composer-bottom { margin-top:0.25rem; }
+.answering-question .send,.answering-question .attach { width:2rem; height:2rem; }
 .live-plan { margin:1rem 0 1.5rem; padding:1rem 1.25rem; border:0.0625rem solid var(--border); border-radius:0.75rem; }
 .live-plan p { margin:0.5rem 0; font-size:0.875rem; color:var(--muted); }
 .live-plan ol { list-style:none; margin:0.75rem 0 0; padding:0; }
