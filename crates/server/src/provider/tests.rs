@@ -1,4 +1,5 @@
 mod parallel;
+mod memories;
 use super::*;
 
 use protocol::{Message,Platform};
@@ -296,7 +297,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     assert_eq!(config["config"]["features"]["shell_tool"],false);
     assert_eq!(config["config"]["features"]["unified_exec"],false);
     assert_eq!(config["config"]["features"]["plugins"],false);
-    assert_eq!(config["config"]["web_search"],"disabled");
+    assert_eq!(config["config"]["web_search"],"live");
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint=format!("http://{}/v1",listener.local_addr()?);
     let requests=std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));

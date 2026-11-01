@@ -10,7 +10,8 @@ async fn long_history_uses_small_requests_and_stable_replay()->anyhow::Result<()
     let app=router(state.clone());
     let conversation=uuid::Uuid::new_v4();
     let id=uuid::Uuid::new_v4();
-    let mut input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"世界".repeat(2000)}],"commands_enabled":false,"cwd":"/tmp"});
+    // Grow persisted history through attachments without spending time streaming a large simulated echo.
+    let mut input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Continue 世界","attachments":[{"kind":"text","name":"notes.txt","content":"世界".repeat(2000)}]}],"commands_enabled":false,"cwd":"/tmp"});
     let original=input.clone();
     for revision in 0..20 {
         input["base"]=json!(revision*2);

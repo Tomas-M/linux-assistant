@@ -3,6 +3,9 @@ use anyhow::Result;
 use rusqlite::{params,Connection};
 use crate::{App,db::{Db,now}};
 
+#[cfg(test)]
+mod tests;
+
 pub const RETENTION:i64=7*86400;
 const RESPONSE_RETENTION:i64=86400;
 const CACHE_BYTES:i64=256*1024*1024;
@@ -84,11 +87,11 @@ impl Db {
         reclaim(&connection,false)
     }
 
-    /// Detach an idle provider thread atomically so a new request cannot race native cache deletion.
+    /// Historical usage links the previous native thread to a pending turn even before resume identifies it.
     pub fn retire_thread(&self,thread:&str)->Result<bool> {
         let mut connection=self.0.lock().unwrap();
         let tx=connection.transaction()?;
-        let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests r JOIN conversations c ON c.user_id=r.user_id AND c.id=r.conversation_id WHERE c.thread_id=?1 AND r.response IS NULL AND r.error IS NULL) OR EXISTS(SELECT 1 FROM usage u LEFT JOIN requests r ON r.user_id=u.user_id AND r.id=u.request_id WHERE u.thread_id=?1 AND (u.finished_at IS NULL OR (r.id IS NOT NULL AND r.response IS NULL AND r.error IS NULL)))",[thread],|row|row.get(0))?;
+        let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests r JOIN conversations c ON c.user_id=r.user_id AND c.id=r.conversation_id WHERE c.thread_id=?1 AND r.response IS NULL AND r.error IS NULL) OR EXISTS(SELECT 1 FROM usage u WHERE u.thread_id=?1 AND (u.finished_at IS NULL OR EXISTS(SELECT 1 FROM requests r WHERE r.user_id=u.user_id AND r.conversation_id=u.conversation_id AND r.response IS NULL AND r.error IS NULL)))",[thread],|row|row.get(0))?;
         if pending { return Ok(false); }
         tx.execute("UPDATE conversations SET thread_id=NULL WHERE thread_id=?1",[thread])?;
         tx.execute("DELETE FROM provider_counters WHERE thread_id=?1",[thread])?;

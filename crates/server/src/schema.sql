@@ -42,3 +42,6 @@ CREATE INDEX IF NOT EXISTS requests_history ON requests(user_id,conversation_id)
 CREATE INDEX IF NOT EXISTS billing_tasks_history ON billing_tasks(user_id,conversation_id,finished_at);
 
 CREATE TABLE IF NOT EXISTS user_memories(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,text TEXT NOT NULL,revision TEXT NOT NULL);
+
+CREATE INDEX IF NOT EXISTS usage_thread ON usage(thread_id,user_id,conversation_id) WHERE thread_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS conversations_thread ON conversations(thread_id) WHERE thread_id IS NOT NULL;

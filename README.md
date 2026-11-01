@@ -315,7 +315,7 @@ Run the optional provider protocol fixture on Windows with:
 python scripts/cargo_backend.py build -p assistant-server --bin assistant-server --example provider-fixture --locked
 $env:ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture.exe"
 $env:ASSISTANT_TEST_SERVER="$PWD/target/debug/assistant-server.exe"
-python scripts/cargo_backend.py test -p assistant-server integration_ --locked -- --ignored
+python scripts/cargo_backend.py test -p assistant-server --locked -- --ignored
 ```
 
 ## Tests
@@ -325,10 +325,12 @@ python scripts/cargo_backend.py test --workspace --locked
 python scripts/cargo_backend.py build -p assistant-server --bin assistant-server --example provider-fixture --locked
 ASSISTANT_TEST_PROVIDER="$PWD/target/debug/examples/provider-fixture" \
   ASSISTANT_TEST_SERVER="$PWD/target/debug/assistant-server" \
-  python scripts/cargo_backend.py test -p assistant-server integration_ --locked -- --ignored
+  python scripts/cargo_backend.py test -p assistant-server --locked -- --ignored
 ```
 
 Tests cover ledger idempotency and crash recovery, insufficient credits, device-session consumption, email-code attempt limits, session revocation, payment signature validation and replay, account rotation over JSONL, local Origin/Host/token checks, HTTPS enforcement, OS-specific proposals, and actual execution through the approval flow. Process tests check live output and stopping while the conversation is locked, saved results, Unicode-safe output truncation, results staying in the main conversation, provider thread isolation, and restart/retry without command reexecution. Windows tests also check Unicode and quoting, working directories, PowerShell/native failures, both output caps, and descendant cleanup on Stop and cancellation. Live credentials are unnecessary for these tests.
+
+Memory tests cover user isolation, simultaneous saves, stale revisions, clearing, UTF-8 size limits, consolidation, persistence across cache cleanup, and edits during a running client task. The provider fixture also verifies automatic saves and resumed threads using two users on one AI account. Cache tests protect a native thread while its next turn is starting.
 
 Native Linux execution must be checked on a Linux host because this Windows development host has no Linux runtime. The runtime contract test uses a fresh unsigned-in account directory and a local HTTP model stub to verify real App Server turns and thread resumption without contacting an AI provider. Protocol fixtures test quota behavior without using real subscriptions.
 

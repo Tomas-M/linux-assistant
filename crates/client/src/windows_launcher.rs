@@ -57,10 +57,15 @@ mod tests {
             let mut previous=String::new();
             for _ in 0..2 {
                 let output=tokio::time::timeout(Duration::from_secs(15),tokio::process::Command::new(&executable)
-                    .arg("--config").arg(&config).env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
+                    .arg("--config").arg(&config).args(["--desktop=false","--cli=false"]).env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
                 anyhow::ensure!(output.status.success(),"Launcher failed");
                 let url=String::from_utf8(output.stdout)?;
-                anyhow::ensure!(url.starts_with("http://127.0.0.1:") && url.contains("/#"),"Missing browser URL");
+                let parsed=reqwest::Url::parse(url.trim())?;
+                assert_eq!(parsed.scheme(),"http");
+                assert_eq!(parsed.host_str(),Some("127.0.0.1"));
+                assert!(parsed.port().is_some());
+                assert_eq!(parsed.path(),"/");
+                assert!(parsed.fragment().is_none());
                 if !previous.is_empty() { assert_eq!(previous,url); }
                 previous=url;
                 let connection=crate::storage::read::<crate::local::Connection>(&directory.path().join("daemon.json"))?;

@@ -27,20 +27,13 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
     assert!(std::str::from_utf8(&first)?.contains("progress"));
     assert_eq!(state.db.balance(user)?,3);
     drop(response);
-    let pending=http.post(&url).bearer_auth(&token).json(&input).send().await?;
-    assert_eq!(pending.status(),StatusCode::CONFLICT);
-    tokio::time::timeout(Duration::from_secs(5),async {
-        loop {
-            let response=http.post(&url).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
-            if response.status().is_success() {
-                let body=response.text().await?;
-                assert!(body.contains("\"type\":\"complete\"") && body.contains("Hello 世界"));
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Ok::<_,anyhow::Error>(())
-    }).await??;
+    // A streaming retry reattaches while active, then replays the settled response with the same ID.
+    for _ in 0..2 {
+        let response=http.post(&url).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
+        assert_eq!(response.status(),StatusCode::OK);
+        let body=tokio::time::timeout(Duration::from_secs(5),response.text()).await??;
+        assert!(body.contains("\"type\":\"complete\"") && body.contains("Hello 世界"));
+    }
     assert_eq!(state.db.balance(user)?,2);
     assert_eq!(state.db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM ledger WHERE delta=-1",[],|r|r.get::<_,i64>(0))?,1);
     server.abort();
@@ -57,9 +50,16 @@ pub(super) fn application() -> anyhow::Result<App> {
 async fn request(app: &Router, path: &str, token: Option<&str>, value: Value) -> anyhow::Result<(StatusCode,Value)> {
     let mut request = Request::builder().method("POST").uri(path).header(header::CONTENT_TYPE,"application/json");
     if let Some(token) = token { request=request.header(header::AUTHORIZATION,format!("Bearer {token}")); }
+    if path=="/v1/chat" { request=request.header(header::ACCEPT,"text/event-stream"); }
     let response=app.clone().oneshot(request.body(Body::from(value.to_string()))?).await?;
     let status=response.status();
-    Ok((status,serde_json::from_slice(&to_bytes(response.into_body(),256*1024).await?)?))
+    let streaming=response.headers().get(header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"text/event-stream"));
+    let bytes=to_bytes(response.into_body(),256*1024).await?;
+    if streaming {
+        let complete=std::str::from_utf8(&bytes)?.lines().filter_map(|line|line.strip_prefix("data: ")).map(serde_json::from_str::<Value>).collect::<std::result::Result<Vec<_>,_>>()?.into_iter().find(|event|event["type"]=="complete").ok_or_else(||anyhow::anyhow!("No completed chat event"))?;
+        return Ok((status,complete["response"].clone()));
+    }
+    Ok((status,serde_json::from_slice(&bytes)?))
 }
 
 /// Issuing a session consumes the device, and retrying a chat does not double-charge.

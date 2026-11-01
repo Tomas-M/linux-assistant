@@ -5,6 +5,9 @@ use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use crate::{App,ApiError,ApiResult,db::Db};
 
+#[cfg(test)]
+mod tests;
+
 const MAX_BYTES:usize=16_000;
 #[derive(Serialize)]
 pub struct Memory { pub text:String,pub revision:String }

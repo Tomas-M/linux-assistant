@@ -115,7 +115,7 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
 mod tests {
     use super::*;
 
-    use protocol::{AssistantReply, Message, Platform};
+    use protocol::{Message, Platform};
     use uuid::Uuid;
     use crate::db::{Db,Reservation};
 

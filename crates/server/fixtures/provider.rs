@@ -7,6 +7,7 @@ use serde_json::{json,Value};
 fn main() -> Result<()> {
     let home=PathBuf::from(std::env::var("CODEX_HOME")?);
     let mut held=HashMap::<String,(String,i64)>::new();
+    let mut memory_calls=HashMap::<String,(String,String)>::new();
     for line in io::stdin().lock().lines() {
         let request: Value=serde_json::from_str(&line?)?;
         let method=request["method"].as_str().unwrap_or_default();
@@ -17,6 +18,18 @@ fn main() -> Result<()> {
         let mut settings: Value=serde_json::from_slice(&fs::read(home.join("fixture.json"))?)?;
         if settings["rpc_error_method"]==method {
             println!("{}",json!({"id":request["id"],"error":{"code":-32000,"message":settings["error_message"],"data":{"codexErrorInfo":"unauthorized"}}}));
+            io::stdout().flush()?;
+            continue;
+        }
+        if let Some((thread,turn))=request["id"].as_str().and_then(|id|memory_calls.remove(id)) {
+            ensure!(request["result"]["success"]==true,"Memory tool failed: {request}");
+            let usage_path=home.join(format!("{thread}.usage.json"));
+            let mut usage:Value=fs::read(&usage_path).map(|bytes|serde_json::from_slice(&bytes).unwrap()).unwrap_or_else(|_|json!({"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0}));
+            for (field,delta) in [("inputTokens",100),("cachedInputTokens",20),("outputTokens",10),("reasoningOutputTokens",5),("totalTokens",110)] { usage[field]=json!(usage[field].as_i64().unwrap()+delta); }
+            fs::write(usage_path,serde_json::to_vec(&usage)?)?;
+            println!("{}",json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{"total":usage}}}));
+            println!("{}",json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"type":"agentMessage","text":json!({"text":"Task completed and memories saved"}).to_string()}}}));
+            println!("{}",json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed","error":null}}}));
             io::stdout().flush()?;
             continue;
         }
@@ -98,6 +111,15 @@ fn main() -> Result<()> {
             let thread=request["params"]["threadId"].as_str().unwrap();
             println!("{}",json!({"method":"turn/started","params":{"threadId":thread,"turn":{"id":turn_id,"status":"inProgress"}}}));
             io::stdout().flush()?;
+            if settings["memory_roundtrip"]==true {
+                let input:Value=serde_json::from_str(request["params"]["input"][0]["text"].as_str().unwrap())?;
+                let id=format!("memory-{turn_id}");
+                let text=settings["memory_text"].as_str().unwrap_or(input["messages"][0]["text"].as_str().unwrap());
+                memory_calls.insert(id.clone(),(thread.into(),turn_id.clone()));
+                println!("{}",json!({"id":id,"method":"item/tool/call","params":{"threadId":thread,"turnId":turn_id,"callId":id,"namespace":null,"tool":"memory_save","arguments":{"text":text,"revision":input["memory_revision"],"append":settings["memory_replace"]!=true}}}));
+                io::stdout().flush()?;
+                continue;
+            }
             if settings["hold"]==true && !request.to_string().contains("ADMIN_QUICK") {
                 if settings["fragment"]==true {
                     let event=json!({"method":"item/reasoning/summaryTextDelta","params":{"threadId":thread,"turnId":turn_id,"itemId":"fragment","summaryIndex":0,"delta":"Fragmented 世界"}}).to_string();

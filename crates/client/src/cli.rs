@@ -453,3 +453,24 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Loading/saving notes preserves the prompt; late responses after sign-out cannot repopulate private text.
+    #[test]
+    fn memories_preserve_prompt_and_clear_on_sign_out() {
+        let mut app=App::new("Assistant",json!({"state":{"authenticated":true}}));
+        app.input=Editor::new("Unsent prompt 世界");
+        app.completed(Completed { action:Action::Memories,result:Ok(json!({"text":"Remembered preference","revision":"1"})) });
+        assert_eq!(app.input.text,"Unsent prompt 世界");
+        assert_eq!(app.memories.text,"Remembered preference");
+        app.completed(Completed { action:Action::SaveMemories("Edited".into(),"1".into()),result:Ok(json!({"text":"Edited","revision":"2"})) });
+        assert_eq!(app.input.text,"Unsent prompt 世界");
+        assert_eq!(app.memory_document.as_ref().unwrap()["revision"],"2");
+        app.update(json!({"state":{"authenticated":false}}));
+        app.completed(Completed { action:Action::Memories,result:Ok(json!({"text":"Stale private response","revision":"3"})) });
+        assert!(app.memory_document.is_none()); assert!(app.memories.text.is_empty());
+    }
+}

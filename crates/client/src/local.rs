@@ -390,8 +390,9 @@ mod tests {
         let live=engine.live.clone();
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
+        let account=engine.account.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { account, downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -421,7 +422,7 @@ mod tests {
     }
     /// Account requests use current private saved authentication even while a task owns the engine lock.
     #[tokio::test]
-    async fn checkout_remains_available_during_a_task()->Result<()> {
+    async fn account_requests_remain_available_during_a_task()->Result<()> {
         let directory=tempfile::tempdir()?;
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
@@ -432,6 +433,13 @@ mod tests {
         })).route("/v1/purchases",get(|headers:axum::http::HeaderMap|async move {
             assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
             Json(json!({"purchases":[{"credits":100,"paid_at":123}]}))
+        })).route("/v1/memories",get(|headers:axum::http::HeaderMap|async move {
+            assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
+            Json(json!({"text":"Earlier result 世界","revision":"memory-1"}))
+        }).post(|headers:axum::http::HeaderMap,Json(input):Json<Value>|async move {
+            assert_eq!(headers[header::AUTHORIZATION],"Bearer checkout-fixture");
+            assert_eq!(input,json!({"text":"Updated result 世界","revision":"memory-1"}));
+            Json(json!({"text":input["text"],"revision":"memory-2"}))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let mut engine=Engine::open(directory.path(),&backend).await?;
@@ -443,6 +451,10 @@ mod tests {
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
         let result=purchases(State(local.clone())).await.map_err(|error|error.0)?;
         assert_eq!(result.0["purchases"][0]["credits"],100);
+        let result=tokio::time::timeout(Duration::from_secs(1),memories(State(local.clone()))).await?.map_err(|error|error.0)?;
+        assert_eq!(result.0,json!({"text":"Earlier result 世界","revision":"memory-1"}));
+        let result=tokio::time::timeout(Duration::from_secs(1),save_memories(State(local.clone()),Json(json!({"text":"Updated result 世界","revision":"memory-1"})))).await?.map_err(|error|error.0)?;
+        assert_eq!(result.0,json!({"text":"Updated result 世界","revision":"memory-2"}));
         server.abort();
         Ok(())
     }
