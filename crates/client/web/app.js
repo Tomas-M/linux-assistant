@@ -154,7 +154,8 @@ function render()
         if (message.role==='assistant') renderAnswer(text,message.text);
         else text.textContent=message.text;
         article.append(text);
-        for (const file of message.attachments || []) article.append(attachmentElement(file));
+        appendPromptAttachments(group,message.attachments);
+        article.hidden=message.role==='user' && !message.text.trim();
         group.append(article);
         if (message.role==='user')
         {
@@ -750,6 +751,13 @@ function clearPrompt()
     elements.prompt.style.height='auto';
 }
 
+// Keyboard steering and the visible queue share the same undispatched message order.
+function queuedPrompts()
+{
+    const dispatched=new Set(view.runs.map(run=>run.id));
+    return (view.queue || []).filter(input=>input.id!==startingId && !dispatched.has(input.id));
+}
+
 // The same composer sends, queues, steers, or interrupts according to the active task.
 function renderComposer()
 {
@@ -764,8 +772,7 @@ function renderComposer()
     }
     elements.prompt.disabled=!state.authenticated;
     elements.prompt.readOnly=queueAction || !!startingId;
-    const dispatched=new Set(view.runs.map(run=>run.id));
-    const queue=(view.queue || []).filter(input=>input.id!==startingId && !dispatched.has(input.id)), held=queue.find(input=>input.editing);
+    const queue=queuedPrompts(),held=queue.find(input=>input.editing);
     if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value && !draftAttachments.length)
     {
         editingId=held.id;
@@ -793,7 +800,8 @@ function renderComposer()
             const group=document.createElement('div'), message=document.createElement('article'), text=document.createElement('div');
             group.className='user-message'; message.className='user'; text.className='answer'; text.textContent=input.text;
             message.append(text);
-            for (const file of input.attachments || []) message.append(attachmentElement(file));
+            appendPromptAttachments(group,input.attachments);
+            message.hidden=!input.text.trim();
             const actions=document.createElement('div'), copy=document.createElement('button');
             actions.className='prompt-actions'; copy.className='icon-button copy-prompt'; copy.dataset.copySteering=input.id;
             copy.title='Copy message'; copy.setAttribute('aria-label','Copy message'); setIcon(copy,'copy');
@@ -839,6 +847,12 @@ async function submitPrompt(steer=false)
     focusPrompt();
     if (!text.trim() && !attachments.length)
     {
+        if (steer)
+        {
+            const first=queuedPrompts().find(input=>!input.editing);
+            if (first) await updateQueuedMessage(first.id,'steer');
+            return;
+        }
         if (view.busy) try { await api('interrupt',{}); } catch (error) { elements.status.textContent=error.message; }
         return;
     }
@@ -924,15 +938,20 @@ elements.prompt.addEventListener('keydown',event=>
     if (event.key==='Enter' && !event.shiftKey && !event.isComposing)
     {
         event.preventDefault();
-        if (elements.prompt.value.trim() || draftAttachments.length) submitPrompt(event.ctrlKey || event.metaKey);
+        const steer=event.ctrlKey || event.metaKey;
+        if (steer || elements.prompt.value.trim() || draftAttachments.length) submitPrompt(steer);
     }
 });
 elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(162,elements.prompt.scrollHeight)+'px'; renderComposer();});
-elements['queued-messages'].addEventListener('click',async event=>
+// Queue buttons and Ctrl+Enter use the same serialized edit, remove and steer operations.
+async function updateQueuedMessage(id,action)
 {
-    const button=event.target.closest('[data-action]');
-    if (!button || queueAction || button.disabled) return;
-    const {id,action}=button.dataset;
+    if (queueAction || startingId) return;
+    if (action==='steer')
+    {
+        if (state.account?.credits<=0) { elements.status.textContent='Add credits to steer the conversation.'; return; }
+        if (!view.can_steer) { elements.status.textContent='No AI turn is accepting steering.'; return; }
+    }
     if (action==='edit' && (elements.prompt.value || draftAttachments.length || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
     queueAction=true;
     renderComposer(); focusPrompt();
@@ -943,6 +962,11 @@ elements['queued-messages'].addEventListener('click',async event=>
     }
     catch (error) { elements.status.textContent=error.message; }
     finally { queueAction=false; renderComposer(); focusPrompt(); }
+}
+elements['queued-messages'].addEventListener('click',event=>
+{
+    const button=event.target.closest('[data-action]');
+    if (button && !button.disabled) updateQueuedMessage(button.dataset.id,button.dataset.action);
 });
 elements['cancel-edit'].addEventListener('click',async()=>
 {

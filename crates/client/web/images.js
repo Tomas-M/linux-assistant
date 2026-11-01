@@ -14,6 +14,14 @@ function attachmentElement(file)
     caption.textContent=file.name; button.append(image,caption); return button;
 }
 
+// Sent attachments sit above the prompt bubble in both committed and live steering messages.
+function appendPromptAttachments(container,files)
+{
+    if (!files?.length) return;
+    const gallery=document.createElement('div'); gallery.className='message-attachments';
+    gallery.append(...files.map(attachmentElement)); container.append(gallery);
+}
+
 // Reuse previews across token updates so their image requests and keyboard focus stay stable.
 function renderImageGallery(container,images)
 {
