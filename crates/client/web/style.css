@@ -102,6 +102,14 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 @keyframes pulse { 50% { opacity:.35; } }
 #scroll-bottom { position:fixed; left:50%; bottom:calc(var(--composer-height) + 0.75rem); transform:translateX(-50%); z-index:3; display:grid; place-items:center; width:2.5rem; height:2.5rem; padding:0; border-radius:50%; box-shadow:var(--shadow); }
 #scroll-bottom[data-icon=send] svg { transform:rotate(180deg); }
+/* Separate loading dots keep the bounce staggered without restarting on streamed updates. */
+.scroll-dots { display:flex; align-items:center; gap:0.1875rem; }
+.scroll-dots>span { width:0.25rem; height:0.25rem; border-radius:50%; background:currentColor; animation:scroll-dot-bounce 1.2s ease-in-out infinite; }
+.scroll-dots>span:nth-child(2) { animation-delay:0.15s; }
+.scroll-dots>span:nth-child(3) { animation-delay:0.3s; }
+#scroll-bottom[data-icon=send] .scroll-dots,#scroll-bottom[data-icon=ellipsis] svg { display:none; }
+@keyframes scroll-dot-bounce { 0%,40%,100% { transform:translateY(0); } 20% { transform:translateY(-0.25rem); } }
+
 .composer-wrap { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:min(53.125rem,100%); padding:1.625rem 1.75rem 1.625rem; background:linear-gradient(transparent,var(--bg) 15%); z-index:2; }
 .composer { position:relative; z-index:1; border:0.0625rem solid var(--border); box-shadow:0 0.125rem 0.3125rem #00000006,0 0.5rem 1.5rem #00000005; border-radius:1.75rem; background:var(--card); padding:1rem 1.125rem 0.875rem; outline:none; }
 textarea { display:block; width:100%; border:0; background:transparent; outline:none; resize:none; min-height:4rem; max-height:11.25rem; line-height:1.6; padding:0 0.125rem; }

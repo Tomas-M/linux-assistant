@@ -374,7 +374,7 @@ elements.workspace.addEventListener('click',async event=>
 function renderScrollButton()
 {
     const button=elements['scroll-bottom'];
-    setIcon(button,view.busy && !button.matches(':hover,:focus-visible')?'ellipsis':'send');
+    button.dataset.icon=view.busy && !button.matches(':hover,:focus-visible')?'ellipsis':'send';
     button.hidden=!state?.authenticated || document.body.classList.contains('empty-chat') || document.documentElement.scrollHeight-window.scrollY-window.innerHeight<=4;
 }
 
