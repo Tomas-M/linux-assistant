@@ -3,11 +3,11 @@ use ratatui::{Frame,layout::{Rect,Position},style::{Style,Color,Modifier},text::
 use editor::clean;
 
 #[derive(Clone,Copy,PartialEq)]
-pub(super) enum Screen { Chat,Email,Code,Account,Help,Detail }
+pub(super) enum Screen { Chat,Email,Code,Account,Help,Detail,Memories }
 #[derive(Clone,Copy,PartialEq)]
 pub(super) enum Focus { Prompt,Tasks,Queue }
 #[derive(Clone)]
-pub(super) enum Hit { Tasks,Access,Account,New,Stop,Prompt,Task(usize),Detail,StopProcess(usize),Choice(String),Custom,Queue(usize),Buy(String),Refresh,Logout,Back }
+pub(super) enum Hit { Memories,SaveMemories,ReloadMemories,Tasks,Access,Account,New,Stop,Prompt,Task(usize),Detail,StopProcess(usize),Choice(String),Custom,Queue(usize),Buy(String),Refresh,Logout,Back }
 
 /// Neutral terminal colors remain readable without depending on the emulator's palette.
 fn dim()->Style { Style::default().fg(Color::Gray) }
@@ -61,7 +61,7 @@ impl App {
         let top=Rect::new(1,0,size.width-2,2);
         frame.render_widget(Block::default().borders(Borders::BOTTOM).border_style(dim()),top);
         let brand=if size.width>=110 { format!("{} · {} · {}",self.name,self.view["state"]["platform"].as_str().unwrap_or_default(),self.view["state"]["shell"].as_str().unwrap_or_default()) } else { self.name.clone() };
-        label(frame,Rect::new(2,0,size.width.saturating_sub(40),1),brand,Style::default().add_modifier(Modifier::BOLD));
+        label(frame,Rect::new(2,0,size.width.saturating_sub(if self.authenticated() && size.width>=100 { 61 } else { 40 }),1),brand,Style::default().add_modifier(Modifier::BOLD));
         let balance=self.view["state"]["account"]["credits"].as_i64().map(|v|format!("{v} credits")).unwrap_or_else(||"Sign in".into());
         let count=self.tasks.iter().filter(|task|task["finished_at"].is_null()).count();
         let title=if count>0 { format!("Tasks {count}") } else { "Tasks".into() };
@@ -71,13 +71,15 @@ impl App {
         if self.authenticated() && size.width>=65 {
             self.button(frame,Rect::new(right-12,0,10,1),&title,Hit::Tasks,self.focus==Focus::Tasks);
             self.button(frame,Rect::new(right-24,0,10,1),"New chat",Hit::New,false);
+            if size.width>=100 { self.button(frame,Rect::new(right-35,0,10,1),"Memories",Hit::Memories,self.screen==Screen::Memories); }
         }
         let footer=Rect::new(1,size.height-1,size.width-2,1);
         let access=if client.full_access.load(Ordering::SeqCst) { "[x] Full access" } else { "[ ] Full access" };
         self.button(frame,Rect::new(1,footer.y,15,1),access,Hit::Access,false);
-        let hints=if size.width>=105 { "Enter send · Ctrl+Enter steer · F2 Tasks · F3 Access · F6 Credits · F1 Help" }
-            else if size.width>=75 { "Enter send · F5 steer · F2 Tasks · F3 Access · F1 Help" }
-            else { "F1 Help · F2 Tasks" };
+        let hints=if size.width>=120 { "Enter send · Ctrl+Enter steer · F2 Tasks · F3 Access · F6 Credits · F10 Memories · F1 Help" }
+            else if size.width>=95 { "Enter send · F5 steer · F2 Tasks · F3 Access · F10 Memories · F1 Help" }
+            else if size.width>=75 { "Enter send · F2 Tasks · F10 Memories · F1 Help" }
+            else { "F1 Help · F10 Memories" };
         label(frame,Rect::new(17,footer.y,size.width.saturating_sub(18),1),format!("· {hints}"),dim());
         let connection=self.view["connections"].as_object().and_then(|map|map.values().next()).map(|v|format!("Connecting to backend · attempt {}/5",v["attempt"]));
         let status=if !self.status.is_empty() { self.status.clone() } else if let Some(connection)=connection { connection } else if self.pending { "Please wait…".into() } else { self.view["error"].as_str().unwrap_or_default().into() };
@@ -85,6 +87,7 @@ impl App {
         if !status.is_empty() { label(frame,Rect::new(2,body.bottom()-1,body.width-2,1),status,dim()); body.height-=1; }
         match self.screen {
             Screen::Email|Screen::Code=>self.login_view(frame,body),
+            Screen::Memories=>self.memories_view(frame,body),
             Screen::Help=>self.help_view(frame,body),
             Screen::Account=>self.account_view(frame,body),
             Screen::Detail=>self.detail_view(frame,body,client),
@@ -279,9 +282,19 @@ impl App {
         self.button(frame,Rect::new(body.x+2,body.bottom()-2,20,1),"L Sign out",Hit::Logout,false);
         self.button(frame,Rect::new(body.x+2,body.bottom()-1,20,1),"Esc Back",Hit::Back,false);
     }
-    /// Explain terminal-specific fallback keys where older emulators cannot distinguish Ctrl+Enter.
+    /// A separate editor preserves the prompt draft and follows the cursor through terminal resizes.
+    fn memories_view(&mut self,frame:&mut Frame,body:Rect) {
+        label(frame,Rect::new(body.x+1,body.y+1,body.width-2,1),"Memories",Style::default().add_modifier(Modifier::BOLD));
+        label(frame,Rect::new(body.x+1,body.y+2,body.width-2,1),"Remembered preferences and useful results from previous tasks",dim());
+        edit(frame,Rect::new(body.x+1,body.y+4,body.width-2,body.height.saturating_sub(6)),&self.memories,false,self.memory_document.is_some(),self.pending);
+        self.button(frame,Rect::new(body.x+1,body.bottom()-1,17,1),"Ctrl+S Save",Hit::SaveMemories,false);
+        if body.width>=42 { self.button(frame,Rect::new(body.x+20,body.bottom()-1,18,1),"Ctrl+R Reload",Hit::ReloadMemories,false); }
+        if body.width>=62 { self.button(frame,Rect::new(body.x+40,body.bottom()-1,20,1),"Esc / F10 Back",Hit::Back,false); }
+    }
+
+    /// List actions available in narrow terminals as well as the full workspace layout.
     fn help_view(&mut self,frame:&mut Frame,body:Rect) {
-        let text="Keyboard shortcuts\n\nEnter              Send / queue / answer\nCtrl+Enter / F5     Steer draft, or first queued prompt\nShift/Alt+Enter     New line (Alt+Enter works in older terminals)\nF2                 Toggle Tasks\nF3                 Toggle Full access\nF4                 New chat\nF6                 Account & credits\nF7                 Retry unfinished request\nF8                 Stop selected process\nF9                 Show / hide completed steps\nTab                Prompt / Tasks / queue; custom question answer\nPage Up/Down       Scroll transcript; End jumps to latest\nEsc                Back; stop running conversation\nCtrl+C             Quit (stops the running conversation)\n\nQueue: ↑↓ select, E edit, Delete remove, F5 steer\nTasks: ↑↓ select, Enter details, F8 Stop\nQuestions: number or click an option; Tab for a custom answer\nMouse wheel        Scroll history or command output\n/attach PATH       Attach original image or UTF-8 file\n/clear-attachments Remove pending attachments\n\nEsc returns to your conversation";
+        let text="Keyboard shortcuts\n\nEnter              Send / queue / answer\nCtrl+Enter / F5     Steer draft, or first queued prompt\nShift/Alt+Enter     New line (Alt+Enter works in older terminals)\nF2                 Toggle Tasks\nF3                 Toggle Full access\nF4                 New chat\nF6                 Account & credits\nF7                 Retry unfinished request\nF8                 Stop selected process\nF9                 Show / hide completed steps\nF10                Open / close Memories\nCtrl+S / Ctrl+R    Save / reload in Memories\nTab                Prompt / Tasks / queue; custom question answer\nPage Up/Down       Scroll transcript; End jumps to latest\nEsc                Back; stop running conversation\nCtrl+C             Quit (stops the running conversation)\n\nQueue: ↑↓ select, E edit, Delete remove, F5 steer\nTasks: ↑↓ select, Enter details, F8 Stop\nQuestions: number or click an option; Tab for a custom answer\nMouse wheel        Scroll history or command output\n/attach PATH       Attach original image or UTF-8 file\n/clear-attachments Remove pending attachments\n\nEsc returns to your conversation";
         paragraph(frame,body,text.lines().map(|line|Line::from(line.to_owned())).collect(),self.detail_scroll);
     }
 }

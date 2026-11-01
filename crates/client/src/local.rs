@@ -151,7 +151,7 @@ fn router(state: Local) -> Router {
         .route("/api/login/poll",post(social_poll)).route("/api/login/cancel",post(social_cancel))
         .route("/api/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/steer",post(steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/api/interrupt",post(interrupt)).route("/api/queue/{id}/remove",post(remove_queued)).route("/api/retry",post(retry)).route("/api/new",post(new_chat))
         .route("/api/queue/{id}/edit",post(edit_queued)).route("/api/queue/{id}/steer",post(steer_queued))
-        .route("/api/respond",post(respond)).route("/api/credit-packs",get(credit_packs)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/purchases/{id}",get(purchase_status)).route("/api/stop",post(stop))
+        .route("/api/memories",get(memories).post(save_memories)).route("/api/respond",post(respond)).route("/api/credit-packs",get(credit_packs)).route("/api/checkout",post(checkout)).route("/api/purchases",get(purchases)).route("/api/purchases/{id}",get(purchase_status)).route("/api/stop",post(stop))
         .route("/api/processes",get(process_list)).route("/api/processes/{id}",get(process_detail))
         .route("/api/processes/{id}/stop",post(process_stop))
         .layer(DefaultBodyLimit::max(128*1024)).layer(middleware::from_fn_with_state(state.clone(),security)).with_state(state)
@@ -364,6 +364,11 @@ async fn purchase_status(State(state):State<Local>,axum::extract::Path(id):axum:
     if id.len()!=64 || !id.bytes().all(|byte|byte.is_ascii_hexdigit()) { return Err(anyhow::anyhow!("Invalid purchase reference").into()); }
     account_request(&state,reqwest::Method::GET,&format!("/v1/purchases/{id}"),None).await
 }
+/// Memories remain available while the conversation owns the engine lock.
+async fn memories(State(state):State<Local>)->LocalResult { account_request(&state,reqwest::Method::GET,"/v1/memories",None).await }
+/// Forward the user's revision so concurrent assistant writes cannot overwrite a draft silently.
+async fn save_memories(State(state):State<Local>,Json(input):Json<Value>)->LocalResult { account_request(&state,reqwest::Method::POST,"/v1/memories",Some(input)).await }
+
 /// Forward account requests with durable authentication without exposing the token to the browser.
 async fn account_request(state:&Local,method:reqwest::Method,path:&str,body:Option<Value>)->LocalResult {
     Ok(Json(crate::session::account(&state.session_path,&state.live,method,path,body).await?))

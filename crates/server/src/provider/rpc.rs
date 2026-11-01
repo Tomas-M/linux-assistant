@@ -137,6 +137,8 @@ impl Rpc {
             instructions.push_str("\n\nAssistant context supplied by the operator:\n");
             instructions.push_str(context);
         }
+        let memories=user.map(|user|crate::memories::read(attempt.db,user)).transpose()?;
+        if memories.is_some() { instructions.push_str(crate::memories::INSTRUCTIONS); }
         let mut schema=protocol::reply_schema();
         if checkpoint {
             schema["required"].as_array_mut().unwrap().push(json!("checkpoint"));
@@ -150,8 +152,10 @@ impl Rpc {
                 id.to_owned()
             }
             None => {
+                let mut tools=if user.is_some() { protocol::tool_specs() } else { vec![] };
+                if user.is_some() { tools.extend(crate::memories::specs()); }
                 let response = self.call("thread/start",json!({"model":config.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],
-                    "sandbox":"read-only","approvalPolicy":"never","baseInstructions":instructions,"serviceName":"linux_assistant","dynamicTools":if attempt.purpose=="admin_test" { vec![] } else { protocol::tool_specs() }})).await?;
+                    "sandbox":"read-only","approvalPolicy":"never","baseInstructions":instructions,"serviceName":"linux_assistant","dynamicTools":tools})).await?;
                 if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
                 response["thread"]["id"].as_str().context("Provider did not return a thread ID")?.to_owned()
             }
@@ -159,6 +163,7 @@ impl Rpc {
         let messages = protocol::display_messages(&request.messages);
         let input = serde_json::to_string(&json!({"platform":request.platform,"shell":request.platform.shell(),
             "commands_enabled":request.commands_enabled,"cwd":request.cwd,"messages":messages,
+            "memory_revision":memories.as_ref().map(|memory|&memory.revision),"memories":if thread.is_none() { memories.as_ref() } else { None },
             "recovery_checkpoint_requested":checkpoint,"recovery":if thread.is_none() { recovery.clone() } else if recovery["local_operations"]["operations"].as_array().is_some_and(|operations|!operations.is_empty()) { json!({"local_operations":recovery["local_operations"]}) } else { Value::Null }}))?;
         let mut baseline=if thread.is_none() {
             json!({"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0})
@@ -237,6 +242,10 @@ impl Rpc {
             }
             if interrupted.is_none() {
                 if event.get("id").is_some() {
+                    if let Some(result)=crate::memories::tool(&event,attempt.db,user) {
+                        self.transport.respond(&thread_id,self.owner,event["id"].clone(),result)?;
+                        continue;
+                    }
                     if let Err(error)=requests.receive(&event,request.commands_enabled,reporter,attempt.db,user,request.request_id) {
                         if error.downcast_ref::<super::interactions::InvalidRequest>().is_none() { return Err(error); }
                         let message=if event["method"]=="item/tool/call" { format!("Local tool request rejected: {error}. Correct the arguments or respect the local access setting.") } else { format!("Question request rejected: {error}. Ask a valid, short question.") };

@@ -14,13 +14,13 @@ use view::{Screen,Focus,Hit};
 #[derive(Clone)]
 struct Client { engine:Arc<Mutex<Engine>>,controls:Arc<Controls>,processes:Processes,live:Live,full_access:Arc<AtomicBool>,path:PathBuf }
 #[derive(Clone)]
-enum Action { Login(String),Verify(String),Submit(Queued,bool),Steer(Uuid),Stop,New,Retry,Account,Refresh,Buy(String),Logout,Edit(Uuid),Remove(Uuid),Attach(String) }
+enum Action { Memories,SaveMemories(String,String),Login(String),Verify(String),Submit(Queued,bool),Steer(Uuid),Stop,New,Retry,Account,Refresh,Buy(String),Logout,Edit(Uuid),Remove(Uuid),Attach(String) }
 struct Completed { action:Action,result:Result<Value> }
 struct App {
     name:String,screen:Screen,focus:Focus,input:Editor,answer:Editor,view:Value,tasks:Vec<Value>,tasks_open:bool,
     task:usize,queue:usize,scroll:Option<usize>,chat_bottom:usize,detail_scroll:usize,detail:Option<Uuid>,pending:bool,status:String,expanded:bool,confirmed:bool,
     email:String,editing:Option<Uuid>,attachments:Option<Vec<protocol::Attachment>>,question:Option<Uuid>,answers:HashMap<String,Vec<String>>,choice:usize,custom:bool,
-    packs:Vec<Value>,purchases:Vec<Value>,hits:Vec<(ratatui::layout::Rect,Hit)>,chat_area:ratatui::layout::Rect,
+    memories:Editor,memory_document:Option<Value>,packs:Vec<Value>,purchases:Vec<Value>,hits:Vec<(ratatui::layout::Rect,Hit)>,chat_area:ratatui::layout::Rect,
 }
 
 /// Own the assistant directly; terminal mode never binds a port or starts a browser service.
@@ -90,6 +90,8 @@ impl Client {
     /// Execute UI operations without blocking rendering or the terminal's input stream.
     async fn action(&self,action:&Action)->Result<Value> {
         match action {
+            Action::Memories=>return crate::session::account(&self.path,&self.live,reqwest::Method::GET,"/v1/memories",None).await,
+            Action::SaveMemories(text,revision)=>return crate::session::account(&self.path,&self.live,reqwest::Method::POST,"/v1/memories",Some(json!({"text":text,"revision":revision}))).await,
             Action::Login(email)=>return Ok(serde_json::to_value(self.engine.try_lock()?.login(email.clone()).await?)?),
             Action::Verify(code)=>return self.engine.try_lock()?.verify_login(code.clone()).await,
             Action::Submit(input,steer)=> {
@@ -145,7 +147,7 @@ impl App {
     /// Start at email sign-in or the durable chat, without changing saved history.
     fn new(name:&str,view:Value)->Self {
         let screen=if view["state"]["authenticated"]==true { Screen::Chat } else { Screen::Email };
-        Self { name:name.into(),screen,focus:Focus::Prompt,input:Editor::default(),answer:Editor::default(),view,tasks:vec![],tasks_open:true,task:0,queue:0,scroll:None,chat_bottom:0,detail_scroll:0,detail:None,pending:false,status:String::new(),expanded:false,confirmed:false,email:String::new(),editing:None,attachments:None,question:None,answers:HashMap::new(),choice:0,custom:false,packs:vec![],purchases:vec![],hits:vec![],chat_area:ratatui::layout::Rect::default() }
+        Self { name:name.into(),screen,focus:Focus::Prompt,input:Editor::default(),answer:Editor::default(),view,tasks:vec![],tasks_open:true,task:0,queue:0,scroll:None,chat_bottom:0,detail_scroll:0,detail:None,pending:false,status:String::new(),expanded:false,confirmed:false,email:String::new(),editing:None,attachments:None,question:None,answers:HashMap::new(),choice:0,custom:false,memories:Editor::default(),memory_document:None,packs:vec![],purchases:vec![],hits:vec![],chat_area:ratatui::layout::Rect::default() }
     }
     /// Authentication comes from the engine, never from terminal display modes.
     fn authenticated(&self)->bool { self.view["state"]["authenticated"]==true }
@@ -162,6 +164,11 @@ impl App {
         self.pending=false;
         let value=match done.result { Ok(value)=>value,Err(error)=> { self.status=error.to_string(); return; } };
         match done.action {
+            Action::Memories|Action::SaveMemories(_,_)=> {
+                if !self.authenticated() { return; }
+                self.memories=Editor::new(value["text"].as_str().unwrap()); self.memory_document=Some(value);
+                if matches!(done.action,Action::SaveMemories(_, _)) { self.status="Memories saved".into(); }
+            }
             Action::Login(email)=> {
                 self.email=email; self.input=Editor::default(); self.screen=Screen::Code;
                 if let Some(code)=value["development_code"].as_str() { self.status=format!("Development sign-in code: {code}"); }
@@ -171,7 +178,7 @@ impl App {
             Action::New=> { self.input=Editor::default(); self.attachments=None; self.editing=None; self.scroll=None; self.screen=Screen::Chat; self.focus=Focus::Prompt; }
             Action::Account=> { self.packs=value["packs"].as_array().cloned().unwrap_or_default(); self.purchases=value["purchases"].as_array().cloned().unwrap_or_default(); }
             Action::Buy(_)=>self.status="Checkout opened in your browser. Press R after paying to refresh your balance.".into(),
-            Action::Logout=> { self.screen=Screen::Email; self.input=Editor::default(); self.packs.clear(); self.purchases.clear(); }
+            Action::Logout=> { self.memories=Editor::default(); self.memory_document=None; self.screen=Screen::Email; self.input=Editor::default(); self.packs.clear(); self.purchases.clear(); }
             Action::Edit(id)=> {
                 self.input=Editor::new(value["text"].as_str().unwrap_or_default()); self.editing=Some(id);
                 self.attachments=serde_json::from_value(value["attachments"].clone()).unwrap_or(None); self.focus=Focus::Prompt;
@@ -182,7 +189,7 @@ impl App {
     }
     /// Retain input focus while new public progress, approvals and question batches arrive.
     fn update(&mut self,view:Value) {
-        if self.authenticated() && view["state"]["authenticated"]!=true { self.screen=Screen::Email; self.input=Editor::default(); }
+        if self.authenticated() && view["state"]["authenticated"]!=true { self.screen=Screen::Email; self.input=Editor::default(); self.memories=Editor::default(); self.memory_document=None; }
         self.view=view;
         let id=self.view["interactions"].as_array().and_then(|items|items.first()).and_then(|item|item["id"].as_str()).and_then(|id|id.parse().ok());
         if self.question!=id { self.question=id; self.answers.clear(); self.answer=Editor::default(); self.choice=0; self.custom=false; }
@@ -270,7 +277,8 @@ impl App {
             if self.screen==Screen::Code {
                 self.input.insert(&text.chars().filter(char::is_ascii_digit).collect::<String>());
                 if self.input.text.len()==6 { self.submit(client,send,false)?; }
-            } else if self.screen==Screen::Chat && self.question.is_some() {
+            } else if self.screen==Screen::Memories { self.memories.insert(&text); }
+            else if self.screen==Screen::Chat && self.question.is_some() {
                 self.custom=true; self.answer.insert(&text);
             } else if matches!(self.screen,Screen::Chat|Screen::Email) { self.input.insert(&text); }
             return Ok(());
@@ -286,11 +294,12 @@ impl App {
             KeyCode::F(6) if self.authenticated()=> { self.hit(Hit::Account,client,send)?; return Ok(()); }
             KeyCode::F(7) if self.authenticated() && self.view["busy"]!=true=> { self.dispatch(client,send,Action::Retry); return Ok(()); }
             KeyCode::F(8) if self.authenticated()=> { self.hit(Hit::StopProcess(self.task),client,send)?; return Ok(()); }
+            KeyCode::F(10) if self.authenticated()=> { self.hit(Hit::Memories,client,send)?; return Ok(()); }
             KeyCode::F(9)=> { self.expanded=!self.expanded; return Ok(()); }
             KeyCode::Esc=> {
                 self.status.clear();
                 if self.screen==Screen::Code { self.screen=Screen::Email; self.input=Editor::new(&self.email); }
-                else if matches!(self.screen,Screen::Help|Screen::Detail|Screen::Account) { self.screen=if self.authenticated() { Screen::Chat } else { Screen::Email }; self.focus=Focus::Prompt; }
+                else if matches!(self.screen,Screen::Help|Screen::Detail|Screen::Account|Screen::Memories) { self.screen=if self.authenticated() { Screen::Chat } else { Screen::Email }; self.focus=Focus::Prompt; }
                 else if self.focus!=Focus::Prompt { self.focus=Focus::Prompt; }
                 else if self.editing.is_some() {
                     let id=self.editing.take().unwrap();
@@ -301,6 +310,16 @@ impl App {
             KeyCode::PageUp=> { self.scroll_by(10); return Ok(()); }
             KeyCode::PageDown=> { self.scroll_by(-10); return Ok(()); }
             _=>{}
+        }
+        if self.screen==Screen::Memories {
+            if self.pending { return Ok(()); }
+            match key.code {
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL)=>self.hit(Hit::SaveMemories,client,send)?,
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL)=>self.dispatch(client,send,Action::Memories),
+                KeyCode::Enter=>self.memories.insert("\n"),
+                _=>self.memories.key(key),
+            }
+            return Ok(());
         }
         if self.screen==Screen::Account {
             match key.code {
@@ -399,6 +418,20 @@ impl App {
     /// Mouse targets use the same guards as keyboard shortcuts and never change Full access implicitly.
     fn hit(&mut self,hit:Hit,client:&Client,send:&mpsc::UnboundedSender<Completed>)->Result<()> {
         match hit {
+            Hit::Memories if self.authenticated()=> {
+                if self.screen==Screen::Memories { self.screen=Screen::Chat; self.focus=Focus::Prompt; }
+                else {
+                    self.screen=Screen::Memories;
+                    if self.memory_document.as_ref().is_some_and(|memory|memory["text"].as_str()!=Some(self.memories.text.as_str())) { return Ok(()); }
+                    self.dispatch(client,send,Action::Memories);
+                }
+            }
+            Hit::SaveMemories=> {
+                ensure!(self.memories.text.len()<=16000,"Keep memories below 16000 UTF-8 bytes");
+                let revision=self.memory_document.as_ref().and_then(|memory|memory["revision"].as_str()).context("Load memories before saving")?;
+                self.dispatch(client,send,Action::SaveMemories(self.memories.text.clone(),revision.into()));
+            }
+            Hit::ReloadMemories=>self.dispatch(client,send,Action::Memories),
             Hit::Tasks=> { self.tasks_open=!self.tasks_open || self.focus!=Focus::Tasks; self.focus=if self.tasks_open { Focus::Tasks } else { Focus::Prompt }; self.screen=Screen::Chat; }
             Hit::Access=>self.access(client)?,
             Hit::Account if self.authenticated()=> { self.screen=Screen::Account; self.dispatch(client,send,Action::Account); }

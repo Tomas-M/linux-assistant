@@ -74,7 +74,10 @@ function renderWork(row,parts,active)
         const files=actions.some(part=>['local_read_file','local_list_directory','local_search_files','local_get_metadata'].includes(part.data?.tool));
         const images=actions.some(part=>part.data?.tool==='local_view_image');
         const modified=actions.some(part=>['local_create_directory','local_copy_path','local_move_path','local_remove_path','local_create_symlink','local_set_permissions'].includes(part.data?.tool) && view.tool_results[part.id]?.success);
-        label=[changes.length?'Edited files':modified?'Updated files':files?'Read files':'',images?'viewed images':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':''].filter(Boolean).join(', ');
+        let memoryLabel='';
+        if (actions.some(part=>part.data?.tool==='memory_save')) memoryLabel='updated memories';
+        else if (actions.some(part=>part.data?.tool==='memory_read')) memoryLabel='read memories';
+        label=[changes.length?'Edited files':modified?'Updated files':files?'Read files':'',images?'viewed images':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':'',memoryLabel].filter(Boolean).join(', ');
         label=label?label[0].toUpperCase()+label.slice(1):'Completed actions';
     }
     const title=progressTitle(parts) || label;
@@ -86,6 +89,7 @@ function renderWork(row,parts,active)
     if (changes.length) groupIcon='edit';
     else if (hasCommands) groupIcon='terminal';
     else if (actions.some(part=>part.kind==='web_search')) groupIcon='external';
+    else if (actions.some(part=>['memory_read','memory_save'].includes(part.data?.tool))) groupIcon='layer-group';
     const use=icon.querySelector('use');
     if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
     icon.classList.toggle('list-icon',groupIcon==='list-ul');
@@ -121,7 +125,8 @@ function renderWork(row,parts,active)
         const command=part.data?.tool==='local_exec_command';
         const running=latest?.running ?? !last.completed;
         const caption=command?(running?'Running ':'Ran ')+args.cmd:part.text;
-        const toolIcon=part.kind==='web_search'?'external':command || args.session_id?'terminal':(result?.changes || []).length?'edit':'list-ul';
+        let toolIcon=part.kind==='web_search'?'external':command || args.session_id?'terminal':(result?.changes || []).length?'edit':'list-ul';
+        if (['memory_read','memory_save'].includes(part.data?.tool)) toolIcon='layer-group';
         // The first native item stays stable when the local session ID arrives later.
         const key=session.first, process=result?.session_id || args.session_id;
         present.add(key); updateAction(row,key,toolIcon,caption,output || JSON.stringify(part.data?.action || args,null,2),process);

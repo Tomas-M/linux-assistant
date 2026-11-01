@@ -15,6 +15,7 @@ mod usage;
 mod billing;
 mod turns;
 mod storage;
+mod memories;
 #[cfg(test)]
 mod tests;
 
@@ -145,7 +146,7 @@ fn router(app: App) -> Router {
         .route("/v1/auth/providers",get(auth::social::providers)).route("/v1/auth/cancel",post(auth::social::cancel))
         .route("/auth/{provider}/{device}",get(auth::social::begin)).route("/auth/{provider}/callback",get(auth::social::callback))
         .route("/auth/complete.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("auth/complete.js")) }))
-        .route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
+        .route("/v1/memories",get(memories::get).post(memories::set)).route("/v1/me",get(me)).route("/v1/logout",post(logout)).route("/v1/chat",post(chat).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/chat/{id}/steer",post(turns::steer).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES))).route("/v1/chat/{id}/stop",post(turns::stop)).route("/v1/chat/{id}/respond",post(turns::respond).layer(DefaultBodyLimit::max(protocol::MAX_UPLOAD_BYTES)))
         .route("/v1/credit-packs",get(payments::packs)).route("/v1/checkout",post(payments::checkout)).route("/v1/purchases",get(payments::purchases)).route("/webhooks/stripe",post(payments::webhook))
         .route("/v1/purchases/{id}",get(payments::purchase)).route("/payment/status/{id}",get(payments::receipt_status))

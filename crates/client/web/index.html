@@ -26,6 +26,7 @@
         <nav aria-label="Workspace">
             <button id="new" class="quiet" aria-label="New chat"><svg aria-hidden="true"><use href="#icon-plus"/></svg><span>New chat</span></button>
             <button id="process-toggle" class="quiet" type="button" aria-controls="process-panel" aria-expanded="false" aria-label="Tasks" hidden><span class="task-menu-icon"><svg aria-hidden="true"><use href="#icon-terminal"/></svg><span id="tasks-running" class="task-indicator" aria-hidden="true" hidden></span></span><span class="task-label">Tasks</span><span id="process-count" hidden></span></button>
+            <button id="memories-toggle" class="quiet" type="button" aria-controls="memories-panel" aria-expanded="false" aria-label="Memories" hidden><svg aria-hidden="true"><use href="#icon-layer-group"/></svg><span>Memories</span></button>
             <button id="theme" class="icon-button" aria-label="Switch to dark mode" title="Switch theme"><svg aria-hidden="true"><use href="#icon-moon"/></svg></button>
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
         </nav>
@@ -141,6 +142,16 @@
             <p id="settings-status" role="status" aria-live="polite"></p>
         </div>
     </dialog>
+    <aside id="memories-panel" aria-label="Memories" hidden>
+        <div id="memories-resize" role="separator" tabindex="0" aria-label="Resize Memories panel" aria-orientation="vertical"></div>
+        <header class="process-heading"><div><span class="eyebrow">YOUR ACCOUNT</span><h2>Memories</h2></div><button id="memories-close" class="icon-button" aria-label="Close memories"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+        <div class="memories-content">
+            <p class="muted">Preferences and useful results remembered across chats. You and your assistant can update these notes.</p>
+            <textarea id="memories-text" aria-label="Edit memories" spellcheck="false" placeholder="Useful things to remember…" disabled></textarea>
+            <p id="memories-status" role="status" aria-live="polite"></p>
+            <div class="button-row"><button id="memories-reload" type="button">Reload</button><button id="memories-save" type="button" class="primary" disabled>Save</button></div>
+        </div>
+    </aside>
     <aside id="process-panel" aria-label="Task manager" hidden>
         <div id="process-resize" role="separator" tabindex="0" aria-label="Resize Tasks panel" aria-orientation="vertical"></div>
         <header class="process-heading"><div><span class="eyebrow">ON YOUR COMPUTER</span><h2>Task manager</h2></div><button id="process-close" class="icon-button" aria-label="Close task manager"><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>

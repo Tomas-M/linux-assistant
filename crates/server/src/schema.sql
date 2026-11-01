@@ -40,3 +40,5 @@ CREATE TABLE IF NOT EXISTS provider_counters(thread_id TEXT PRIMARY KEY,counters
 
 CREATE INDEX IF NOT EXISTS requests_history ON requests(user_id,conversation_id);
 CREATE INDEX IF NOT EXISTS billing_tasks_history ON billing_tasks(user_id,conversation_id,finished_at);
+
+CREATE TABLE IF NOT EXISTS user_memories(user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,text TEXT NOT NULL,revision TEXT NOT NULL);

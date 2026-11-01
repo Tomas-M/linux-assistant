@@ -195,6 +195,14 @@ Each conversation stays on its assigned account and persistent provider thread. 
 
 An account can change when the operator pauses it, removes it from configuration, a preflight usage snapshot reports exhaustion, or a typed `usageLimitExceeded` error occurs. The exhausted account is skipped until its reset time (or briefly when no reset is supplied). Failover creates a **new thread on another account and receives the latest recovery checkpoint and only the messages since it**, consuming additional provider usage; it is not a free transfer of the original session. Failed or interrupted turns also discard the unconfirmed thread position and replay the checkpoint and recent committed messages on the same account on retry. Authentication and unrelated protocol errors do not trigger failover. If no account is available before any measured work, no credits are charged. Live account rotation still needs validation with your signed-in accounts.
 
+## User memories
+
+The authenticated **Memories** menu opens a resizable sidebar with an editable text area, Save and Reload. Saved notes belong to the application user across computers and provider accounts. They are stored in `user_memories` in the backend database, capped at 16000 UTF-8 bytes per user, and survive conversation-cache cleanup. Empty text clears memory. API routes are `GET /v1/memories` and `POST /v1/memories` with `{text,revision}`; stale revisions are rejected rather than overwriting concurrent edits.
+
+New chats receive the current notes; subsequent turns carry their revision and use `memory_read` to fetch external edits or recover notes omitted by compaction. The memory policy stays in base instructions without rewriting them on every note edit, preserving provider prompt caching. The assistant can call `memory_read` and `memory_save` to remember useful preferences and verified task outcomes, consolidate notes, or honor requests to forget. These tools only access the authenticated user's memory text; they cannot execute programs or access the backend filesystem. They work independently of local Full access. Small updates append short notes instead of rewriting the whole memory. Consolidation runs within the ordinary billed AI turn, without separate background AI jobs. Native Codex account-wide memories stay disabled to prevent different application users sharing a memory store.
+
+In the terminal, **F10** opens/closes Memories, **Ctrl+S** saves and **Ctrl+R** reloads. The prompt draft is preserved while editing memory. Updating the backend creates the memory table automatically. Start a new chat after this feature update so its native Codex thread advertises the new memory tools; existing threads keep their original tool registrations.
+
 ## Backend storage and shutdown
 
 Conversation data is a cache, not a permanent server-side archive. Maintenance runs every five minutes:

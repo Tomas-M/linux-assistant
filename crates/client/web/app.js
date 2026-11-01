@@ -5,6 +5,7 @@ const pendingIds=new Set(), messageRows=[], completionRows=[];
 const progressViews=new WeakMap(), steeringRows=new Map();
 let queueKey='', steeringKey='';
 let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false;
+let memoryDocument, memoryRequest=0, memoryLoading=false, memorySaving=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
 // All icons reference the embedded SVG sprite; no fonts or external assets are needed.
@@ -20,6 +21,7 @@ function focusPrompt()
 {
     if (elements.prompt.disabled || document.querySelector('dialog[open]')) return;
     const active=document.activeElement;
+    if (active.closest('#memories-panel') && !elements['memories-panel'].hidden) return;
     if (active!==elements.prompt && !active.disabled && active.matches('textarea,input:not([type=checkbox]):not([type=radio]),[contenteditable]')) return;
     elements.prompt.focus({preventScroll:true});
 }
@@ -65,7 +67,9 @@ async function api(path,body)
 function render()
 {
     if (!state) return;
+    const finished=busy && !view.busy && !acting;
     busy=view.busy || acting;
+    if (finished && !elements['memories-panel'].hidden && !memoryDirty()) loadMemories();
     if (view.brand)
     {
         document.title=view.brand.name;
@@ -87,8 +91,14 @@ function render()
     elements['composer-wrap'].hidden=!state.authenticated;
     elements['credit-balance'].hidden=!state.authenticated;
     elements['process-toggle'].hidden=!state.authenticated;
+    elements['memories-toggle'].hidden=!state.authenticated;
     elements.welcome.hidden=!emptyChat;
-    if (!state.authenticated) toggleProcesses(false);
+    if (!state.authenticated)
+    {
+        toggleProcesses(false); toggleMemories(false);
+        memoryRequest++; memoryDocument=undefined; memoryLoading=false; memorySaving=false;
+        elements['memories-text'].value=''; elements['memories-status'].textContent=''; memoryControls();
+    }
     // Command IDs are scoped to this chat, so a new empty chat immediately clears the task display.
     if (!view.commands.length)
     {
@@ -935,7 +945,7 @@ async function submitPrompt(steer=false)
 document.addEventListener('keydown',event=>
 {
     if (!state?.authenticated || elements.prompt.disabled || elements.prompt.readOnly) return;
-    if (event.defaultPrevented || document.querySelector('dialog[open]') || event.target.closest('#questions')) return;
+    if (event.defaultPrevented || document.querySelector('dialog[open]') || event.target.closest('#questions,#memories-panel')) return;
     const shortcut=(event.ctrlKey || event.metaKey || event.altKey) && !event.getModifierState('AltGraph');
     if (shortcut || event.target.closest('textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio])')) return;
     if (event.key===' ' && event.target.closest('button,a,summary,input')) return;
@@ -1061,7 +1071,7 @@ function toggleProcesses(open)
 {
     elements['process-panel'].hidden=!open;
     elements['process-toggle'].setAttribute('aria-expanded',String(open));
-    if (open) { elements['process-close'].focus(); pollProcesses(); }
+    if (open) { toggleMemories(false); elements['process-close'].focus(); pollProcesses(); }
 }
 
 // Preserve output scroll position while fresh bytes arrive, following only when already at the end.
@@ -1186,43 +1196,118 @@ async function pollProcesses()
     finally { processPolling=false; }
 }
 
-// Resize from the sidebar's left edge and retain the preferred width between visits.
-function resizeTasks(value)
+// Both sidebars share resize behavior without moving the chat or blocking its input.
+function configureSidebar(prefix,setting)
 {
-    const width=Math.round(Math.min(window.innerWidth,Math.max(288,value)));
-    document.documentElement.style.setProperty('--tasks-width',width+'px');
-    elements['process-resize'].setAttribute('aria-valuemin',String(Math.min(288,window.innerWidth)));
-    elements['process-resize'].setAttribute('aria-valuemax',String(window.innerWidth));
-    elements['process-resize'].setAttribute('aria-valuenow',String(width));
+    const panel=elements[prefix+'-panel'], handle=elements[prefix+'-resize'];
+    let drag;
+    const resize=value=>
+    {
+        const width=Math.round(Math.min(window.innerWidth,Math.max(288,value)));
+        document.documentElement.style.setProperty('--'+setting+'-width',width+'px');
+        handle.setAttribute('aria-valuemin',String(Math.min(288,window.innerWidth)));
+        handle.setAttribute('aria-valuemax',String(window.innerWidth));
+        handle.setAttribute('aria-valuenow',String(width));
+    };
+    resize(Number(localStorage.getItem('assistant-'+setting+'-width')) || 32*parseFloat(getComputedStyle(document.documentElement).fontSize));
+    handle.addEventListener('pointerdown',event=>
+    {
+        if (event.button!==0) return;
+        event.preventDefault(); drag={x:event.clientX,width:panel.getBoundingClientRect().width};
+        handle.setPointerCapture(event.pointerId); document.body.classList.add('resizing-tasks');
+    });
+    handle.addEventListener('pointermove',event=>{if (drag) resize(drag.width+drag.x-event.clientX);});
+    handle.addEventListener('lostpointercapture',()=>
+    {
+        drag=null; document.body.classList.remove('resizing-tasks');
+        localStorage.setItem('assistant-'+setting+'-width',handle.getAttribute('aria-valuenow'));
+    });
+    handle.addEventListener('keydown',event=>
+    {
+        if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
+        event.preventDefault(); resize(panel.getBoundingClientRect().width+(event.key==='ArrowLeft'?32:-32));
+        localStorage.setItem('assistant-'+setting+'-width',handle.getAttribute('aria-valuenow'));
+    });
+    window.addEventListener('resize',()=>resize(Number(handle.getAttribute('aria-valuenow'))));
 }
-let taskDrag;
-resizeTasks(Number(localStorage.getItem('assistant-tasks-width')) || 32*parseFloat(getComputedStyle(document.documentElement).fontSize));
-elements['process-resize'].addEventListener('pointerdown',event=>
+configureSidebar('process','tasks');
+configureSidebar('memories','memories');
+
+// Keep unsaved edits visible until the user saves or explicitly reloads them.
+function memoryDirty() { return !!memoryDocument && elements['memories-text'].value!==memoryDocument.text; }
+
+// Opening a sidebar never resets a draft, even while the assistant is working.
+function toggleMemories(open)
 {
-    if (event.button!==0) return;
-    event.preventDefault();
-    taskDrag={x:event.clientX,width:elements['process-panel'].getBoundingClientRect().width};
-    elements['process-resize'].setPointerCapture(event.pointerId);
-    document.body.classList.add('resizing-tasks');
-});
-elements['process-resize'].addEventListener('pointermove',event=>
+    elements['memories-panel'].hidden=!open;
+    elements['memories-toggle'].setAttribute('aria-expanded',String(open));
+    if (open)
+    {
+        toggleProcesses(false);
+        if (!memoryDirty()) { loadMemories(); elements['memories-close'].focus(); }
+        else elements['memories-text'].focus({preventScroll:true});
+    }
+}
+
+// Saving freezes only the memory editor; chat, steering and task controls stay usable.
+function memoryControls()
 {
-    if (taskDrag) resizeTasks(taskDrag.width+taskDrag.x-event.clientX);
-});
-elements['process-resize'].addEventListener('lostpointercapture',()=>
+    elements['memories-text'].disabled=memoryLoading || !memoryDocument;
+    elements['memories-text'].readOnly=memorySaving;
+    elements['memories-save'].disabled=memoryLoading || memorySaving || !memoryDirty();
+    elements['memories-reload'].disabled=memoryLoading || memorySaving;
+}
+
+// Request identities discard responses arriving after sign-out or a newer load/save.
+async function loadMemories()
 {
-    taskDrag=null;
-    document.body.classList.remove('resizing-tasks');
-    localStorage.setItem('assistant-tasks-width',elements['process-resize'].getAttribute('aria-valuenow'));
-});
-elements['process-resize'].addEventListener('keydown',event=>
+    if (!state?.authenticated || memoryLoading || memorySaving) return;
+    const request=++memoryRequest;
+    memoryLoading=true; memoryControls(); elements['memories-status'].textContent='Loading…';
+    try
+    {
+        const result=await api('memories');
+        if (request!==memoryRequest) return;
+        memoryDocument=result; elements['memories-text'].value=result.text; elements['memories-status'].textContent='';
+    }
+    catch (error) { if (request===memoryRequest) elements['memories-status'].textContent=error.message; }
+    finally
+    {
+        if (request===memoryRequest)
+        {
+            memoryLoading=false; memoryControls();
+            if (!elements['memories-panel'].hidden && [elements['memories-close'],elements['memories-reload']].includes(document.activeElement)) elements['memories-text'].focus({preventScroll:true});
+        }
+    }
+}
+elements['memories-toggle'].addEventListener('click',()=>toggleMemories(elements['memories-panel'].hidden));
+elements['memories-close'].addEventListener('click',()=>{toggleMemories(false); elements['memories-toggle'].focus();});
+elements['memories-panel'].addEventListener('keydown',event=>{if (event.key==='Escape') { event.stopPropagation(); toggleMemories(false); elements['memories-toggle'].focus(); }});
+elements['memories-text'].addEventListener('input',()=>{elements['memories-status'].textContent=memoryDirty()?'Unsaved changes':''; memoryControls();});
+elements['memories-reload'].addEventListener('click',()=>{if (!memoryDirty() || confirm('Discard your unsaved edits and load the latest memories?')) loadMemories();});
+elements['memories-save'].addEventListener('click',async()=>
 {
-    if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
-    event.preventDefault();
-    resizeTasks(elements['process-panel'].getBoundingClientRect().width+(event.key==='ArrowLeft'?32:-32));
-    localStorage.setItem('assistant-tasks-width',elements['process-resize'].getAttribute('aria-valuenow'));
+    if (!memoryDocument || memoryLoading || memorySaving) return;
+    const text=elements['memories-text'].value;
+    if (new TextEncoder().encode(text).length>16000) { elements['memories-status'].textContent='Keep memories below 16000 UTF-8 bytes. Shorten these notes before saving.'; return; }
+    const request=++memoryRequest;
+    memorySaving=true; memoryControls(); elements['memories-status'].textContent='Saving…';
+    try
+    {
+        const result=await api('memories',{text,revision:memoryDocument.revision});
+        if (request!==memoryRequest) return;
+        memoryDocument=result; elements['memories-text'].value=result.text; elements['memories-status'].textContent='Saved';
+    }
+    catch (error) { if (request===memoryRequest) elements['memories-status'].textContent=error.message; }
+    finally
+    {
+        if (request===memoryRequest)
+        {
+            memorySaving=false; memoryControls();
+            if (!elements['memories-panel'].hidden && [elements['memories-save'],document.body].includes(document.activeElement)) elements['memories-text'].focus({preventScroll:true});
+        }
+    }
 });
-window.addEventListener('resize',()=>resizeTasks(elements['process-panel'].getBoundingClientRect().width || Number(elements['process-resize'].getAttribute('aria-valuenow'))));
 elements['process-toggle'].addEventListener('click',()=>toggleProcesses(elements['process-panel'].hidden));
 elements['process-close'].addEventListener('click',()=>{toggleProcesses(false); elements['process-toggle'].focus();});
 elements['process-panel'].addEventListener('keydown',event=>{if (event.key==='Escape') { toggleProcesses(false); elements['process-toggle'].focus(); }});

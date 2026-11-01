@@ -38,6 +38,10 @@ impl Reporter {
                 let kind=if item["type"]=="webSearch" { ProgressKind::WebSearch } else { ProgressKind::Action };
                 let part=self.part(id,id,kind)?;
                 part.text=if kind==ProgressKind::WebSearch { format!("{}: {}",if event["method"]=="item/completed" { "Searched the web" } else { "Searching the web" },item["query"].as_str().unwrap_or_default()) } else { item["arguments"]["reason"].as_str().unwrap_or("Working on your computer").into() };
+                if matches!(item["tool"].as_str(),Some("memory_read"|"memory_save")) {
+                    let completed=event["method"]=="item/completed";
+                    part.text=match (item["tool"].as_str(),completed) { (Some("memory_read"),false)=>"Reading memories",(Some("memory_read"),true)=>"Read memories",(_,false)=>"Updating memories",(_,true)=>"Updated memories" }.into();
+                }
                 let arguments=&item["arguments"];
                 part.data=Some(serde_json::json!({
                     "tool":item["tool"],"status":item["status"],
