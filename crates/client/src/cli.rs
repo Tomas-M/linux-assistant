@@ -209,10 +209,11 @@ impl App {
         ensure!(self.view["state"]["retry_available"]!=true || self.view["busy"]==true,"Retry the unfinished request (F7) or start a new chat (F4)");
         protocol::validate_input(&text,self.attachments.as_deref())?;
         let tokens=text.chars().count()/4+self.attachments.iter().flatten().map(|file|match file { protocol::Attachment::Text { content,.. }=>content.chars().count()/4,protocol::Attachment::Image { .. }=>2000 }).sum::<usize>();
-        if tokens>2000 && !self.confirmed {
+        let rate=self.view["state"]["account"]["input_credits_per_million"].as_f64().unwrap_or(0.0);
+        let credits=(tokens as f64*rate/1_000_000.0).ceil().max(1.0) as i64;
+        if credits>8 && !self.confirmed {
             self.confirmed=true;
-            let rate=self.view["state"]["account"]["input_credits_per_million"].as_f64().unwrap_or(0.0);
-            self.status=format!("Large input: ~{tokens} tokens, ~{} input credits. Send again to confirm (excludes response and previous context).",(tokens as f64*rate/1_000_000.0).ceil().max(1.0) as i64);
+            self.status=format!("This input may use around {credits} credits. Send again to confirm.");
             return Ok(());
         }
         let input=Queued { id:self.editing.unwrap_or_else(Uuid::new_v4),text,cwd:std::env::current_dir()?.to_string_lossy().into_owned(),editing:false,attachments:self.attachments.clone() };

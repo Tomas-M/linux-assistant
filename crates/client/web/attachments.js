@@ -73,11 +73,10 @@ async function confirmInputCost(text,attachments)
         }
     }
     tokens=Math.ceil(tokens);
-    if (tokens<=2000) return true;
     const rate=state.account?.input_credits_per_million;
     const credits=Number.isFinite(rate)?Math.max(1,Math.ceil(tokens*rate/1000000)):null;
-    const price=credits!==null?'Approximately '+credits+' '+(credits===1?'credit':'credits')+' for this new input.':'The current credit rate is unavailable; the cost cannot be estimated.';
-    elements['input-cost-description'].textContent='This message and its attachments may use around '+tokens.toLocaleString()+' input tokens. '+price+' This is a rough estimate, not the total task price. Conversation context, the answer and command follow-ups add to it; the final task cost is rounded up once. Large inputs can use a lot of credits. Send anyway?';
+    if (credits===null || credits<=8) return true;
+    elements['input-cost-description'].textContent='This message and its attachments may use around '+credits+' credits. Send anyway?';
     const dialog=elements['input-cost-dialog']; dialog.returnValue=''; dialog.showModal();
     return new Promise(resolve=>
     {
