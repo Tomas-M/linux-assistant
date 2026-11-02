@@ -186,7 +186,7 @@ async fn browser_security(State(app): State<App>, request: Request<Body>, next: 
     response.headers_mut().insert(header::CACHE_CONTROL,"no-store".parse().unwrap());
     response.headers_mut().insert("Referrer-Policy","same-origin".parse().unwrap());
     response.headers_mut().insert("X-Content-Type-Options","nosniff".parse().unwrap());
-    let policy=if admin || payment { "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
+    let policy=if admin || payment { "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
         else if callback { "default-src 'none'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
         else { "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
     response.headers_mut().insert("Content-Security-Policy",policy.parse().unwrap());
