@@ -40,7 +40,7 @@ impl Reporter {
                 part.data=Some(serde_json::json!({"explanation":clip(params["explanation"].as_str().unwrap_or_default(),4000),"plan":plan}));
                 part.completed=params["plan"].as_array().is_some_and(|steps|steps.iter().all(|step|step["status"]=="completed"));
             }
-            Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch") && params["item"]["tool"]!="generate_image")=> {
+            Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch")) && params["item"]["tool"]!="generate_image"=> {
                 let item=&params["item"]; let id=item["id"].as_str().unwrap_or_default();
                 let kind=if item["type"]=="webSearch" { ProgressKind::WebSearch } else { ProgressKind::Action };
                 let part=self.part(id,id,kind)?;

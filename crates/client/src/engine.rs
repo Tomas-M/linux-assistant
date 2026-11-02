@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::{processes::Processes, storage};
 pub(crate) mod output;
 mod presentation;
+mod generated;
 mod social;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -280,7 +281,8 @@ impl Engine {
             let Some(bytes)=bytes else { break; };
             for event in decoder.push(&bytes)? {
                 match serde_json::from_value::<protocol::ChatEvent>(event)? {
-                    protocol::ChatEvent::Progress { progress } => {
+                    protocol::ChatEvent::Progress { mut progress } => {
+                        self.cache_generated(&mut progress).await?;
                         self.live.0.send_modify(|view|view["can_steer"]=json!(!self.controls.stopped.load(Ordering::SeqCst)));
                         let activity=progress.activity.clone();
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
@@ -290,13 +292,13 @@ impl Engine {
                         self.live.activity(label,Some(progress));
                     }
                     protocol::ChatEvent::Complete { mut response } => {
-                        if let Some(progress)=response.progress.take() { self.live.activity("Responding…",Some(progress)); }
+                        if let Some(mut progress)=response.progress.take() { self.cache_generated(&mut progress).await?; self.live.activity("Responding…",Some(progress)); }
                         self.record_credits(response.task_credits);
                         return Ok(response);
                     },
                     protocol::ChatEvent::Error { message,settled,credits,task_credits,steering,progress } => {
                         self.record_credits(task_credits);
-                        if let Some(progress)=progress { self.live.activity("Thinking…",Some(progress)); }
+                        if let Some(mut progress)=progress { self.cache_generated(&mut progress).await?; self.live.activity("Thinking…",Some(progress)); }
                         if let (Some(account),Some(credits))=(self.account.write().unwrap().as_mut(),credits) { account.credits=credits; }
                         if settled {
                             let steering_ids:Vec<_>=steering.iter().map(|input|input.id).collect();

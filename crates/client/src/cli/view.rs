@@ -163,6 +163,9 @@ impl App {
                 let cost=run["credits"].as_i64().map(|v|format!(" · {v} credits")).unwrap_or_default();
                 lines.push(Line::from(format!("{} · {elapsed}s{cost}",run["error"].as_str().unwrap_or("Completed"))).style(dim()));
                 if !run["error"].is_null() { lines.extend(run["partial"].as_str().unwrap_or_default().lines().map(inline)); }
+                for result in self.view["tool_results"].as_object().unwrap().values().filter(|result|result["image"]["generated"]==true && result["image"]["run"]==run["started_at"]) {
+                    lines.push(Line::from(format!("Generated image: {}",result["image"]["path"].as_str().unwrap_or_default())).style(dim()));
+                }
             }
         }
         if self.view["busy"]==true {
@@ -172,6 +175,9 @@ impl App {
             let progress=&self.view["activity"]["progress"];
             self.progress_lines(&mut lines,progress,true);
             for text in progress["text"].as_str().unwrap_or_default().lines() { lines.push(inline(text)); }
+            for result in self.view["tool_results"].as_object().unwrap().values().filter(|result|result["image"]["generated"]==true && result["image"]["run"]==self.view["runs"].as_array().unwrap().last().unwrap()["started_at"]) {
+                lines.push(Line::from(format!("Generated image: {}",result["image"]["path"].as_str().unwrap_or_default())).style(dim()));
+            }
             let pulse=["·  ","·· ","···"][((now()/400)%3) as usize];
             lines.push(Line::from(format!("{pulse} {}",self.view["activity"]["label"].as_str().unwrap_or("Thinking…"))).style(dim()));
         }
