@@ -52,12 +52,12 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let executable=std::env::var("ASSISTANT_TEST_CLIENT")?;
         let config=directory.path().join("client config");
-        std::fs::write(&config,"backend='assistant.example.test'\nname='Slax \"世界\" \\ AI'\n")?;
+        std::fs::write(&config,"backend='assistant.example.test'\n")?;
         let result=async {
             let mut previous=String::new();
             for _ in 0..2 {
                 let output=tokio::time::timeout(Duration::from_secs(15),tokio::process::Command::new(&executable)
-                    .arg("--config").arg(&config).args(["--desktop=false","--cli=false"]).env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
+                    .arg("--config").arg(&config).env("LINUX_ASSISTANT_HOME",directory.path()).kill_on_drop(true).output()).await??;
                 anyhow::ensure!(output.status.success(),"Launcher failed");
                 let url=String::from_utf8(output.stdout)?;
                 let parsed=reqwest::Url::parse(url.trim())?;
@@ -70,7 +70,6 @@ mod tests {
                 previous=url;
                 let connection=crate::storage::read::<crate::local::Connection>(&directory.path().join("daemon.json"))?;
                 connection.get("/api/health").await?;
-                assert_eq!(connection.get("/api/branding").await?["name"],"Slax \"世界\" \\ AI");
             }
             Ok::<_,anyhow::Error>(())
         }.await;

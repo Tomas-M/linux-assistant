@@ -4,7 +4,7 @@ let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=f
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 const progressViews=new WeakMap(), steeringRows=new Map();
 let queueKey='', steeringKey='';
-let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false;
+let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false, providersReady=false;
 let memoryDocument, memoryRequest=0, memoryLoading=false, memorySaving=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
 
@@ -49,9 +49,13 @@ function progressTitle(parts)
     return '';
 }
 
-document.documentElement.dataset.theme=localStorage.getItem('assistant-theme') || 'light';
-setIcon(elements.theme,document.documentElement.dataset.theme==='dark'?'sun':'moon');
-elements.theme.setAttribute('aria-label',document.documentElement.dataset.theme==='dark'?'Switch to light mode':'Switch to dark mode');
+// The server supplies the default; a user's explicit preference is scoped to this backend.
+function applyTheme(theme)
+{
+    if (document.documentElement.dataset.theme!==theme) document.documentElement.dataset.theme=theme;
+    setIcon(elements.theme,theme==='dark'?'sun':'moon');
+    elements.theme.setAttribute('aria-label',theme==='dark'?'Switch to light mode':'Switch to dark mode');
+}
 
 // Keep every operation on the authenticated loopback origin.
 async function api(path,body)
@@ -70,20 +74,34 @@ function render()
     const finished=busy && !view.busy && !acting;
     busy=view.busy || acting;
     if (finished && !elements['memories-panel'].hidden && !memoryDirty()) loadMemories();
-    if (view.brand)
+    const initializing=document.body.classList.contains('initializing');
+    const configured=!!view.brand,ready=configured && providersReady;
+    document.body.classList.toggle('initializing',!ready);
+    elements.startup.hidden=ready;
+    if (!ready) { renderConnection(); return; }
+    if (initializing && emailEnabled && !state.authenticated) queueMicrotask(()=>elements.email.focus({preventScroll:true}));
+    const brand=view.brand,images=brand.images;
+    document.title=brand.name;
+    elements['brand-name'].textContent=brand.name;
+    elements.brand.setAttribute('aria-label',brand.name+' home');
+    for (const element of document.querySelectorAll('[data-brand-name]')) if (element.textContent!==brand.name) element.textContent=brand.name;
+    applyTheme(localStorage.getItem('assistant-theme:'+state.settings.backend) || brand.default_theme);
+    let logo=null;
+    if (images['logo-full']) logo='logo-full';
+    else if (images['logo-image']) logo='logo-image';
+    elements['brand-logo'].hidden=!logo;
+    elements['brand-mark'].hidden=!!logo;
+    elements['brand-name'].hidden=logo==='logo-full';
+    elements['brand-logo'].classList.toggle('brand-mark-image',logo==='logo-image');
+    for (const [element,key,attribute] of [[elements['brand-logo'],logo,'src'],[elements['assistant-image'],'assistant-image','src'],[elements.favicon,'favicon','href']])
     {
-        document.title=view.brand.name;
-        elements['brand-name'].textContent=view.brand.name;
-        elements.brand.setAttribute('aria-label',view.brand.name+' home');
-        elements['brand-logo'].hidden=!view.brand.logo;
-        elements['brand-mark'].hidden=!!view.brand.logo;
-        elements['brand-name'].hidden=!!view.brand.logo && !view.brand.mark;
-        elements['brand-logo'].classList.toggle('brand-mark-image',view.brand.mark);
-        if (view.brand.logo && elements['brand-logo'].dataset.hash!==view.brand.logo)
-        {
-            elements['brand-logo'].src='/logo.png'; elements['brand-logo'].alt=view.brand.name; elements['brand-logo'].dataset.hash=view.brand.logo;
-        }
+        const hash=key && images[key];
+        element.hidden=!hash;
+        if (element.dataset.hash===hash) continue;
+        if (hash) { element.setAttribute(attribute,'/branding/'+key+'?v='+hash); element.dataset.hash=hash; }
+        else { if (key==='favicon') element.setAttribute(attribute,'data:,'); else element.removeAttribute(attribute); delete element.dataset.hash; }
     }
+    elements['brand-logo'].alt=brand.name;
     document.body.classList.toggle('signed-out',!state.authenticated);
     const emptyChat=state.authenticated && !state.messages.length && !view.busy;
     document.body.classList.toggle('empty-chat',emptyChat);
@@ -129,6 +147,8 @@ function render()
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
     elements['balance-note'].hidden=!depleted;
     elements.credits.disabled=refreshingBalance || !state.authenticated;
+    elements.logout.disabled=busy || !state.authenticated;
+    elements.logout.title=busy?'Stop the running task before signing out':'';
     for (const id of ['new','retry'])
         elements[id].disabled=busy || !state.authenticated;
     elements['buy-inline'].disabled=buying || !state.account;
@@ -452,7 +472,8 @@ async function watch()
         catch (error)
         {
             elements.status.dataset.connection='true';
-            elements.status.textContent='Reconnecting to the local assistant… '+error.message;
+            elements.status.textContent='';
+            renderConnection();
             await new Promise(resolve=>setTimeout(resolve,1500));
         }
     }
@@ -479,10 +500,32 @@ elements.theme.addEventListener('click',()=>
 {
     const dark=document.documentElement.dataset.theme!=='dark';
     document.documentElement.dataset.theme=dark?'dark':'light';
-    localStorage.setItem('assistant-theme',dark?'dark':'light');
+    localStorage.setItem('assistant-theme:'+state.settings.backend,dark?'dark':'light');
     setIcon(elements.theme,dark?'sun':'moon');
     elements.theme.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
 });
+// Sign out through the shared client session and return directly to the email form.
+elements.logout.addEventListener('click',async()=>
+{
+    elements.logout.disabled=true;
+    try
+    {
+        await api('logout',{}); state=await api('state');
+        elements.prompt.value=''; draftAttachments=[]; editingId=null; steerId=null; startingId=null; pendingIds.clear(); renderAttachments();
+        render(); if (emailEnabled) elements.email.focus({preventScroll:true});
+    }
+    catch (error) { elements['settings-status'].textContent=error.message; }
+    finally { elements.logout.disabled=busy || !state.authenticated; }
+});
+// A failed startup can be retried explicitly; a successful startup never reloads settings.
+elements['configuration-retry'].addEventListener('click',async()=>
+{
+    elements['configuration-retry'].disabled=true;
+    try { await api('configuration/retry',{}); }
+    catch (error) { elements['startup-status'].textContent=error.message; }
+    finally { elements['configuration-retry'].disabled=false; }
+});
+
 // Show only the latest three purchases, and keep empty history out of Settings.
 async function loadPurchases()
 {
@@ -1352,13 +1395,21 @@ setInterval(()=>
 function renderConnection()
 {
     const retry=Object.values(view.connections).sort((a,b)=>b.attempt-a.attempt)[0];
-    for (const id of ['backend-connection','auth-connection'])
-    {
-        elements[id].hidden=!retry;
-        if (!retry) continue;
-        const seconds=Math.max(0,Math.ceil((retry.retry_at-Date.now())/1000));
-        elements[id].textContent=(seconds?'Backend unavailable. Retrying in '+seconds+'s':'Connecting to backend…')+' · attempt '+retry.attempt+' of 5';
-    }
+    const error=view.backend_error,local=!!elements.status.dataset.connection;
+    elements['connection-indicator'].hidden=!retry && !error && !local && !!view.brand;
+    let label='Connecting…';
+    if (local) label='Reconnecting…';
+    else if (retry) label='Reconnecting '+retry.attempt+'/5';
+    else if (error) label='Offline';
+    elements['connection-indicator'].querySelector('span').textContent=label;
+    elements['connection-indicator'].title=local?'Reconnecting to the local assistant':error || 'Connecting to the backend';
+    let status='Loading server settings…';
+    if (local) status='Reconnecting to the local assistant…';
+    else if (error) status=error;
+    else if (retry) status='Connecting to the backend…';
+    else if (view.brand) status='Loading sign-in options…';
+    elements['startup-status'].textContent=status;
+    elements['configuration-retry'].hidden=!error || !!view.brand || !!retry;
 }
 setInterval(()=>{elements.elapsed.textContent=startedAt?Math.floor((Date.now()-startedAt)/1000)+'s':''; renderLogin(); renderConnection();},1000);
 // Reserve the actual composer height, including queued messages and a multiline draft, below the transcript.
@@ -1374,7 +1425,7 @@ const initialState=api('state').then(async current=>
 {
     state=current;
     render();
-    if (state.authenticated) document.body.classList.remove('initializing');
+
     if (!state.authenticated && state.sign_in)
     {
         socialLogin={...state.sign_in};
@@ -1390,7 +1441,7 @@ const initialProviders=api('login/providers').then(result=>{enabledProviders=res
 // Reveal the complete sign-in screen and focus without shifting its centered position.
 Promise.allSettled([initialState,initialProviders]).then(()=>
 {
+    providersReady=true;
     render();
-    document.body.classList.remove('initializing');
-    if (emailEnabled && !state?.authenticated) elements.email.focus({preventScroll:true});
+    if (emailEnabled && view.brand && !state?.authenticated) elements.email.focus({preventScroll:true});
 });

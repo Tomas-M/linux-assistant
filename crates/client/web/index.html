@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{DEFAULT_THEME}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{APP_NAME}}</title>
+    <link id="favicon" rel="icon" href="data:,">
     <link rel="stylesheet" href="/style.css">
     <script src="/markdown-it.min.js" defer></script>
     <script src="/files.js" defer></script>
@@ -23,6 +24,7 @@
     </defs></svg>
     <header class="topbar">
         <a id="brand" class="brand" href="/" aria-label="{{APP_NAME}} home"><img id="brand-logo" alt="" hidden><span id="brand-mark" class="brand-mark" aria-hidden="true"><svg><use href="#icon-terminal"/></svg></span><span id="brand-name" class="brand-name">{{APP_NAME}}</span></a>
+        <span id="connection-indicator" role="status" hidden><svg aria-hidden="true"><use href="#icon-wifi"/></svg><span></span></span>
         <nav aria-label="Workspace">
             <button id="new" class="quiet" aria-label="New chat"><svg aria-hidden="true"><use href="#icon-plus"/></svg><span>New chat</span></button>
             <button id="process-toggle" class="quiet" type="button" aria-controls="process-panel" aria-expanded="false" aria-label="Tasks" hidden><span class="task-menu-icon"><svg aria-hidden="true"><use href="#icon-terminal"/></svg><span id="tasks-running" class="task-indicator" aria-hidden="true" hidden></span></span><span class="task-label">Tasks</span><span id="process-count" hidden></span></button>
@@ -31,21 +33,22 @@
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
         </nav>
     </header>
+    <section id="startup" aria-live="polite"><h1>Connecting to your assistant</h1><p id="startup-status">Loading server settings…</p><button id="configuration-retry" type="button" hidden>Reconnect</button></section>
     <main>
         <div id="status" role="status" aria-live="polite"></div>
         <section id="workspace">
             <section id="setup" class="auth-layout" hidden aria-label="Sign in">
                 <header class="auth-heading">
-                    <h1>Get things done with {{APP_NAME}}</h1>
+                    <h1>Get things done with <span data-brand-name>{{APP_NAME}}</span></h1>
                     <p>Your assistant analyzes your system, investigates problems, and runs commands to carry out tasks for you</p>
                 </header>
                 <div class="auth-body">
                     <div class="auth-companion">
-                        <img src="/assistant.png" width="270" height="270" alt="Your friendly Linux assistant" class="auth-character">
-                        <p>{{APP_NAME}} can run commands<br>on your computer</p>
+                        <img id="assistant-image" width="270" height="270" alt="Your friendly assistant" class="auth-character" hidden>
+                        <p><span data-brand-name>{{APP_NAME}}</span> can run commands<br>on your computer</p>
                     </div>
                     <div class="auth-card">
-                        <div class="auth-offer"><div><strong>Enjoy 100 free credits</strong><small>Sign in and give {{APP_NAME}} a try</small></div><svg aria-hidden="true"><use href="#icon-gift"/></svg></div>
+                        <div class="auth-offer"><div><strong>Enjoy 100 free credits</strong><small>Sign in and give <span data-brand-name>{{APP_NAME}}</span> a try</small></div><svg aria-hidden="true"><use href="#icon-gift"/></svg></div>
                         <div class="auth-steps">
                             <div id="auth-methods">
                                 <form id="email-form">
@@ -80,7 +83,6 @@
                             </form>
                         </div>
                         <p id="auth-status" role="status" aria-live="polite"></p>
-                        <p id="auth-connection" class="connection-note" role="status" hidden></p>
                     </div>
                 </div>
             </section>
@@ -97,7 +99,6 @@
             <div id="scroll-anchor"></div>
             <button id="scroll-bottom" type="button" data-icon="send" aria-label="Jump to latest message" title="Jump to latest message" hidden><span class="scroll-dots" aria-hidden="true"><span></span><span></span><span></span></span><svg aria-hidden="true"><use href="#icon-send"/></svg></button>
             <div id="composer-wrap" class="composer-wrap" hidden>
-                <p id="backend-connection" class="connection-note" role="status" hidden></p>
                 <div id="balance-note" class="balance-note" hidden><span>Add credits to start a new task or steer. Your running task can finish.</span><button id="buy-inline" type="button">Buy credits</button></div>
                 <p id="queue-heading" class="sr-only" role="status" hidden></p>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
@@ -134,7 +135,7 @@
     <dialog id="settings-dialog" aria-labelledby="settings-title">
         <div class="settings-scroll">
             <header class="dialog-heading"><h2 id="settings-title">Account & settings</h2><button id="settings-close" class="icon-button" aria-label="Close settings" autofocus><svg aria-hidden="true"><use href="#icon-close"/></svg></button></header>
-            <p id="account" class="muted"></p>
+            <div class="account-identity"><span id="account" class="muted"></span><button id="logout" type="button" class="quiet sign-out">Sign out</button></div>
             <div class="account-balance"><span class="muted">Available credits</span><div class="account-balance-value"><strong id="settings-balance">Loading…</strong><button id="credits" type="button" class="icon-button" aria-label="Refresh balance" title="Refresh balance"><svg aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></div>
             <h3>Buy credits</h3>
             <div id="credit-packs" class="credit-packs"></div><p id="credit-packs-status" class="muted" role="status"></p>

@@ -132,3 +132,17 @@ details[open] summary { margin-bottom:20px; }
 @media(max-width:540px) { .pager { gap:8px; font-size:var(--small); } .pager button { padding:8px 10px; } .table-wrap { max-height:360px; } nav { justify-content:space-between; gap:12px; } .topbar { padding:14px 16px; } .brand { gap:10px; } }
 
 .icon-definitions { position:absolute; width:0; height:0; overflow:hidden; }
+
+/* Separate settings pages retain unsaved drafts while staying readable on narrow screens. */
+.settings-layout { display:grid; grid-template-columns:200px minmax(0,1fr); gap:24px; align-items:start; }
+#settings-nav { display:flex; flex-direction:column; gap:4px; position:sticky; top:120px; margin:0; order:0; width:auto; overflow:visible; padding:0; }
+#settings-nav a { display:block; padding:10px 14px; border-radius:8px; color:var(--muted); text-decoration:none; font-size:var(--secondary); }
+#settings-nav a[aria-current=page],.topbar nav a[aria-current=page] { background:#e2efeb; color:var(--accent); font-weight:600; }
+.settings-content { min-width:0; }
+.brand-upload { min-width:0; display:flex; flex-direction:column; gap:10px; align-items:start; }
+.brand-upload input { font-size:var(--small); }
+.brand-preview { display:grid; place-items:center; width:100%; min-height:120px; padding:16px; background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+.brand-preview img { max-width:100%; max-height:140px; object-fit:contain; }
+@media(max-width:700px) { .settings-layout { grid-template-columns:1fr; gap:16px; } #settings-nav { position:static; flex-direction:row; flex-wrap:wrap; overflow:visible; } #settings-nav a { padding:8px 10px; } }
+
+.admin-initializing main { visibility:hidden; }

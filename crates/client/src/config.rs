@@ -1,108 +1,83 @@
-use std::{ffi::OsString,path::{Path,PathBuf}};
+use std::{ffi::OsString,path::{Path,PathBuf},sync::{Arc,RwLock}};
 use anyhow::{ensure,Context,Result};
-use clap::{CommandFactory,Parser};
+use clap::Parser;
 use serde_json::{json,Value};
-use sha2::{Digest,Sha256};
 
 impl crate::Args {
-    /// Read system defaults first; explicitly supplied options and launch modes take precedence.
+    /// Only the backend URL belongs in the client configuration file.
     pub fn load()->Result<Self> {
-        let arguments:Vec<OsString>=std::env::args_os().collect();
         #[cfg(unix)]
         let default=PathBuf::from("/etc/linux-assistant/config");
         #[cfg(windows)]
-        let default=std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(||PathBuf::from(r"C:\ProgramData")).join("linux-assistant/config");
-        Self::load_from(arguments,&default)
+        let default=PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(||"C:\\ProgramData".into())).join("linux-assistant/config");
+        Self::load_from(std::env::args_os().collect(),&default)
     }
-
-    /// Parse config through the CLI schema, so unknown keys and invalid values fail consistently.
+    /// Read the backend default, giving an explicit command-line URL precedence.
     fn load_from(arguments:Vec<OsString>,default:&Path)->Result<Self> {
-        let supplied:Vec<_>=arguments.iter().skip(1).filter_map(|argument|argument.to_str()?.strip_prefix("--").map(|key|key.split('=').next().unwrap())).collect();
-        if supplied.iter().any(|key|matches!(*key,"help"|"version")) { return Ok(Self::parse_from(arguments)); }
-        let explicit=arguments.iter().position(|argument|argument=="--config").map(|index|arguments.get(index+1).map(PathBuf::from).context("--config requires a path")).transpose()?;
-        let explicit=explicit.or_else(||arguments.iter().find_map(|argument|argument.to_str()?.strip_prefix("--config=").map(PathBuf::from)));
+        if arguments.iter().any(|arg|arg=="--help" || arg=="--version" || arg=="-h" || arg=="-V") { return Ok(Self::parse_from(arguments)); }
+        let explicit=arguments.iter().position(|arg|arg=="--config").map(|index|arguments.get(index+1).map(PathBuf::from).context("--config requires a path")).transpose()?;
+        let explicit=explicit.or_else(||arguments.iter().find_map(|arg|arg.to_str()?.strip_prefix("--config=").map(PathBuf::from)));
         let path=explicit.as_deref().unwrap_or(default);
-        let contents=match std::fs::read_to_string(path) {
-            Ok(text)=>text,
-            Err(error) if error.kind()==std::io::ErrorKind::NotFound && explicit.is_none()=>String::new(),
-            Err(error)=>return Err(error).with_context(||format!("Cannot read {}",path.display())),
-        };
-        let values:toml::Table=toml::from_str(&contents).with_context(||format!("Invalid config {}",path.display()))?;
-        let command=Self::command();
-        let mode=supplied.iter().any(|key|matches!(*key,"desktop"|"cli"|"daemon"));
+        let contents=match std::fs::read_to_string(path) { Ok(text)=>text,Err(error) if error.kind()==std::io::ErrorKind::NotFound && explicit.is_none()=>String::new(),Err(error)=>return Err(error).with_context(||format!("Cannot read {}",path.display())) };
+        let values:toml::Table=toml::from_str(&contents)?;
         let mut merged=vec![arguments[0].clone()];
         for (key,value) in values {
-            ensure!(key!="config" && command.get_arguments().any(|argument|argument.get_long()==Some(&key)),"Unknown client config option: {key}");
-            if supplied.contains(&key.as_str()) || (mode && matches!(key.as_str(),"desktop"|"cli"|"daemon")) { continue; }
-            let value=match value { toml::Value::String(value)=>value,toml::Value::Boolean(value)=>value.to_string(),_=>anyhow::bail!("Config option {key} must be a string or boolean") };
-            merged.push(format!("--{key}={value}").into());
+            ensure!(key=="backend","Unknown client config option: {key}. Only backend is supported");
+            let value=value.as_str().context("backend must be text")?;
+            if !arguments.iter().skip(1).any(|arg|arg.to_str().is_some_and(|arg|arg==format!("--{key}") || arg.starts_with(&format!("--{key}=")))) { merged.push(format!("--{key}={value}").into()); }
         }
         merged.extend(arguments.into_iter().skip(1));
         let mut args=Self::try_parse_from(merged)?;
         if explicit.is_some() { args.config=Some(std::fs::canonicalize(path)?); }
-        ensure!(!args.name.trim().is_empty() && args.name.len()<=100 && !args.name.chars().any(char::is_control),"Name must be 1–100 bytes without control characters");
-        if let Some(logo)=&args.logo { args.logo=Some(std::fs::canonicalize(logo).context("Cannot find the PNG logo")?); }
-        if let Some(mark)=&args.brand_mark { args.brand_mark=Some(std::fs::canonicalize(mark).context("Cannot find the PNG brand mark")?); }
-        if let Some(image)=&args.assistant_image { args.assistant_image=Some(std::fs::canonicalize(image).context("Cannot find the PNG assistant image")?); }
         Ok(args)
     }
-
-    /// Pass resolved values to the detached child, independent of the launcher's original working directory.
+    /// The child receives the resolved backend; terminal mode is never inherited.
     pub fn daemon_args(&self)->Vec<OsString> {
-        let mut args=vec!["--daemon".into(),"--desktop=false".into(),"--cli=false".into(),"--reset-chat=false".into(),"--install-desktop=false".into(),"--backend".into(),self.backend.clone().into(),"--name".into(),self.name.clone().into()];
+        let mut args=vec!["--daemon".into(),"--backend".into(),self.backend.clone().into()];
         if let Some(path)=&self.config { args.extend(["--config".into(),path.clone().into_os_string()]); }
-        if let Some(path)=&self.logo { args.extend(["--logo".into(),path.clone().into_os_string()]); }
-        if let Some(path)=&self.brand_mark { args.extend(["--brand-mark".into(),path.clone().into_os_string()]); }
-        if let Some(path)=&self.assistant_image { args.extend(["--assistant-image".into(),path.clone().into_os_string()]); }
         args
     }
 }
 
 #[derive(Default)]
-pub struct Brand { pub name:String,pub logo:Option<Vec<u8>>,pub mark:bool,pub assistant_image:Option<PathBuf> }
+pub struct Brand { document:RwLock<Option<protocol::Branding>>,loading:tokio::sync::Mutex<()> }
 impl Brand {
-    /// Load header logos once and retain the character path for live reads without exposing it over HTTP.
-    pub fn read(args:&crate::Args)->Result<Self> {
-        let logo=if let Some(path)=args.logo.as_ref().or(args.brand_mark.as_ref()) {
-            use std::io::Read;
-            let mut bytes=Vec::new();
-            std::fs::File::open(path)?.take(1024*1024+1).read_to_end(&mut bytes)?;
-            ensure!(bytes.len()<=1024*1024 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len()>=24,"Logo must be a PNG up to 1 MiB");
-            let width=u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-            let height=u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-            ensure!(width>0 && height>0 && width<=4096 && height<=4096,"Logo must be at most 4096 × 4096 pixels");
-            Some(bytes)
-        } else { None };
-        if let Some(path)=&args.assistant_image {
-            use std::io::Read;
-            let mut signature=[0;8];
-            std::fs::File::open(path)?.read_exact(&mut signature).context("Cannot read the PNG assistant image")?;
-            ensure!(signature==*b"\x89PNG\r\n\x1a\n","Assistant image must be a PNG");
-        }
-        Ok(Self { name:args.name.clone(),logo,mark:args.brand_mark.is_some(),assistant_image:args.assistant_image.clone() })
-    }
-    /// Detect changed branding or character paths when reusing a daemon; character bytes stay live.
-    pub fn metadata(&self)->Value {
-        json!({"name":self.name,"logo":self.logo.as_ref().map(|bytes|format!("{:x}",Sha256::digest(bytes))),"mark":self.mark,"assistant_image":self.assistant_image.as_ref().map(|path|format!("{:x}",Sha256::digest(path.as_os_str().as_encoded_bytes())))})
-    }
+    /// The manifest contains only public names, theme and image hashes, never image bodies.
+    pub fn metadata(&self)->Value { serde_json::to_value(self.document.read().unwrap().as_ref()).unwrap() }
+}
+
+/// Fetch once at startup; retry an unsuccessful startup only when explicitly requested, never poll settings.
+pub async fn load(backend:String,brand:Arc<Brand>,live:crate::stream::Live) {
+    let Ok(_loading)=brand.loading.try_lock() else { return; };
+    if brand.document.read().unwrap().is_some() { return; }
+    live.0.send_modify(|view|view["backend_error"]=Value::Null);
+    let result=async {
+        let response=crate::backend::send(crate::backend::client(60)?.get(format!("{backend}/v1/client-config")),&live,None).await?;
+        ensure!(response.status().is_success(),"Backend configuration unavailable (HTTP {}). Update the backend and reconnect",response.status());
+        let document:protocol::Branding=response.json().await?;
+        ensure!(!document.name.trim().is_empty() && document.name.len()<=100 && !document.name.chars().any(char::is_control),"Invalid assistant name from backend");
+        ensure!(document.images.iter().all(|(key,hash)|protocol::BRAND_IMAGES.contains(&key.as_str()) && hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())),"Invalid image manifest from backend");
+        *brand.document.write().unwrap()=Some(document.clone());
+        live.0.send_modify(|view| { view["brand"]=json!(document); view["backend_error"]=Value::Null; });
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    if let Err(error)=result { live.0.send_modify(|view|view["backend_error"]=json!(error.to_string())); }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Config supplies the required backend, preserves Unicode names, and yields to CLI modes/values.
+    /// The file configures only the backend; terminal mode must be explicitly selected on the command line.
     #[test]
     fn defaults_and_overrides()->Result<()> {
-        let directory=tempfile::tempdir()?;
-        let path=directory.path().join("config");
-        std::fs::write(&path,"# Defaults\nbackend='ai.slax.org'\nname='Slax 世界'\ndesktop=true\n")?;
-        let args=crate::Args::load_from(vec!["assistant".into(),"--cli".into(),"--name=Slax AI".into()],&path)?;
-        assert_eq!(args.backend,"https://ai.slax.org"); assert_eq!(args.name,"Slax AI"); assert!(args.cli && !args.desktop);
+        let directory=tempfile::tempdir()?;let path=directory.path().join("config");
+        std::fs::write(&path,"backend='ai.slax.org'\n")?;
         let args=crate::Args::load_from(vec!["assistant".into()],&path)?;
-        assert!(args.desktop); assert_eq!(args.name,"Slax 世界");
-        let mut child=vec![OsString::from("assistant")]; child.extend(args.daemon_args());
+        assert!(!args.cli); assert_eq!(args.backend,"https://ai.slax.org");
+        let args=crate::Args::load_from(vec!["assistant".into(),"--cli".into()],&path)?;assert!(args.cli);
+        let mut child=vec!["assistant".into()];child.extend(args.daemon_args());
         assert!(crate::Args::load_from(child,&path)?.daemon);
-        std::fs::write(&path,"bakend='typo'")?;
+        std::fs::write(&path,"backend='ai.slax.org'\ncli=true\n")?;
         assert!(crate::Args::load_from(vec!["assistant".into()],&path).is_err());
         Ok(())
     }

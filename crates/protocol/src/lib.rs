@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub const MAX_REQUEST_BYTES: usize = 96_000;
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
 pub const MAX_UPLOAD_BYTES: usize = 64*1024*1024;
+mod branding;
+pub use branding::{Branding,Theme,BRAND_IMAGES,MAX_BRAND_IMAGE_BYTES,decode_brand_image};
 mod attachments;
 pub use attachments::{Attachment,validate_input,provider_input,display_messages,recovery_messages};
 

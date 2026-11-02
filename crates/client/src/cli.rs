@@ -24,13 +24,14 @@ struct App {
 }
 
 /// Own the assistant directly; terminal mode never binds a port or starts a browser service.
-pub async fn run(directory:PathBuf,backend:&str,name:&str)->Result<()> {
+pub async fn run(directory:PathBuf,backend:&str)->Result<()> {
     ensure!(io::stdin().is_terminal() && io::stdout().is_terminal(),"--cli needs an interactive terminal");
     let lock=std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
     fs2::FileExt::try_lock_exclusive(&lock).context("The browser client or another terminal owns this profile. Close it first, or set LINUX_ASSISTANT_HOME to a separate directory.")?;
     let engine=Engine::open(&directory,backend).await?;
     let client=Client { controls:engine.controls.clone(),processes:engine.processes.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),path:directory.join("state.json") };
-    let mut app=App::new(name,client.live.0.borrow().clone());
+    let branding=tokio::spawn(crate::config::load(backend.into(),Arc::new(crate::config::Brand::default()),client.live.clone()));
+    let mut app=App::new("Assistant",client.live.0.borrow().clone());
     let (send,mut completed)=mpsc::unbounded_channel();
     let mut snapshots=client.live.0.subscribe();
     let mut events=EventStream::new();
@@ -62,6 +63,7 @@ pub async fn run(directory:PathBuf,backend:&str,name:&str)->Result<()> {
         }
         Ok::<_,anyhow::Error>(())
     }.await;
+    branding.abort();
     client.controls.cancel_local();
     client.processes.stop_foreground(None);
     let _=tokio::time::timeout(Duration::from_secs(3),client.controls.interrupt()).await;
@@ -89,6 +91,7 @@ impl Client {
     }
     /// Execute UI operations without blocking rendering or the terminal's input stream.
     async fn action(&self,action:&Action)->Result<Value> {
+        if matches!(action,Action::Login(_)) { ensure!(!self.live.0.borrow()["brand"].is_null(),"Wait for backend configuration before signing in"); }
         match action {
             Action::Memories=>return crate::session::account(&self.path,&self.live,reqwest::Method::GET,"/v1/memories",None).await,
             Action::SaveMemories(text,revision)=>return crate::session::account(&self.path,&self.live,reqwest::Method::POST,"/v1/memories",Some(json!({"text":text,"revision":revision}))).await,
@@ -195,6 +198,7 @@ impl App {
     }
     /// Retain input focus while new public progress, approvals and question batches arrive.
     fn update(&mut self,view:Value) {
+        if let Some(name)=view["brand"]["name"].as_str() { self.name=name.into(); }
         if self.authenticated() && view["state"]["authenticated"]!=true { self.screen=Screen::Email; self.input=Editor::default(); self.memories=Editor::default(); self.memory_document=None; }
         self.view=view;
         let id=self.view["interactions"].as_array().and_then(|items|items.first()).and_then(|item|item["id"].as_str()).and_then(|id|id.parse().ok());

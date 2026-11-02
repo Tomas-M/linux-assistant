@@ -76,7 +76,7 @@ mod tests {
         let mut request=Request::builder().uri(path).header(header::COOKIE,cookie);
         if backup.is_some() { request=request.method("POST").header(header::CONTENT_TYPE,"application/json").header("X-Admin-Request","1"); }
         let response=crate::router(app.clone()).oneshot(request.body(backup.map_or_else(Body::empty,|value|Body::from(value.to_string())))?).await?;
-        let (parts,body)=response.into_parts(); let bytes=to_bytes(body,1024*1024).await?;
+        let (parts,body)=response.into_parts(); let bytes=to_bytes(body,16*1024*1024).await?;
         Ok((parts.status,parts.headers,if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes)? }))
     }
 

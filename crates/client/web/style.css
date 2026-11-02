@@ -5,7 +5,17 @@
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); }
 /* Populate the initial layout before showing it, including asynchronous sign-in methods. */
-.initializing main { visibility:hidden; }
+.initializing main { display:none; }
+.initializing .brand { visibility:hidden; }
+.initializing .topbar nav { display:none; }
+#connection-indicator:not([hidden])+nav { margin-left:0; }
+#startup { min-height:calc(100dvh - var(--topbar-height)); display:flex; flex-direction:column; justify-content:center; align-items:center; padding:20px; text-align:center; }
+#startup h1 { font-size:1.5rem; }
+#startup-status { max-width:36rem; color:var(--muted); }
+#connection-indicator { display:inline-flex; align-items:center; gap:0.5rem; margin-left:auto; color:var(--muted); font-size:0.875rem; white-space:nowrap; }
+#connection-indicator svg { width:1rem; height:1rem; }
+.account-identity { display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem; }
+.sign-out { border:0; padding:0; color:var(--muted); background:transparent; font-size:0.875rem; text-decoration:none; }
 button,input,select,textarea { font:inherit; color:inherit; }
 button { cursor:pointer; border:0.0625rem solid var(--border); background:var(--bg); padding:0.5625rem 0.9375rem; border-radius:0.625rem; transition:background .15s,border-color .15s; }
 button:hover { background:var(--surface); border-color:var(--muted); }

@@ -19,8 +19,6 @@ In another terminal:
 # Prints a localhost URL; open it in your preferred browser.
 # For the standalone terminal interface:
 ./target/debug/linux-assistant --backend http://127.0.0.1:8787 --cli
-# Or explicitly open browser mode:
-./target/debug/linux-assistant --backend http://127.0.0.1:8787 --desktop
 ```
 
 Every launch requires a backend from `--backend` or the client config file; there is no built-in server address. A hostname without a scheme uses HTTPS; explicit HTTP is allowed only for loopback development servers. Development mode is **simulated AI** and **simulated email**, binds only to loopback, and rejects payments. Sign in with any test email and enter the displayed six-digit development code directly in the client. Commands and full access start enabled. Development mode simulates text responses; native tool calls, questions, plans and web search require a configured AI account.
@@ -29,14 +27,13 @@ For a deployed backend:
 
 ```sh
 ./linux-assistant --backend ai.slax.org
-./linux-assistant --backend ai.slax.org --install-desktop
 ```
 
-The optional Linux desktop launcher stores the backend argument and points to the executable's current location. Install the executable where it will remain before creating the launcher. Desktop/browser launch needs the system's normal default-browser opener (`xdg-open` or equivalent on Linux). There is no Node.js, Python, external web asset, or Codex runtime dependency on the **client**. Commands use the host's `/bin/sh` on Linux or built-in Windows PowerShell 5.1 on Windows, plus installed programs.
+There is no Node.js, Python, external CDN, or Codex runtime dependency on the **client**. Commands use the host's `/bin/sh` on Linux or built-in Windows PowerShell 5.1 on Windows, plus installed programs.
 
 ## Client behavior
 
-- Launching with `--backend SERVER` starts or reuses the background server, prints its complete browser URL, and exits. `--desktop` explicitly opens the default browser. Closing a browser tab leaves the local service running.
+- Launching with `--backend SERVER` starts or reuses the background server, prints its complete browser URL, and exits. Closing a browser tab leaves the local service running.
 - `--cli` runs the assistant directly in a monochrome fullscreen terminal, with no local web server. It shares the browser client's saved account, settings and chat, but only one mode may own that data directory at a time. Close the browser service before switching to terminal mode; `LINUX_ASSISTANT_HOME` can select a separate profile. Ctrl+C exits the console and stops its current task. Ratatui/Crossterm are compiled into the executable; ncurses or another runtime package is not required.
 - The console uses Workbench layout B: chat and Tasks side by side in wide terminals, and a full-screen task view in narrow ones. Resizing is automatic. Full access and shortcut hints share a single bottom row. Enter sends or queues; Ctrl+Enter steers (F5 works in terminals that cannot distinguish Ctrl+Enter). Shift/Alt+Enter inserts a newline. F1 shows all shortcuts, F2 toggles Tasks, F3 changes Full access, F4 starts a new chat, F6 opens credits, F7 retries, F8 stops the selected command, and F9 expands completed steps. Questions accept a click or number without an extra confirmation; Tab selects a custom answer. In the queue, use Tab then arrows to select, E to edit in place, Delete to remove, and F5 to steer.
 - Console sign-in uses email and a six-digit code. Credit packs open Stripe checkout in the browser; R in Account refreshes the balance afterward. Use `/attach /path/to/file` to attach original PNG/JPEG/WebP images or UTF-8 files, then type the prompt. `/clear-attachments` removes pending attachments. Inputs estimated to cost more than 8 credits require sending again to confirm. Existing image attachments appear as filenames in the console; visual thumbnails remain available in browser mode.
@@ -51,22 +48,23 @@ The optional Linux desktop launcher stores the backend argument and points to th
 - New questions, the client OS, current directory, and approved command output go to your backend and AI provider. The application does not otherwise read the local filesystem for the model.
 - Each task is charged for its token usage, with one combined rounding across command follow-ups. Only new input is sent in each request; the visible conversation can grow beyond the transport budget. The browser and CLI receive live provider summaries and readable answer text. Model and reasoning settings remain backend-only.
 
-Sign-in verifies automatically once all six code digits are entered or pasted. The greeting appears after sign-in. Settings shows the current credit balance and Purchase. A Recent purchases disclosure below the credit packs loads the five most recent completed purchases on demand; `/v1/purchases` requires the user’s bearer token and exposes only credit amounts and payment timestamps. Deploy the updated backend before using purchase history. The chosen brand name is rendered in the initial HTML, including the browser title.
+Sign-in verifies automatically once all six code digits are entered or pasted. Account & settings shows the balance, credit packs, the three most recent purchases when present, and Sign out beside the email. The assistant name and default theme come from the backend before sign-in is shown.
 
 The browser uses embedded SVG icons in both themes and keeps credits and account controls visible while scrolling. Expanded command output remains open as new replies arrive. The composer reserves space for queued messages and longer drafts. Task manager output is fetched only when its metadata changes; idle polling slows down and hidden tabs stop polling.
 
-### Branding and client defaults
+### Client branding and startup configuration
 
-```sh
-./linux-assistant --backend ai.slax.org --name "Slax AI"
-./linux-assistant --backend ai.slax.org --name "Slax AI" --logo /usr/share/slax-ai/logo.png
+Configure the name, assistant image, square logo, full header logo, favicon and default light/dark theme in **Admin → Settings → Client appearance**. A full logo replaces both the square logo and name. Images are original PNG, JPEG or WebP files, up to 2 MiB and 4096 × 4096 pixels each. Settings backups include every configured image as a base64 data URL, along with the other settings and AI accounts; the admin password is excluded.
+
+The local server fetches the public `/v1/client-config` manifest once at startup, before exposing the sign-in form. Images use separate versioned URLs through the local server and are not repeated in chat snapshots. Settings are never polled: restart the client to apply backend changes. A user-selected theme overrides the server default for that backend. Failed connections retry up to five times with five-second pauses and a compact reconnect indicator; a failed configuration load also offers Reconnect.
+
+The client reads `/etc/linux-assistant/config` on Linux and `%ProgramData%\linux-assistant\config` on Windows. Only the backend URL is configured here:
+
+```toml
+backend = "ai.slax.org"
 ```
 
-`--name` changes the browser title, header, terminal greeting and generated Linux launcher. `--brand-mark /path/to/clover.png` shows a square PNG beside the name. `--logo` replaces both the icon and text in the browser header with a PNG; the name remains the accessible label and page title. Logo files are read once, at most 1 MiB and 4096 × 4096 pixels. Stop an existing daemon before changing its backend or branding.
-
-`--assistant-image /path/to/assistant.png` replaces the sign-in character with a PNG from disk. The built-in character is used when omitted. The file is read on each request without browser caching: replace the file and refresh to update the picture without rebuilding or restarting. Restart the daemon to choose a different path.
-
-The client reads `/etc/linux-assistant/config` on Linux and `%ProgramData%\linux-assistant\config` on Windows. Use `--config PATH` for another file. All operational argument names are accepted as TOML keys; unknown keys fail startup. Command-line values take precedence, including `--desktop=false`. An explicit launch mode overrides configured launch modes. Use absolute logo paths. See [the commented example](deploy/client-config.example).
+Use `--config PATH` for another file. `--backend SERVER` overrides the configured URL. `--cli` selects terminal mode; otherwise launching starts or reuses the local web server and prints its URL. Branding options and browser-opening flags are removed. See [the commented example](deploy/client-config.example).
 
 ### Attachments
 
@@ -303,11 +301,11 @@ python scripts/cargo_backend.py build --release --locked --workspace
 .\target\release\assistant-server.exe --dev
 # In another terminal:
 .\target\release\linux-assistant.exe --backend http://127.0.0.1:8787 --cli
-# Or launch browser mode:
-.\target\release\linux-assistant.exe --backend http://127.0.0.1:8787 --desktop
+# Or launch the local browser server:
+.\target\release\linux-assistant.exe --backend http://127.0.0.1:8787
 ```
 
-Distribute `target/release/linux-assistant.exe`. The repository's `.cargo/config.toml` statically links the MSVC runtime; only normal Windows system libraries and Windows PowerShell are needed. Backend accounts, credits, and settings work identically in both client modes. The `--install-desktop` option creates a Linux freedesktop launcher and is Linux-only.
+Distribute `target/release/linux-assistant.exe`. The repository's `.cargo/config.toml` statically links the MSVC runtime; only normal Windows system libraries and Windows PowerShell are needed. Backend accounts, credits, and settings work identically in both client modes.
 
 Run the optional provider protocol fixture on Windows with:
 

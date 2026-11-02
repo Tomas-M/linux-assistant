@@ -12,7 +12,7 @@ pub use backup::{download,restore};
 mod tests;
 
 #[derive(Clone)]
-pub struct Runtime { pub config:Config,pub mail:Option<lettre::AsyncSmtpTransport<lettre::Tokio1Executor>> }
+pub struct Runtime { pub config:Config,pub mail:Option<lettre::AsyncSmtpTransport<lettre::Tokio1Executor>>,pub branding:protocol::Branding,pub images:std::collections::BTreeMap<String,(&'static str,Vec<u8>,String)> }
 impl Deref for Runtime {
     type Target=Config;
     /// Existing generation code consumes the same immutable configuration snapshot.
@@ -23,7 +23,9 @@ impl Runtime {
     pub fn new(config:Config)->Result<Self> {
         if !config.public_url.is_empty() { config.validate()?; }
         let mail=if config.dev || config.smtp_username.is_none() { None } else { Some(crate::mail::transport(&config)?.build()) };
-        Ok(Self { config,mail })
+        let images=config.client.assets()?;
+        let branding=protocol::Branding { name:config.client.name.clone(),default_theme:config.client.default_theme,images:images.iter().map(|(key,(_,_,hash))|(key.clone(),hash.clone())).collect() };
+        Ok(Self { config,mail,branding,images })
     }
 }
 

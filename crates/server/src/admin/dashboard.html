@@ -8,7 +8,7 @@
     <script src="/admin/dashboard.js" defer></script>
     <script src="/admin/settings.js" defer></script>
 </head>
-<body>
+<body class="admin-initializing">
     {{ICONS}}
     <header class="topbar">
         <a class="brand" href="/admin">LA<span>Linux Assistant <small>Operations</small></span></a>
@@ -16,7 +16,7 @@
         <button id="logout" class="quiet">Sign out</button>
     </header>
     <main>
-        <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1>Operations overview</h1></div><span id="connection" role="status">Connecting…</span></div>
+        <div class="page-heading"><div><span class="eyebrow">BACKEND CONTROL ROOM</span><h1 id="admin-page-title">AI accounts</h1></div><span id="connection" role="status">Connecting…</span></div>
         <div id="notice" role="status" hidden></div>
         <section id="accounts">
             <div class="section-heading"><div><h2>AI accounts</h2><p>ChatGPT quotas refresh every 5 minutes. The display updates automatically.</p></div><button id="refresh" class="quiet"><svg aria-hidden="true"><use href="#icon-refresh"/></svg>Refresh display</button></div>
@@ -85,22 +85,27 @@
         </section>
         <section id="settings">
             <div class="section-heading"><div><h2>Backend settings</h2><p>Saved in the server database. Changes apply immediately to new requests; active AI requests keep their settings.</p></div></div>
-            <div class="panel">
+            <div class="settings-layout">
+                <nav id="settings-nav" aria-label="Settings sections"></nav>
+                <div class="settings-content">
+            <div class="panel" data-setting-page="backup">
                 <h3>Backup and restore</h3>
                 <p class="hint">Includes saved settings, integration secrets, connected AI account credentials and pause settings. Keep the JSON file private. Restore preserves the current admin password, users, credits and conversation history. Pause active AI accounts and wait for their turns to finish before restoring.</p>
                 <div class="actions"><button id="backup-settings" type="button">Download backup</button><button id="restore-settings" type="button" class="quiet">Restore backup</button><input id="restore-file" type="file" accept=".json,application/json" hidden></div>
                 <p id="backup-status" role="status" aria-live="polite"></p>
             </div>
-            <form id="backend-settings" class="panel">
+            <form id="backend-settings" class="panel" novalidate>
                 <div id="settings-fields"></div>
-                <fieldset><legend>Credit packs</legend><p class="hint">One button per row, in this order. Enter the matching one-time USD Price from Stripe. The USD amount is displayed to users; Stripe charges the selected Price ID.</p>
+                <fieldset data-setting-page="payments"><legend>Credit packs</legend><p class="hint">One button per row, in this order. Enter the matching one-time USD Price from Stripe. The USD amount is displayed to users; Stripe charges the selected Price ID.</p>
                     <div id="pack-rows"></div><button id="add-pack" type="button" class="quiet">Add credit pack</button>
                 </fieldset>
-                <fieldset><legend>Administrator password</legend><p class="hint">Leave blank to keep your current password. Changing it signs out other admin sessions.</p>
+                <fieldset data-setting-page="security"><legend>Administrator password</legend><p class="hint">Leave blank to keep your current password. Changing it signs out other admin sessions.</p>
                     <div class="settings-grid"><label>New password<input id="new-password" type="password" minlength="16" maxlength="1024" autocomplete="new-password"></label><label>Repeat password<input id="confirm-password" type="password" minlength="16" maxlength="1024" autocomplete="new-password"></label></div>
                 </fieldset>
                 <button id="save-settings" type="submit">Save settings</button><p id="settings-result" role="status" aria-live="polite"></p>
             </form>
+                </div>
+            </div>
         </section>
     </main>
     <dialog id="user-dialog" aria-labelledby="selected-email">

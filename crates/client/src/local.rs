@@ -56,13 +56,12 @@ impl Connection {
 }
 
 /// Reuse a live daemon, or detach this executable and wait for its private discovery file.
-pub async fn connect(directory: &Path, args:&crate::Args, brand:&crate::config::Brand) -> Result<Connection> {
+pub async fn connect(directory: &Path, args:&crate::Args) -> Result<Connection> {
     let backend=args.backend.as_str();
     let path = directory.join("daemon.json");
     if let Ok(connection) = storage::read::<Connection>(&path) {
         if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
             anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client is already running for a different backend; stop it before changing servers");
-            anyhow::ensure!(connection.get("/api/branding").await?==brand.metadata(),"A client is already running with different branding; stop it before changing the name or logo");
             return Ok(connection);
         }
     }
@@ -83,7 +82,6 @@ pub async fn connect(directory: &Path, args:&crate::Args, brand:&crate::config::
         if let Ok(connection) = storage::read::<Connection>(&path) {
             if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
                 anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client started for a different backend; stop it before changing servers");
-                anyhow::ensure!(connection.get("/api/branding").await?==brand.metadata(),"A client started with different branding; stop it before changing the name or logo");
                 return Ok(connection);
             }
         }
@@ -92,7 +90,7 @@ pub async fn connect(directory: &Path, args:&crate::Args, brand:&crate::config::
 }
 
 /// Bind loopback only and hold an exclusive lock for this entire daemon lifetime.
-pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) -> Result<()> {
+pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
     if lock.try_lock_exclusive().is_err() { return Ok(()); }
     let engine = Engine::open(&directory,backend).await?;
@@ -102,9 +100,10 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1",port)).await?;
     let connection = Connection { url:format!("http://{}",listener.local_addr()?) };
     storage::write(&discovery,&connection)?;
-    engine.live.0.send_modify(|view|view["brand"]=brand.metadata());
+    let brand=Arc::new(crate::config::Brand::default());
+    let branding=tokio::spawn(crate::config::load(backend.into(),brand.clone(),engine.live.clone()));
     let processes=engine.processes.clone();
-    let state = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(brand),session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let state = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand,session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
     let controls=state.controls.clone();
     tokio::select! {
@@ -116,6 +115,7 @@ pub async fn serve(directory: PathBuf, backend:&str,brand:crate::config::Brand) 
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
+    branding.abort();
     Ok(())
 }
 
@@ -124,17 +124,11 @@ fn router(state: Local) -> Router {
     Router::new()
         .route("/",get(|State(state):State<Local>|async move {
             // Brand the initial document too, before scripts or account data have loaded.
-            let name=state.brand.name.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
-            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{ICONS}}",protocol::ICONS_SVG))
+            let name=state.brand.metadata()["name"].as_str().unwrap_or("Assistant").replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
+            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG))
         }))
-        .route("/assistant.png",get(|State(state):State<Local>|async move {
-            // Read the configured character on demand so replacing the file only requires a browser refresh.
-            let bytes=match &state.brand.assistant_image {
-                Some(path)=>tokio::fs::read(path).await.context("Cannot read the assistant image")?,
-                None=>include_bytes!("../web/assistant.png").to_vec(),
-            };
-            Ok::<_,LocalError>(([(header::CONTENT_TYPE,"image/png"),(header::CACHE_CONTROL,"no-store")],bytes))
-        }))
+        .route("/branding/{key}",get(brand_image))
+        .route("/api/configuration/retry",post(retry_configuration))
         .route("/images.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/images.js")) }))
         .route("/files.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/files.js")) }))
         .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
@@ -143,7 +137,6 @@ fn router(state: Local) -> Router {
         .route("/native.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/native.js")) }))
         .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
         .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
-        .route("/logo.png",get(|State(state):State<Local>|async move { match &state.brand.logo { Some(bytes)=>([(header::CONTENT_TYPE,"image/png")],bytes.clone()).into_response(),None=>StatusCode::NOT_FOUND.into_response() } }))
         .route("/api/branding",get(|State(state):State<Local>|async move { Json(state.brand.metadata()) }))
         .route("/api/media/{scope}/{index}",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,false).await }))
         .route("/api/media/{scope}/{index}/thumbnail",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,true).await }))
@@ -183,6 +176,27 @@ async fn download_file(State(state):State<Local>,axum::extract::Path(id):axum::e
     crate::downloads::response(state.downloads,id).await
 }
 
+/// Proxy only manifest-owned assets through loopback, including when browser and assistant use different OS users.
+async fn brand_image(State(state):State<Local>,axum::extract::Path(key):axum::extract::Path<String>,axum::extract::Query(query):axum::extract::Query<std::collections::HashMap<String,String>>)->Result<Response,LocalError> {
+    let manifest=state.brand.metadata();
+    let Some(hash)=manifest["images"][&key].as_str() else { return Ok(StatusCode::NOT_FOUND.into_response()); };
+    if query.get("v").map(String::as_str)!=Some(hash) { return Ok(StatusCode::NOT_FOUND.into_response()); }
+    let backend=state.live.0.borrow()["state"]["settings"]["backend"].as_str().unwrap().to_owned();
+    let mut response=crate::backend::send(crate::backend::client(60)?.get(format!("{backend}/v1/client-assets/{key}?v={hash}")),&state.live,None).await?;
+    if !response.status().is_success() { return Err(anyhow::anyhow!("Cannot load the configured image").into()); }
+    let mime=response.headers().get(header::CONTENT_TYPE).context("Image content type is missing")?.to_str()?.to_owned();
+    let mut bytes=Vec::new();
+    while let Some(chunk)=response.chunk().await? { if bytes.len()+chunk.len()>protocol::MAX_BRAND_IMAGE_BYTES { return Err(anyhow::anyhow!("Brand image exceeds 2 MiB").into()); } bytes.extend_from_slice(&chunk); }
+    Ok(([(header::CONTENT_TYPE,mime.as_str()),(header::CACHE_CONTROL,"public, max-age=31536000, immutable")],bytes).into_response())
+}
+
+/// An explicit reconnect retries an unsuccessful startup without reloading settings already in use.
+async fn retry_configuration(State(state):State<Local>)->Json<Value> {
+    let backend=state.live.0.borrow()["state"]["settings"]["backend"].as_str().unwrap().to_owned();
+    tokio::spawn(crate::config::load(backend,state.brand,state.live));
+    Json(json!({"ok":true}))
+}
+
 /// Keep the local API accessible to local users while rejecting unrelated websites and DNS rebinding.
 async fn security(State(state): State<Local>, request: Request<Body>, next: Next) -> Response {
     let host = state.connection.url.strip_prefix("http://").unwrap();
@@ -201,7 +215,7 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
     for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
         ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
         // Inline file documents provide their own sandbox policy.
-        if key=="content-security-policy" && response.headers().contains_key(key) { continue; }
+        if matches!(key,"content-security-policy"|"cache-control") && response.headers().contains_key(key) { continue; }
         response.headers_mut().insert(axum::http::HeaderName::from_static(key),value.parse().unwrap());
     }
     response
@@ -506,11 +520,11 @@ mod tests {
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand { name:"Slax 世界 & <AI>".into(),logo:None,mark:false,assistant_image:None }),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;
-        assert!(html.contains("<title>Slax 世界 &amp; &lt;AI&gt;</title>"));
+        assert!(html.contains("<title>Assistant</title>"));
         assert!(!html.contains("{{APP_NAME}}") && !html.contains("<title>Linux Assistant</title>"));
         for (host,origin,site,status) in [
             ("127.0.0.1:1234",None,None,StatusCode::OK),

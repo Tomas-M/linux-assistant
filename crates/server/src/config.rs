@@ -33,6 +33,8 @@ pub struct Config {
     #[cfg(test)]
     #[serde(skip)]
     pub test_homes:Vec<PathBuf>,
+    #[serde(default)]
+    pub client:crate::appearance::Appearance,
     pub public_url:String,
     pub email_enabled:bool,
     pub google_enabled:bool,
@@ -62,7 +64,7 @@ pub struct Config {
 impl Default for Config {
     /// Fresh deployments start with no credentials and use only the browser setup flow.
     fn default()->Self {
-        Self { listen:None,database:database_path(),dev:false,admin_password_hash:None,
+        Self { listen:None,database:database_path(),dev:false,admin_password_hash:None,client:Default::default(),
             #[cfg(test)] test_homes:vec![],public_url:String::new(),email_enabled:false,google_enabled:false,microsoft_enabled:false,github_enabled:false,free_credits:100,
             pricing:crate::billing::Pricing { input_credits_per_million:crate::billing::Rate(200_000_000),cached_input_credits_per_million:crate::billing::Rate(10_000_000),output_credits_per_million:crate::billing::Rate(1_000_000_000) },
             model:None,reasoning_effort:None,assistant_context:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
@@ -97,6 +99,7 @@ fn require(valid:bool,field:&str,message:&str)->Result<(),FieldError> {
 impl Config {
     /// Optional integrations may be absent, but a partially configured integration must be corrected before saving.
     pub fn validate(&self)->Result<(),FieldError> {
+        self.client.validate()?;
         require((0..=1_000_000_000).contains(&self.free_credits),"free_credits","Enter a whole number between 0 and 1000000000")?;
         let url=reqwest::Url::parse(&self.public_url).map_err(|_|FieldError::new("public_url","Enter a full URL, e.g. https://ai.slax.org"))?;
         let origin_only=url.query().is_none() && url.fragment().is_none() && url.path()=="/";

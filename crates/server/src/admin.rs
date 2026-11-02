@@ -18,7 +18,7 @@ pub fn router(app: App) -> Router<App> {
         .route("/admin/api/users",get(reports::users)).route("/admin/api/accounts/{id}/test",post(test_account))
         .route("/admin/api/users/{id}/credits",post(credits)).route("/admin/api/users/{id}/block",post(block))
         .route("/admin/api/users/{id}/revoke",post(revoke)).route("/admin/api/users/{id}/checkout",post(checkout))
-        .route("/admin/api/settings",get(crate::settings::view).post(crate::settings::save))
+        .route("/admin/api/settings",get(crate::settings::view).post(crate::settings::save).layer(DefaultBodyLimit::max(16*1024*1024)))
         .route("/admin/api/settings/backup",get(crate::settings::download))
         .route("/admin/api/settings/restore",post(crate::settings::restore).layer(DefaultBodyLimit::max(16*1024*1024)))
         .route("/admin/api/logout",post(logout)).route_layer(middleware::from_fn_with_state(app,authorize));

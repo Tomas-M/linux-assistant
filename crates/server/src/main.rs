@@ -5,6 +5,7 @@ mod auth;
 mod admin;
 mod config;
 mod settings;
+mod appearance;
 mod db;
 mod diagnostics;
 mod embedded;
@@ -141,6 +142,7 @@ async fn run() -> anyhow::Result<()> {
 /// Register hosted authentication and authenticated application APIs in one server.
 fn router(app: App) -> Router {
     Router::new().merge(admin::router(app.clone())).route("/health",get(||async { Json(json!({"ok":true})) }))
+        .route("/v1/client-config",get(appearance::manifest)).route("/v1/client-assets/{key}",get(appearance::asset))
         .route("/v1/auth/device",post(auth::start)).route("/v1/auth/poll",post(auth::poll))
         .route("/v1/auth/email",post(auth::email)).route("/v1/auth/verify",post(auth::verify))
         .route("/v1/auth/providers",get(auth::social::providers)).route("/v1/auth/cancel",post(auth::social::cancel))
