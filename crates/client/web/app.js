@@ -636,6 +636,7 @@ const codeInputs=[...elements['code-digits'].querySelectorAll('input')];
 // Keep the sign-in form local, including resend timing and development-only delivery hints.
 function renderLogin()
 {
+    elements['code-email'].textContent=elements.email.value.trim();
     const remaining=Math.max(0,Math.ceil((resendAt-Date.now())/1000));
     const waiting=!!socialLogin && !socialLogin.verification;
     // Keep the form visibly locked after the popup closes until polling confirms completion or cancellation.
