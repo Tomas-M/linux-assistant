@@ -97,6 +97,8 @@ pub fn settle(conn:&Connection,user:i64,request:&str,success:bool,finished:bool)
         if let (Some(input),Some(cached),Some(output))=(input,cached,output) {
             cost=cost.checked_add(pricing.cost(*input,*cached,*output)?).ok_or_else(||anyhow::anyhow!("Token cost overflow"))?;
         }
+        let image_cost:i64=conn.query_row("SELECT COALESCE(SUM(cost),0) FROM image_generations WHERE usage_id=?1",[id],|row|row.get(0))?;
+        cost=cost.checked_add(i128::from(image_cost)*i128::from(SCALE)).ok_or_else(||anyhow::anyhow!("Image cost overflow"))?;
         let minimum_due=success && index+1==attempts.len();
         let target=if cost>0 || minimum_due { credits(cost)? } else { 0 };
         if target>charged {

@@ -25,6 +25,13 @@ impl Reporter {
     pub fn event(&mut self, event: &Value) -> Result<()> {
         let params=&event["params"];
         match event["method"].as_str() {
+            Some("item/started"|"item/completed") if params["item"]["type"]=="imageGeneration"=> {
+                let item=&params["item"]; let id=item["id"].as_str().unwrap_or_default();
+                let part=self.part(id,id,ProgressKind::Action)?;
+                part.completed=event["method"]=="item/completed";
+                part.text=if !part.completed { "Generating image…" } else if item["status"]=="completed" { "Generated image" } else { "Image generation failed" }.into();
+                part.data=Some(serde_json::json!({"tool":"generate_image","status":item["status"],"image":item["assistantImage"],"failure":item["failure"]}));
+            }
             Some("turn/plan/updated")=> {
                 let id=format!("plan:{}",params["turnId"].as_str().unwrap_or_default());
                 let part=self.part(&id,&id,ProgressKind::Plan)?;
@@ -33,7 +40,7 @@ impl Reporter {
                 part.data=Some(serde_json::json!({"explanation":clip(params["explanation"].as_str().unwrap_or_default(),4000),"plan":plan}));
                 part.completed=params["plan"].as_array().is_some_and(|steps|steps.iter().all(|step|step["status"]=="completed"));
             }
-            Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch"))=> {
+            Some("item/started"|"item/completed") if matches!(params["item"]["type"].as_str(),Some("dynamicToolCall"|"webSearch") && params["item"]["tool"]!="generate_image")=> {
                 let item=&params["item"]; let id=item["id"].as_str().unwrap_or_default();
                 let kind=if item["type"]=="webSearch" { ProgressKind::WebSearch } else { ProgressKind::Action };
                 let part=self.part(id,id,kind)?;

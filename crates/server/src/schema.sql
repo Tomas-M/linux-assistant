@@ -45,3 +45,5 @@ CREATE TABLE IF NOT EXISTS user_memories(user_id INTEGER PRIMARY KEY REFERENCES 
 
 CREATE INDEX IF NOT EXISTS usage_thread ON usage(thread_id,user_id,conversation_id) WHERE thread_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS conversations_thread ON conversations(thread_id) WHERE thread_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS image_generations(id TEXT PRIMARY KEY,usage_id INTEGER NOT NULL REFERENCES usage(id),call_id TEXT NOT NULL,cost INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(usage_id,call_id));

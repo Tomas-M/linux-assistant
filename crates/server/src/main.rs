@@ -17,6 +17,7 @@ mod billing;
 mod turns;
 mod storage;
 mod memories;
+mod imagegen;
 #[cfg(test)]
 mod tests;
 
@@ -142,6 +143,7 @@ async fn run() -> anyhow::Result<()> {
 /// Register hosted authentication and authenticated application APIs in one server.
 fn router(app: App) -> Router {
     Router::new().merge(admin::router(app.clone())).route("/health",get(||async { Json(json!({"ok":true})) }))
+        .route("/v1/images/{id}",get(imagegen::asset))
         .route("/v1/client-config",get(appearance::manifest)).route("/v1/client-assets/{key}",get(appearance::asset))
         .route("/v1/auth/device",post(auth::start)).route("/v1/auth/poll",post(auth::poll))
         .route("/v1/auth/email",post(auth::email)).route("/v1/auth/verify",post(auth::verify))

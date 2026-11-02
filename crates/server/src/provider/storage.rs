@@ -17,7 +17,12 @@ fn rollouts(path:&Path,account:&Arc<ProviderAccount>,files:&mut Vec<Rollout>)->R
         let Some(stem)=name.trim_end_matches(".zst").strip_suffix(".jsonl").filter(|name|name.starts_with("rollout-")) else { continue; };
         let Some(thread)=stem.get(stem.len().saturating_sub(36)..).and_then(|value|uuid::Uuid::parse_str(value).ok()) else { continue; };
         let metadata=entry.metadata()?;
-        files.push(Rollout { account:account.clone(),thread:thread.to_string(),bytes:metadata.len(),modified:metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64 });
+        let generated=Path::new(&account.home).join("generated_images").join(thread.to_string());
+        let mut bytes=metadata.len();
+        if generated.try_exists()? && std::fs::symlink_metadata(&generated)?.is_dir() {
+            for image in std::fs::read_dir(generated)? { let image=image?; if image.file_type()?.is_file() { bytes+=image.metadata()?.len(); } }
+        }
+        files.push(Rollout { account:account.clone(),thread:thread.to_string(),bytes,modified:metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64 });
     }
     Ok(())
 }
@@ -108,7 +113,14 @@ impl Pool {
             if rpc.has_thread(&file.thread) || !db.retire_thread(&file.thread)? { continue; }
             let result=tokio::time::timeout(Duration::from_secs(20),rpc.call("thread/delete",serde_json::json!({"threadId":file.thread}))).await;
             match result {
-                Ok(Ok(_))=> { total=total.saturating_sub(file.bytes); }
+                Ok(Ok(_))=> {
+                    total=total.saturating_sub(file.bytes);
+                    let generated=Path::new(&file.account.home).join("generated_images").join(&file.thread);
+                    if generated.try_exists()? && std::fs::symlink_metadata(&generated)?.is_dir() {
+                        ensure!(generated.canonicalize()?.starts_with(Path::new(&file.account.home).canonicalize()?),"Generated image cache escaped the account home");
+                        std::fs::remove_dir_all(generated)?;
+                    }
+                }
                 result=>crate::diagnostics::record("warning","storage_cleanup",None,Some(&file.account.home),&format!("Could not remove expired provider thread {}: {result:?}",file.thread)),
             }
         }

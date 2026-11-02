@@ -51,6 +51,7 @@ pub fn startup(app:&App)->Result<()> {
             if trimmed!=history { connection.execute("UPDATE conversations SET messages=?1 WHERE user_id=?2 AND id=?3",params![trimmed,user,id])?; }
         }
     }
+    crate::imagegen::prune(&config)?;
     app.db.prune()?;
     let connection=app.db.0.lock().unwrap();
     let mode:i64=connection.query_row("PRAGMA auto_vacuum",[],|row|row.get(0))?;
@@ -107,7 +108,8 @@ pub async fn maintain(app:App) {
     loop {
         interval.tick().await;
         let db=app.db.clone();
-        let result=tokio::task::spawn_blocking(move||db.prune()).await;
+        let config=app.config();
+        let result=tokio::task::spawn_blocking(move|| { crate::imagegen::prune(&config)?; db.prune() }).await;
         if let Err(error)=result.map_err(anyhow::Error::from).and_then(|result|result) { crate::diagnostics::record("error","storage_cleanup",None,None,&format!("{error:#}")); }
         if let Err(error)=app.pool.prune(&app.db).await { crate::diagnostics::record("error","storage_cleanup",None,None,&format!("{error:#}")); }
     }
