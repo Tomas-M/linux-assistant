@@ -101,7 +101,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .progress-commentary { margin:1.125rem 0; color:var(--text); }
 .past-progress { margin:1.125rem 0 1.5rem; color:var(--muted); font-size:0.875rem; }
 .completion { margin:1.125rem 0 1.75rem; }
-.work-summary { margin:0 0 1rem; color:var(--muted); font-size:0.875rem; }
+.work-summary { margin:0 0 1rem; padding-bottom:0.375rem; border-bottom:1px solid var(--border); color:var(--muted); font-size:0.875rem; }
 .work-body { margin-top:0.75rem; padding-left:0.875rem; border-left:0.0625rem solid var(--border); }
 #messages .completion .assistant { margin:1.125rem 0 1rem; }
 .completion-footer { display:flex; flex-wrap:wrap; align-items:center; gap:0.625rem; color:var(--muted); font-size:0.8125rem; }
