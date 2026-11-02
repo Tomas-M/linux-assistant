@@ -193,8 +193,8 @@ async fn brand_image(State(state):State<Local>,axum::extract::Path(key):axum::ex
 /// An explicit reconnect retries an unsuccessful startup without reloading settings already in use.
 async fn retry_configuration(State(state):State<Local>)->Json<Value> {
     let backend=state.live.0.borrow()["state"]["settings"]["backend"].as_str().unwrap().to_owned();
-    tokio::spawn(crate::config::load(backend,state.brand,state.live));
-    Json(json!({"ok":true}))
+    crate::config::load(backend,state.brand.clone(),state.live).await;
+    Json(json!({"providers":state.brand.providers()}))
 }
 
 /// Keep the local API accessible to local users while rejecting unrelated websites and DNS rebinding.

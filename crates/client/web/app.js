@@ -521,7 +521,7 @@ elements.logout.addEventListener('click',async()=>
 elements['configuration-retry'].addEventListener('click',async()=>
 {
     elements['configuration-retry'].disabled=true;
-    try { await api('configuration/retry',{}); }
+    try { const result=await api('configuration/retry',{}); if (result.providers) { enabledProviders=result.providers.providers; emailEnabled=result.providers.email_enabled; renderLogin(); render(); } }
     catch (error) { elements['startup-status'].textContent=error.message; }
     finally { elements['configuration-retry'].disabled=false; }
 });
