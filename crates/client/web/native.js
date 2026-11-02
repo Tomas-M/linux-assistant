@@ -132,7 +132,12 @@ function renderWork(row,parts,active)
         if (part.data?.tool==='generate_image') toolIcon='image';
         // The first native item stays stable when the local session ID arrives later.
         const key=session.first, process=result?.session_id || args.session_id;
-        present.add(key); updateAction(row,key,toolIcon,caption,output || JSON.stringify(part.data?.action || args,null,2),process);
+        const generating=part.data?.tool==='generate_image' && running;
+        present.add(key); updateAction(row,key,toolIcon,caption,generating?'':output || JSON.stringify(part.data?.action || args,null,2),process);
+        const preview=row.actions.get(key).pre;
+        preview.classList.toggle('image-loading',generating);
+        if (generating) { preview.setAttribute('role','status'); preview.setAttribute('aria-label','Generating image'); }
+        else { preview.removeAttribute('role'); preview.removeAttribute('aria-label'); }
         const changes=new Map();
         for (const item of session.parts)
             for (const change of view.tool_results[item.id]?.changes || []) changes.set(change.path,change);
