@@ -107,7 +107,7 @@ async function loadSettings()
         '<div class="settings-grid">'+group.fields.map(([key,label,type='text'])=>
         {
             const value=key.split('.').reduce((value,key)=>value[key],backendSettings);
-            if (type==='image') return '<div class="brand-upload" data-image-field="'+key+'"><label for="setting-'+key+'">'+escapeHtml(label)+'</label><div class="brand-preview"><img alt="'+escapeHtml(label)+' preview"'+(value?' src="'+escapeHtml(value)+'"':' hidden')+'></div><input id="setting-'+key+'" type="file" data-image="'+key.slice(7)+'" accept="image/png,image/jpeg,image/webp"><button type="button" class="quiet" data-clear-image="'+key.slice(7)+'"'+(!value?' disabled':'')+'>Remove image</button><small class="hint">PNG, JPEG or WebP · up to 2 MiB · at most 4096 × 4096 pixels</small></div>';
+            if (type==='image') return '<div class="brand-upload" data-image-field="'+key+'"><label for="setting-'+key+'">'+escapeHtml(label)+'</label><div class="brand-preview"><img alt="'+escapeHtml(label)+' preview"'+(value?' src="'+escapeHtml(value)+'"':' hidden')+'></div><input id="setting-'+key+'" type="file" data-image="'+key.slice(7)+'" accept="image/png,image/jpeg,image/webp'+(key==='client.favicon' ? ',.ico,image/x-icon,image/vnd.microsoft.icon' : '')+'"><button type="button" class="quiet" data-clear-image="'+key.slice(7)+'"'+(!value?' disabled':'')+'>Remove image</button><small class="hint">'+(key==='client.favicon' ? 'PNG, JPEG, WebP or ICO' : 'PNG, JPEG or WebP')+' · up to 2 MiB · at most 4096 × 4096 pixels</small></div>';
             if (type==='checkbox') return '<label class="setting-switch"><input id="setting-'+key+'" data-setting="'+key+'" type="checkbox"'+(value?' checked':'')+'>'+escapeHtml(label)+'</label>';
             const secret=type==='password',saved=secret && result.saved_secrets.includes(key);
             const placeholder=saved?'Saved; leave blank to keep':settingsPlaceholders[key] || '';
@@ -160,11 +160,15 @@ document.getElementById('settings-fields').addEventListener('change',async event
     try
     {
         if (file.size>2*1024*1024) throw new Error('Use an image up to 2 MiB.');
-        if (!['image/png','image/jpeg','image/webp'].includes(file.type)) throw new Error('Choose a PNG, JPEG or WebP image.');
-        const content=await new Promise((resolve,reject)=>
+        // ICO MIME types vary by browser; recognize its file signature and preserve the original bytes.
+        const header=new Uint8Array(await file.slice(0,4).arrayBuffer());
+        const favicon=input.dataset.image==='favicon',icon=favicon && header.join(',')==='0,0,1,0';
+        if (!icon && !['image/png','image/jpeg','image/webp'].includes(file.type)) throw new Error(favicon?'Choose a PNG, JPEG, WebP or ICO image.':'Choose a PNG, JPEG or WebP image.');
+        let content=await new Promise((resolve,reject)=>
         {
             const reader=new FileReader(); reader.onload=()=>resolve(reader.result); reader.onerror=()=>reject(reader.error); reader.readAsDataURL(file);
         });
+        if (icon) content='data:image/vnd.microsoft.icon;base64,'+content.slice(content.indexOf(',')+1);
         const image=new Image(); image.src=content; await image.decode();
         if (image.naturalWidth>4096 || image.naturalHeight>4096) throw new Error('Use an image of at most 4096 × 4096 pixels.');
         backendSettings.client[input.dataset.image]=content;

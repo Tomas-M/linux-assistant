@@ -54,7 +54,7 @@ The browser uses embedded SVG icons in both themes and keeps credits and account
 
 ### Client branding and startup configuration
 
-Configure the name, assistant image, square logo, full header logo, favicon and default light/dark theme in **Admin → Settings → Client appearance**. A full logo replaces both the square logo and name. Images are original PNG, JPEG or WebP files, up to 2 MiB and 4096 × 4096 pixels each. Settings backups include every configured image as a base64 data URL, along with the other settings and AI accounts; the admin password is excluded.
+Configure the name, assistant image, square logo, full header logo, favicon and default light/dark theme in **Admin → Settings → Client appearance**. A full logo replaces both the square logo and name. Images are original PNG, JPEG or WebP files; the favicon also accepts ICO. Images are up to 2 MiB and 4096 × 4096 pixels each. Settings backups include every configured image as a base64 data URL, along with the other settings and AI accounts; the admin password is excluded.
 
 The local server fetches the public `/v1/client-config` manifest once at startup, before exposing the sign-in form. Images use separate versioned URLs through the local server and are not repeated in chat snapshots. Settings are never polled: restart the client to apply backend changes. A user-selected theme overrides the server default for that backend. Failed connections retry up to five times with five-second pauses and a compact reconnect indicator; a failed configuration load also offers Reconnect.
 

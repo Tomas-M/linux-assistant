@@ -27,14 +27,14 @@ impl Appearance {
     pub fn validate(&self)->Result<(),FieldError> {
         if self.name.trim().is_empty() || self.name.len()>100 || self.name.chars().any(char::is_control) { return Err(FieldError::new("client.name","Enter an assistant name of 1 to 100 UTF-8 bytes")); }
         for (key,image) in self.images() {
-            if let Some(image)=image { protocol::decode_brand_image(image).map_err(|error|FieldError::new(&format!("client.{}",key.replace('-',"_")),&error.to_string()))?; }
+            if let Some(image)=image { protocol::decode_brand_image(image,key=="favicon").map_err(|error|FieldError::new(&format!("client.{}",key.replace('-',"_")),&error.to_string()))?; }
         }
         Ok(())
     }
     /// Decode once per immutable settings snapshot, keeping large images out of manifest and chat updates.
     pub fn assets(&self)->anyhow::Result<BTreeMap<String,(&'static str,Vec<u8>,String)>> {
         self.images().into_iter().filter_map(|(key,image)|image.as_ref().map(|image|(key,image))).map(|(key,image)| {
-            let (mime,bytes)=protocol::decode_brand_image(image)?;
+            let (mime,bytes)=protocol::decode_brand_image(image,key=="favicon")?;
             let hash=format!("{:x}",Sha256::digest(&bytes));
             Ok((key.into(),(mime,bytes,hash)))
         }).collect()
