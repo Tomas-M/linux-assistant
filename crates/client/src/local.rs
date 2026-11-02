@@ -125,7 +125,7 @@ fn router(state: Local) -> Router {
         .route("/",get(|State(state):State<Local>|async move {
             // Brand the initial document too, before scripts or account data have loaded.
             let name=state.brand.metadata()["name"].as_str().unwrap_or("Assistant").replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
-            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG).replace("{{SIGN_IN}}",&state.brand.providers().to_string().replace('<',"\u003c")))
+            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG).replace("{{SIGN_IN}}",&state.brand.providers().to_string().replace('<',"\\u003c")))
         }))
         .route("/branding/{key}",get(brand_image))
         .route("/api/configuration/retry",post(retry_configuration))
