@@ -26,6 +26,8 @@ code { overflow-wrap:anywhere; font-size:var(--secondary); }
 .brand small { display:block; color:#9ebbbd; font-size:var(--small); font-weight:400; }
 nav { display:flex; gap:24px; margin-left:auto; }
 nav a { color:#d3e5e4; font-size:var(--secondary); text-decoration:none; }
+.topbar nav { align-items:center; gap:4px; }
+.topbar nav a { display:inline-flex; align-items:center; padding:8px 12px; border-radius:8px; white-space:nowrap; }
 .topbar button.quiet { color:white; border-color:#426267; }
 main { max-width:1500px; padding:36px 4vw 70px; margin:auto; }
 section { scroll-margin-top:110px; margin-bottom:40px; }
