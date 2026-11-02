@@ -77,7 +77,7 @@ function render()
     const initializing=document.body.classList.contains('initializing');
     const configured=!!view.brand,ready=configured && providersReady;
     document.body.classList.toggle('initializing',!ready);
-    elements.startup.hidden=ready;
+    elements.startup.hidden=ready || !view.backend_error;
     if (!ready) { renderConnection(); return; }
     if (initializing && emailEnabled && !state.authenticated) queueMicrotask(()=>elements.email.focus({preventScroll:true}));
     const brand=view.brand,images=brand.images;
@@ -1436,7 +1436,7 @@ const initialState=api('state').then(async current=>
         try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
     }
 }).catch(error=>{elements.status.textContent=error.message;});
-const initialProviders=api('login/providers').then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
+const initialProviders=Promise.resolve(JSON.parse(document.getElementById('sign-in-options').textContent)).then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
 
 // Reveal the complete sign-in screen and focus without shifting its centered position.
 Promise.allSettled([initialState,initialProviders]).then(()=>

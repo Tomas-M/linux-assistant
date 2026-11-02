@@ -12,6 +12,7 @@
     <script src="/images.js" defer></script>
     <script src="/attachments.js" defer></script>
     <script src="/native.js" defer></script>
+    <script id="sign-in-options" type="application/json">{{SIGN_IN}}</script>
     <script src="/app.js" defer></script>
 </head>
 <body class="initializing">
@@ -33,7 +34,7 @@
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
         </nav>
     </header>
-    <section id="startup" aria-live="polite"><h1>Connecting to your assistant</h1><p id="startup-status">Loading server settings…</p><button id="configuration-retry" type="button" hidden>Reconnect</button></section>
+    <section id="startup" aria-live="polite" hidden><h1>Connecting to your assistant</h1><p id="startup-status">Loading server settings…</p><button id="configuration-retry" type="button" hidden>Reconnect</button></section>
     <main>
         <div id="status" role="status" aria-live="polite"></div>
         <section id="workspace">

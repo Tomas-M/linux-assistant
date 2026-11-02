@@ -77,7 +77,7 @@ pub async fn connect(directory: &Path, args:&crate::Args) -> Result<Connection> 
     }
     #[cfg(windows)]
     crate::windows_launcher::spawn(&args.daemon_args())?;
-    for _ in 0..100 {
+    for _ in 0..3600 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(connection) = storage::read::<Connection>(&path) {
             if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
@@ -101,7 +101,8 @@ pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
     let connection = Connection { url:format!("http://{}",listener.local_addr()?) };
     storage::write(&discovery,&connection)?;
     let brand=Arc::new(crate::config::Brand::default());
-    let branding=tokio::spawn(crate::config::load(backend.into(),brand.clone(),engine.live.clone()));
+    // Finish backend discovery before the listener becomes ready and the launcher prints its URL.
+    crate::config::load(backend.into(),brand.clone(),engine.live.clone()).await;
     let processes=engine.processes.clone();
     let state = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand,session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
     let stop = state.stop.clone();
@@ -115,7 +116,6 @@ pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
-    branding.abort();
     Ok(())
 }
 
@@ -125,7 +125,7 @@ fn router(state: Local) -> Router {
         .route("/",get(|State(state):State<Local>|async move {
             // Brand the initial document too, before scripts or account data have loaded.
             let name=state.brand.metadata()["name"].as_str().unwrap_or("Assistant").replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
-            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG))
+            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG).replace("{{SIGN_IN}}",&state.brand.providers().to_string().replace('<',"\u003c")))
         }))
         .route("/branding/{key}",get(brand_image))
         .route("/api/configuration/retry",post(retry_configuration))
@@ -239,9 +239,7 @@ async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live
 
 /// Public sign-in discovery never locks the conversation or blocks account refreshes.
 async fn auth_providers(State(state):State<Local>)->LocalResult {
-    let backend=state.live.0.borrow()["state"]["settings"]["backend"].as_str().unwrap().to_owned();
-    let request=crate::backend::client(60)?.get(format!("{backend}/v1/auth/providers"));
-    Ok(Json(Engine::response(crate::backend::send(request,&state.live,None).await?).await?))
+    Ok(Json(state.brand.providers()))
 }
 /// Create a native-owned device challenge before navigating the provider popup.
 async fn social_start(State(state):State<Local>,Json(input):Json<SocialInput>)->LocalResult { Ok(Json(state.engine.try_lock().context("Assistant is busy")?.social_start(input.provider).await?)) }

@@ -40,8 +40,10 @@ impl crate::Args {
 }
 
 #[derive(Default)]
-pub struct Brand { document:RwLock<Option<protocol::Branding>>,loading:tokio::sync::Mutex<()> }
+pub struct Brand { document:RwLock<Option<protocol::Branding>>,providers:RwLock<Value>,loading:tokio::sync::Mutex<()> }
 impl Brand {
+    /// Sign-in options share the startup snapshot and require no browser-triggered backend fetch.
+    pub fn providers(&self)->Value { self.providers.read().unwrap().clone() }
     /// The manifest contains only public names, theme and image hashes, never image bodies.
     pub fn metadata(&self)->Value { serde_json::to_value(self.document.read().unwrap().as_ref()).unwrap() }
 }
@@ -57,6 +59,9 @@ pub async fn load(backend:String,brand:Arc<Brand>,live:crate::stream::Live) {
         let document:protocol::Branding=response.json().await?;
         ensure!(!document.name.trim().is_empty() && document.name.len()<=100 && !document.name.chars().any(char::is_control),"Invalid assistant name from backend");
         ensure!(document.images.iter().all(|(key,hash)|protocol::BRAND_IMAGES.contains(&key.as_str()) && hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())),"Invalid image manifest from backend");
+        let response=crate::backend::send(crate::backend::client(60)?.get(format!("{backend}/v1/auth/providers")),&live,None).await?;
+        ensure!(response.status().is_success(),"Cannot load sign-in options (HTTP {})",response.status());
+        *brand.providers.write().unwrap()=response.json().await?;
         *brand.document.write().unwrap()=Some(document.clone());
         live.0.send_modify(|view| { view["brand"]=json!(document); view["backend_error"]=Value::Null; });
         Ok::<_,anyhow::Error>(())
