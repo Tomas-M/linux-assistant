@@ -28,6 +28,19 @@ pub fn decode_brand_image(content:&str,allow_icon:bool)->Result<(&'static str,Ve
     };
     let bytes=base64::engine::general_purpose::STANDARD.decode(data)?;
     ensure!(bytes.len()<=MAX_BRAND_IMAGE_BYTES,"Use an image up to 2 MiB");
+    // ICO is an opaque multi-image container: validate its directory, never decode or select a frame.
+    if format==image::ImageFormat::Ico {
+        ensure!(bytes.len()>=6 && bytes[..4]==[0,0,1,0],"Choose a valid ICO file");
+        let count=u16::from_le_bytes([bytes[4],bytes[5]]) as usize;
+        let end=6+count*16;
+        ensure!(count>0 && end<=bytes.len(),"ICO directory is incomplete");
+        for entry in bytes[6..end].chunks_exact(16) {
+            let size=u32::from_le_bytes(entry[8..12].try_into().unwrap()) as u64;
+            let offset=u32::from_le_bytes(entry[12..16].try_into().unwrap()) as u64;
+            ensure!(size>0 && offset>=end as u64 && offset+size<=bytes.len() as u64,"ICO image data is incomplete");
+        }
+        return Ok((mime,bytes));
+    }
     let (width,height)=image::ImageReader::with_format(std::io::Cursor::new(&bytes),format).into_dimensions()?;
     ensure!(width>0 && height>0 && width<=4096 && height<=4096,"Use an image of at most 4096 by 4096 pixels");
     Ok((mime,bytes))
