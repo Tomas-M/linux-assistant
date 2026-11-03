@@ -24,6 +24,24 @@ pub struct Pool { accounts:RwLock<Vec<Arc<ProviderAccount>>>, managed:PathBuf, l
 struct ProviderAccount { home: String, access:AsyncRwLock<()>, worker: Mutex<Option<Rpc>>, limits: Mutex<Option<Limits>>, probe_retry_at:AtomicI64 }
 #[derive(Clone, Copy, Debug)]
 struct Limits { used:f64, retry_at:i64, checked_at:i64, api_key:bool }
+/// Public provider failures contain only curated explanations, never upstream payloads or account paths.
+#[derive(Debug)]
+pub struct PublicFailure(pub &'static str);
+impl std::fmt::Display for PublicFailure {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str(self.0) }
+}
+impl std::error::Error for PublicFailure {}
+
+/// Match structured provider codes rather than guessing from diagnostic text.
+fn public_failure(info:&Value)->Option<PublicFailure> {
+    match info.as_str()? {
+        "serverOverloaded"=>Some(PublicFailure("The selected AI model is currently at capacity. Please try again shortly.")),
+        "internalServerError"=>Some(PublicFailure("The AI provider encountered an internal error. Please try again shortly.")),
+        "contextWindowExceeded"=>Some(PublicFailure("The conversation exceeded the AI model’s context limit. Please start a new chat.")),
+        _=>None,
+    }
+}
+
 pub struct Answer { pub reply: AssistantReply, pub account_home: Option<String>, pub thread_id: Option<String>, pub checkpoint: Option<String> }
 
 impl Pool {
