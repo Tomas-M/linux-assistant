@@ -264,6 +264,7 @@ impl Engine {
         ensure!(response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"text/event-stream")),"Backend does not support streaming; update the backend first");
         let mut decoder=crate::stream::Decoder::default();
         let mut failures=self.controls.failures.subscribe();
+        let mut reconnects=0;
         loop {
             // A control request can fail before the stream subscribes, so also inspect the current value.
             let failure=failures.borrow_and_update().clone();
@@ -275,10 +276,42 @@ impl Engine {
                 bail!("{error:#}");
             }
             let bytes=tokio::select! {
-                chunk=response.chunk()=>chunk?,
+                chunk=response.chunk()=>chunk,
                 _=failures.changed()=>continue,
             };
-            let Some(bytes)=bytes else { break; };
+            let bytes=match bytes {
+                Ok(Some(bytes))=>bytes,
+                _=> {
+                    // Reattach to the same paid request; never create or execute a replacement task.
+                    loop {
+                        ensure!(reconnects<5,"Connection lost after 5 reconnect attempts. Retry to recover the same request.");
+                        reconnects+=1;
+                        self.live.0.send_modify(|view|view["connections"]["stream"]=json!({"attempt":reconnects,"retry_at":null}));
+                        let result=async {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            ensure!(!self.controls.stopped.load(Ordering::SeqCst),"Stopped by you");
+                            let request=self.saved.request.as_ref().context("No unfinished request")?;
+                            let response=self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request).send().await?;
+                            if response.status()==reqwest::StatusCode::UNAUTHORIZED {
+                                let expired=crate::backend::SessionExpired(self.saved.token.clone().unwrap());
+                                self.expire_session(&expired).await?;
+                                return Err(expired.into());
+                            }
+                            ensure!(response.status().is_success(),"Cannot reconnect to the assistant (HTTP {})",response.status());
+                            ensure!(response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"text/event-stream")),"Backend did not return a conversation stream");
+                            Ok::<_,anyhow::Error>(response)
+                        }.await;
+                        self.live.0.send_modify(|view| { view["connections"].as_object_mut().unwrap().remove("stream"); });
+                        match result {
+                            Ok(connected)=> { response=connected; decoder=crate::stream::Decoder::default(); break; }
+                            Err(error) if error.downcast_ref::<crate::backend::SessionExpired>().is_some() || self.controls.stopped.load(Ordering::SeqCst)=>return Err(error),
+                            Err(error) if reconnects==5=>return Err(error.context("Cannot reconnect after 5 attempts")),
+                            Err(_)=>{},
+                        }
+                    }
+                    continue;
+                }
+            };
             for event in decoder.push(&bytes)? {
                 match serde_json::from_value::<protocol::ChatEvent>(event)? {
                     protocol::ChatEvent::Progress { mut progress } => {

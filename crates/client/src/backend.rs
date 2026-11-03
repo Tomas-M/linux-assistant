@@ -49,7 +49,7 @@ pub async fn send(request:reqwest::RequestBuilder,live:&Live,stopped:Option<&Ato
                 let application_error=response.status().as_u16()==503 && response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"application/json"));
                 if !replayable || !gateway || application_error { return Ok(response); }
             }
-            Err(error) if error.is_connect()=> {},
+            Err(error) if error.is_connect() || (replayable && (error.is_timeout() || error.is_request()))=> {},
             Err(error)=>return Err(error.into()),
         }
         ensure!(!stopped.is_some_and(|stop|stop.load(Ordering::SeqCst)),"Stopped by you");
