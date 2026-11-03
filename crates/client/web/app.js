@@ -213,7 +213,7 @@ function render()
     {
         elements['activity-label'].textContent=activity.label;
         elements['activity-icon'].toggleAttribute('hidden',activity.progress!==null);
-        elements['activity-label'].parentElement.hidden=parts.some(part=>part.text.trim()) && !activity.progress?.activity;
+        elements['activity-label'].parentElement.hidden=view.interactions.length>0;
         renderProgress(elements.summaries,parts,view.busy && !view.interactions.length,steers);
         renderImageGallery(elements['agent-images'],Object.values(view.tool_results).map(result=>result.image).filter(image=>image?.run===view.runs.at(-1)?.started_at));
         renderAnswer(elements['stream-text'],activity.progress?.text || '');
