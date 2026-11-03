@@ -27,7 +27,11 @@ useradd --system --user-group --create-home --home-dir /var/lib/linux-assistant 
 install -d -m 700 -o linux-assistant -g linux-assistant /var/lib/linux-assistant
 
 # Install the executable and config-free service unit.
-install -m 755 target/release/assistant-server /usr/local/bin/assistant-server
+install -d -m 755 /usr/local/lib/linux-assistant
+install -m 755 target/release/assistant-server /usr/local/lib/linux-assistant/assistant-server
+ln -sfn assistant-server /usr/local/lib/linux-assistant/codex-code-mode-host
+ln -sfn ../lib/linux-assistant/assistant-server /usr/local/bin/assistant-server
+python3 scripts/publish_client_ui.py
 install -m 644 deploy/linux-assistant.service /etc/systemd/system/linux-assistant.service
 systemctl daemon-reload
 systemctl enable --now linux-assistant.service
@@ -76,7 +80,7 @@ Paid, signed webhook events grant credits once. Checkout redirects never grant c
 # Build before stopping the service.
 sh scripts/build_server.sh
 
-# Back up the stopped database and previous binary, install the executable/unit, and restart.
+# Install the executable, published browser UI and service unit, then restart.
 sh scripts/install_server_update.sh
 
 # Verify the public backend through Apache.
@@ -86,3 +90,7 @@ curl --fail https://ai.slax.org/health
 Existing database settings are read directly. There is no old-environment import or compatibility mode. If no administrator password is stored, complete setup and enter settings manually. The update script replaces the systemd unit so it no longer references an environment file.
 
 Back up the database with SQLite's online backup mechanism, or stop the service while copying the database and WAL. Back up `managed-accounts/` separately to preserve ChatGPT sessions and API keys. These files contain private credentials. Remote diagnostics are available through the password-protected admin.
+
+## Browser interface updates
+
+After editing `client-ui/`, run `python3 scripts/publish_client_ui.py` as root from the repository. This atomically publishes the UI beside the installed backend executable without compiling Rust or restarting the service. Users receive the new release when they refresh their localhost page. Update the native client once for the RAM-only bridge; subsequent browser-only changes need only this publish command.

@@ -65,6 +65,12 @@ impl Processes {
         Ok(Self { launch:Arc::new(Mutex::new(())),operations:Arc::new(Mutex::new(HashMap::new())),entries:Arc::new(Mutex::new(HashMap::new())) })
     }
 
+    /// A fresh chat releases old output while retaining control of still-running processes.
+    pub fn clear_completed(&self) {
+        self.entries.lock().unwrap().retain(|_,entry|entry.record.lock().unwrap().finished_at.is_none());
+        self.operations.lock().unwrap().clear();
+    }
+
     /// List metadata only; large output is fetched separately when a record is expanded.
     pub fn list(&self) -> Value {
         let entries=self.entries.lock().unwrap();

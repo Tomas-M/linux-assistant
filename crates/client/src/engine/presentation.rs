@@ -55,7 +55,7 @@ mod tests {
         assert_eq!(run["summaries"][0]["text"],"Looking for repeated failures.");
         assert_eq!(run["end"],1);
         assert_eq!(engine.session.messages.len(),1);
-        assert_eq!(Engine::open("http://127.0.0.1:8787").await?.live.0.borrow()["runs"][0],run);
+        assert!(Engine::open("http://127.0.0.1:8787").await?.live.0.borrow()["runs"].as_array().unwrap().is_empty());
         engine.begin_activity(1);
         assert_eq!(engine.live.0.borrow()["runs"][0],run);
         assert!(engine.live.0.borrow()["runs"][1]["finished_at"].is_null());

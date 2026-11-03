@@ -398,8 +398,9 @@ mod tests {
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let account=engine.account.clone();
+        let auth=engine.auth.clone(); let media=engine.media.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { account, downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { account, downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth,media,controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -427,7 +428,7 @@ mod tests {
         assert_eq!(recovered.stderr,record.stderr);
         Ok(())
     }
-    /// Account requests use current private saved authentication even while a task owns the engine lock.
+    /// Account requests use current private in-memory authentication even while a task owns the engine lock.
     #[tokio::test]
     async fn account_requests_remain_available_during_a_task()->Result<()> {
         let directory=tempfile::tempdir()?;

@@ -7910,7 +7910,6 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
- "fs2",
  "image",
  "libc",
  "mime_guess",

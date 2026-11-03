@@ -149,6 +149,7 @@ impl Engine {
     pub async fn new_chat(&mut self) -> Result<()> {
         self.live.0.send_modify(|view| { for key in ["steps","runs","commands","steering","interactions"] { view[key]=json!([]); } view["tool_results"]=json!({}); view["activity"]=Value::Null; view["error"]=Value::Null; });
         self.media.clear();
+        self.processes.clear_completed();
         self.session.conversation_id = Uuid::new_v4();
         self.session.task_id = None;
         self.session.messages.clear();
@@ -348,7 +349,7 @@ fn validate_backend(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Queued attachments survive an interrupted request and reload without leaking into live snapshots.
+    /// Queued attachments survive a transport retry without leaking into live snapshots.
     #[tokio::test]
     async fn attachments_survive_retry()->Result<()> {
         use axum::{routing::post,Json,Router};
@@ -404,7 +405,8 @@ mod tests {
         assert_ne!(next.task_id,ids.lock().unwrap()[0].0);
         drop(engine);
         let recovered=Engine::open(&backend).await?;
-        assert_eq!(recovered.saved.task_id,Some(recovered.saved.request.as_ref().unwrap().task_id));
+        assert!(recovered.session.task_id.is_none());
+        assert!(recovered.session.request.is_none());
         server.abort();
         Ok(())
     }
@@ -429,8 +431,7 @@ mod tests {
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open("http://127.0.0.1:8787").await?;
-        engine.set_backend(backend.clone()).await?;
+        let mut engine=Engine::open(&backend).await?;
         *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.settings(true)?;
         assert!(engine.chat("Hello".into(),directory.path().to_string_lossy().into_owned()).await.is_err());
@@ -450,7 +451,7 @@ mod tests {
 
     /// An expired approval cannot run after permission was revoked or a chat was cleared.
 
-    /// Growing visible history never increases the next request, and queued input survives a dequeue crash.
+    /// Growing visible history never increases the next request, and queued input remains in RAM during dispatch.
     #[tokio::test]
     async fn long_transcript_and_queue_recovery()->Result<()> {
         use axum::{routing::post,Json,Router};
@@ -464,8 +465,7 @@ mod tests {
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open("http://127.0.0.1:8787").await?;
-        engine.set_backend(backend.clone()).await?;
+        let mut engine=Engine::open(&backend).await?;
         *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.settings(false)?;
         let cwd=directory.path().to_string_lossy().into_owned();
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(runs.as_array().unwrap().len(),30);
         assert!(runs.as_array().unwrap().iter().all(|run|run["finished_at"].as_u64()>=run["started_at"].as_u64() && run["finished_at"].is_u64()));
         assert_eq!(runs[29]["end"],engine.session.messages.len());
-        assert_eq!(Engine::open(&backend).await?.live.0.borrow()["runs"],runs);
+        assert!(Engine::open(&backend).await?.live.0.borrow()["runs"].as_array().unwrap().is_empty());
         assert!(serde_json::to_vec(&engine.session.messages)?.len()>96_000);
         assert_eq!(engine.session.committed,60);
         let first=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
@@ -482,8 +482,7 @@ mod tests {
         engine.controls.enqueue(first.clone()).await?;
         engine.controls.enqueue(second.clone()).await?;
         engine.prepare_message(first.text,cwd,first.id,None)?;
-        drop(engine);
-        let mut engine=Engine::open(&backend).await?;
+        engine.controls.remove(first.id).await?;
         assert_eq!(engine.live.0.borrow()["queue"][0]["id"],second.id.to_string());
         engine.retry().await?;
         assert!(engine.next().await?);

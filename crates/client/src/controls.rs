@@ -146,7 +146,7 @@ mod tests {
         controls.edit(inputs[1].id,true).await?;
         assert!(controls.start_next(|input| { assert_eq!(input.text,"first"); Ok(()) }).await?);
         assert!(!controls.start_next(|_|panic!("Edited input was dispatched")).await?);
-        let controls=Controls::open(Live::new(),crate::media::Media::default())?;
+        assert!(Controls::open(Live::new(),crate::media::Media::default())?.queue.lock().await.is_empty());
         assert!(!controls.start_next(|_|panic!("Reload lost the held slot")).await?);
         assert!(controls.edit(inputs[2].id,true).await.is_err());
         controls.enqueue(Queued { text:"edited 世界".into(),..inputs[1].clone() }).await?;

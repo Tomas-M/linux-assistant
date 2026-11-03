@@ -27,7 +27,7 @@ struct App {
 pub async fn run(backend:&str)->Result<()> {
     ensure!(io::stdin().is_terminal() && io::stdout().is_terminal(),"--cli needs an interactive terminal");
     let engine=Engine::open(backend).await?;
-    let client=Client { controls:engine.controls.clone(),processes:engine.processes.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),auth:engine.auth.clone() };
+    let client=Client { controls:engine.controls.clone(),processes:engine.processes.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),auth:engine.auth.clone(),engine:Arc::new(Mutex::new(engine)) };
     let branding=tokio::spawn(crate::config::load(backend.into(),Arc::new(crate::config::Brand::default()),client.live.clone()));
     let mut app=App::new("Assistant",client.live.0.borrow().clone());
     let (send,mut completed)=mpsc::unbounded_channel();
