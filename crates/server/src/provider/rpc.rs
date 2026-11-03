@@ -101,6 +101,7 @@ impl Rpc {
         if let Some(error)=message.get("error") {
             let detail=format!("Codex {method} failed: code={}; reason={}; {}",error["code"],error["data"]["codexErrorInfo"],error["message"].as_str().unwrap_or("No provider error message"));
             if error.pointer("/data/codexErrorInfo").is_some_and(|v|v=="usageLimitExceeded") { return Err(anyhow::Error::from(QuotaReached).context(detail)); }
+            if let Some(reason)=super::public_failure(&error["data"]["codexErrorInfo"]) { return Err(anyhow::Error::from(reason).context(detail)); }
             bail!("{detail}");
         }
         let result=message["result"].clone();
@@ -328,6 +329,7 @@ impl Rpc {
                     if turn["status"]!="completed" {
                         let detail=format!("Codex turn {}: reason={}; {}",turn["status"],turn["error"]["codexErrorInfo"],turn["error"]["message"].as_str().unwrap_or("No provider error message"));
                         if turn["error"]["codexErrorInfo"]=="usageLimitExceeded" { return Err(anyhow::Error::from(QuotaReached).context(detail)); }
+                        if let Some(reason)=super::public_failure(&turn["error"]["codexErrorInfo"]) { return Err(anyhow::Error::from(reason).context(detail)); }
                         bail!("{detail}");
                     }
                     let mut value:Value=serde_json::from_str(&answer).context("Invalid assistant response")?;

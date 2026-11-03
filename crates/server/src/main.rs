@@ -305,6 +305,8 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                         let message = if error.downcast_ref::<turns::Interrupted>().is_some() {
                             if task_app.stopping.load(std::sync::atomic::Ordering::SeqCst) { "Backend is restarting. Recorded token usage was charged.".to_owned() }
                             else { "Stopped by user. Recorded token usage was charged.".to_owned() }
+                        } else if let Some(reason)=error.downcast_ref::<provider::PublicFailure>() {
+                            format!("{reason} Recorded usage was charged. Reference: {id}")
                         } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
                         if let Err(error)=task_app.db.settle(user,&id,Err(message.clone())) {
                             task_events.send_replace(ChatEvent::Error { task_credits:None, progress:None,message:"Could not confirm settlement. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
