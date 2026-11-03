@@ -123,6 +123,7 @@ details[open] summary { margin-bottom:20px; }
 #backend-settings .field-error { display:block; color:#a73535; font-size:var(--small); overflow-wrap:anywhere; }
 .settings-grid .setting-switch { display:flex; align-items:center; gap:10px; margin:8px 0; }
 .settings-grid .setting-switch input { width:auto; }
+[data-setting-page="sign-in"] .settings-grid > .setting-switch { grid-column:1/-1; }
 #settings code { overflow-wrap:anywhere; }
 .pack-row { display:grid; grid-template-columns:2fr 1fr 1fr auto; gap:16px; align-items:end; margin-bottom:16px; }
 .pack-row button { min-height:44px; }
