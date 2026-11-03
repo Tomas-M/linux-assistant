@@ -11,7 +11,7 @@ async fn long_history_uses_small_requests_and_stable_replay()->anyhow::Result<()
     let conversation=uuid::Uuid::new_v4();
     let id=uuid::Uuid::new_v4();
     // Grow persisted history through attachments without spending time streaming a large simulated echo.
-    let mut input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Continue 世界","attachments":[{"kind":"text","name":"notes.txt","content":"世界".repeat(2000)}]}],"commands_enabled":false,"cwd":"/tmp"});
+    let mut input=json!({"bridge":protocol::Bridge::current(),"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Continue 世界","attachments":[{"kind":"text","name":"notes.txt","content":"世界".repeat(2000)}]}],"commands_enabled":false,"cwd":"/tmp"});
     let original=input.clone();
     for revision in 0..20 {
         input["base"]=json!(revision*2);
@@ -51,7 +51,7 @@ async fn live_steering_and_stop_are_durable()->anyhow::Result<()> {
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
     let id=uuid::Uuid::new_v4();
     let conversation=uuid::Uuid::new_v4();
-    let input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Long development reply. ".repeat(100)}],"commands_enabled":false,"cwd":"/tmp"});
+    let input=json!({"bridge":protocol::Bridge::current(),"base":0,"task_id":id,"request_id":id,"conversation_id":conversation,"platform":"linux","messages":[{"role":"user","text":"Long development reply. ".repeat(100)}],"commands_enabled":false,"cwd":"/tmp"});
     let http=reqwest::Client::new();
     let mut response=http.post(format!("{url}/v1/chat")).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
     response.chunk().await?;

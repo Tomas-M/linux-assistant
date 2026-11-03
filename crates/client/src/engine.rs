@@ -290,8 +290,7 @@ impl Engine {
                         let activity=progress.activity.clone();
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
                         if let Some(credits)=progress.credits { if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=credits; } self.live.state(self.state()); }
-                        let request=self.session.request.as_ref().unwrap();
-                        self.controls.receive(&progress.requests,&self.processes,&self.full_access,self.session.settings.commands_enabled,&request.cwd);
+                        self.controls.receive(&progress.requests,&self.processes,&self.full_access,self.session.settings.commands_enabled);
                         self.live.activity(label,Some(progress));
                     }
                     protocol::ChatEvent::Complete { mut response } => {
@@ -369,8 +368,9 @@ mod tests {
         let attachments=Some(vec![protocol::Attachment::Text { name:"日志.txt".into(),content:"PRIVATE_ATTACHMENT_TEXT".into() }]);
         engine.controls.enqueue(crate::controls::Queued { id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
-        assert!(engine.next().await.is_err()); drop(engine);
-        let mut engine=Engine::open(&backend).await?; engine.retry().await?;
+        assert!(engine.next().await.is_err());
+        assert!(Engine::open(&backend).await?.session.request.is_none());
+        engine.retry().await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
         assert_eq!(engine.session.messages[0].attachments,attachments);
         assert_eq!(engine.live.0.borrow()["steps"][0]["compacted"][0],"compact");

@@ -17,7 +17,7 @@ async fn streaming_disconnect_settles_once() -> anyhow::Result<()> {
     let app=router(state.clone());
     let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
     let id=uuid::Uuid::new_v4();
-    let input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
+    let input=json!({"bridge":protocol::Bridge::current(),"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
         "messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     let http=reqwest::Client::new();
     let mut response=http.post(&url).bearer_auth(&token).header("accept","text/event-stream").json(&input).send().await?;
@@ -76,7 +76,7 @@ async fn login_and_chat_are_bound_to_user_and_request() -> anyhow::Result<()> {
     let token=session["token"].as_str().unwrap();
     assert_eq!(request(&app,"/v1/auth/poll",None,poll).await?.0,StatusCode::BAD_REQUEST);
     let id=uuid::Uuid::new_v4();
-    let chat=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
+    let chat=json!({"bridge":protocol::Bridge::current(),"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux","messages":[{"role":"user","text":"Hello 世界"}],"commands_enabled":false,"cwd":"/tmp"});
     assert_eq!(request(&app,"/v1/chat",None,chat.clone()).await?.0,StatusCode::UNAUTHORIZED);
     let (status,reply)=request(&app,"/v1/chat",Some(token),chat.clone()).await?;
     assert_eq!(status,StatusCode::OK);

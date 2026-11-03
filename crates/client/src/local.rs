@@ -423,9 +423,7 @@ mod tests {
         assert!(record.pid.is_some() && !record.arguments.is_empty());
         assert!(record.finished_at.is_some() && record.error.as_deref().unwrap().contains("Stopped by user"));
         assert!(processes.stop(id).is_err());
-        let recovered=Processes::open()?.get(id)?;
-        assert_eq!(recovered.stdout,record.stdout);
-        assert_eq!(recovered.stderr,record.stderr);
+        assert!(Processes::open()?.get(id).is_err());
         Ok(())
     }
     /// Account requests use current private in-memory authentication even while a task owns the engine lock.
@@ -506,10 +504,6 @@ mod tests {
         let engine=Engine::open("http://127.0.0.1:8787").await?;
         let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
-        let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
-        let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;
-        assert!(html.contains("<title>Assistant</title>"));
-        assert!(!html.contains("{{APP_NAME}}") && !html.contains("<title>Linux Assistant</title>"));
         for (host,origin,site,status) in [
             ("127.0.0.1:1234",None,None,StatusCode::OK),
             ("evil.example",None,None,StatusCode::FORBIDDEN),

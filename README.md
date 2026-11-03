@@ -9,6 +9,7 @@ Install Rust through rustup and the platform's C/C++ build tools. Initialize the
 ```sh
 git -c core.longpaths=true submodule update --init --depth 1
 cargo build --workspace --locked
+python3 scripts/publish_client_ui.py --output target/debug/client-ui.json
 ./target/debug/assistant-server --dev
 ```
 

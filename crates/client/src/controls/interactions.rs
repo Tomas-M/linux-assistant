@@ -7,7 +7,7 @@ pub(super) struct Receipt { request:Interaction,answer:Option<InteractionAnswer>
 
 impl Controls {
     /// Start each native request once; watch snapshots may repeat it until the backend acknowledges its result.
-    pub fn receive(self:&Arc<Self>,requests:&[Interaction],processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool,cwd:&str) {
+    pub fn receive(self:&Arc<Self>,requests:&[Interaction],processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool) {
         if self.stopped.load(Ordering::SeqCst) { return; }
         let present=requests.iter().map(|request|request.id).collect::<std::collections::HashSet<_>>();
         self.tasks.lock().unwrap().retain(|id,task| { if present.contains(id) { true } else { task.cancelled.store(true,Ordering::SeqCst); task.handle.abort(); false } });
@@ -17,12 +17,12 @@ impl Controls {
             let mut tasks=self.tasks.lock().unwrap();
             if self.stopped.load(Ordering::SeqCst) { break; }
             if tasks.contains_key(&request.id) { continue; }
-            let (controls,request,processes,full_access,cwd)=(self.clone(),request.clone(),processes.clone(),full_access.clone(),cwd.to_owned());
+            let (controls,request,processes,full_access)=(self.clone(),request.clone(),processes.clone(),full_access.clone());
             let id=request.id;
             let cancelled=Arc::new(AtomicBool::new(false));
             let lease=cancelled.clone();
             let task=tokio::spawn(async move {
-                let result=controls.execute(&request,&processes,&full_access,enabled,&cwd,&lease).await;
+                let result=controls.execute(&request,&processes,&full_access,enabled,&lease).await;
                 if let Err(error)=result {
                     controls.failures.send_replace(Some(Arc::new(error.context("Could not deliver the local result; retry the unfinished request. The operation will not be repeated"))));
                 }
@@ -60,7 +60,7 @@ impl Controls {
     }
 
     /// Keep an acknowledgement in RAM before sending it; transport retries cannot replay side effects.
-    async fn execute(&self,request:&Interaction,processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool,cwd:&str,cancelled:&Arc<AtomicBool>)->Result<()> {
+    async fn execute(&self,request:&Interaction,processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool,cancelled:&Arc<AtomicBool>)->Result<()> {
         // Bound large image buffers through acknowledgement, including retries from retained receipts.
         let _image_access=if matches!(&request.kind,InteractionKind::Tool { action:LocalAction::ViewImage { .. } }) { Some(self.file_access.clone().lock_owned().await) } else { None };
         let receipt=self.receipts.lock().unwrap().get(&request.id).cloned();
@@ -112,7 +112,7 @@ impl Controls {
                                         view["commands"].as_array_mut().unwrap().push(json!({"after":after,"id":session,"action_id":request.id,"command":command,"cwd":cwd,"reason":action.reason()}));
                                     });
                                 }
-                                processes.perform(operation,&action,cwd,&self.command_yield,cancelled).await?;
+                                processes.perform(operation,&action,&self.command_yield,cancelled).await?;
                                 let output=processes.output(operation)?;
                                 if let Ok(record)=processes.get(session) {
                                     self.live.0.send_modify(|view|view["tool_results"][&request.item_id]=json!({"session_id":session,"running":record.finished_at.is_none() && record.background_pids.is_none(),"changes":record.changes}));

@@ -24,7 +24,7 @@ async fn hundred_users_complete_with_isolated_billing()->anyhow::Result<()> {
         requests.spawn(async move {
             let id=uuid::Uuid::new_v4();
             let prompt=format!("User {user} 世界");
-            let input=json!({"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
+            let input=json!({"bridge":protocol::Bridge::current(),"base":0,"task_id":id,"request_id":id,"conversation_id":uuid::Uuid::new_v4(),"platform":"linux",
                 "messages":[{"role":"user","text":prompt}],"commands_enabled":false,"cwd":"/tmp"});
             let response=http.post(format!("{address}/v1/chat")).bearer_auth(token).header("accept","text/event-stream").json(&input).send().await?.error_for_status()?;
             let body=response.text().await?;
