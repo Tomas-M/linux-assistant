@@ -1,6 +1,6 @@
 use std::{future::IntoFuture, sync::Arc, time::Duration};
 use anyhow::{bail, Context, Result};
-use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Response}, routing::{get, post}, Json, Router};
+use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, Request, StatusCode}, middleware::{self, Next}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
@@ -172,7 +172,7 @@ async fn brand_image(State(state):State<Local>,axum::extract::Path(key):axum::ex
     let mime=response.headers().get(header::CONTENT_TYPE).context("Image content type is missing")?.to_str()?.to_owned();
     let mut bytes=Vec::new();
     while let Some(chunk)=response.chunk().await? { if bytes.len()+chunk.len()>protocol::MAX_BRAND_IMAGE_BYTES { return Err(anyhow::anyhow!("Brand image exceeds 2 MiB").into()); } bytes.extend_from_slice(&chunk); }
-    Ok(([(header::CONTENT_TYPE,mime.as_str()),(header::CACHE_CONTROL,"public, max-age=31536000, immutable")],bytes).into_response())
+    Ok(([(header::CONTENT_TYPE,mime.as_str()),(header::CACHE_CONTROL,"no-store")],bytes).into_response())
 }
 
 /// An explicit reconnect retries an unsuccessful startup without reloading settings already in use.

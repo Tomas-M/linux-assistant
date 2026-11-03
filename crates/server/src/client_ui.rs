@@ -10,7 +10,7 @@ pub struct Version { bridge:u32 }
 /// Public visitors receive instructions; the functional UI is served only through the local application.
 pub async fn landing(State(app):State<App>)->Html<String> {
     let name=app.config().config.client.name.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
-    Html(format!("<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{name}</title><h1>{name}</h1><p>Open this service through the Linux Assistant application in Slax to use your assistant and work on your computer.</p></html>"))
+    Html(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{name}</title><h1>{name}</h1><p>Open this service through the Linux Assistant application in Slax to use your assistant and work on your computer.</p></html>"#))
 }
 
 /// Read an atomically published UI release without rebuilding or restarting the backend.

@@ -1,5 +1,5 @@
 use std::{collections::{BTreeMap,VecDeque},sync::{Arc,RwLock}};
-use anyhow::{ensure,Context,Result};
+use anyhow::{ensure,Result};
 use base64::Engine;
 use axum::{extract::{Path,State},http::{header,StatusCode},response::{Html,IntoResponse,Response}};
 use sha2::{Digest,Sha256};
@@ -70,5 +70,5 @@ pub(crate) async fn asset(State(state):State<Local>,Path((version,path)):Path<(S
 /// This small native error page is used only when the backend cannot deliver the real interface.
 fn unavailable(message:&str)->Response {
     let message=message.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
-    (StatusCode::SERVICE_UNAVAILABLE,Html(format!("<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Assistant unavailable</title><h1>Cannot connect to your assistant</h1><p>{message}</p><p><a href="/">Reconnect</a></p></html>"))).into_response()
+    (StatusCode::SERVICE_UNAVAILABLE,Html(format!(r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Assistant unavailable</title><h1>Cannot connect to your assistant</h1><p>{message}</p><p><a href="/">Reconnect</a></p></html>"#))).into_response()
 }
