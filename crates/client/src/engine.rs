@@ -350,7 +350,7 @@ impl Engine {
                 }
             }
         }
-        bail!("Connection ended before completion. Retry to recover the same request.")
+
     }
 
 
