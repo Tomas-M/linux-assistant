@@ -152,3 +152,6 @@ details[open] summary { margin-bottom:20px; }
 
 /* The assistant context grows with its contents instead of using an internal scrollbar. */
 #setting-assistant_context { overflow-y:hidden; resize:none; }
+
+.quick-action-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto; gap:16px; align-items:start; margin-bottom:16px; }
+@media(max-width:640px) { .quick-action-row { grid-template-columns:minmax(0,1fr) auto; } .quick-action-row label { grid-column:1; } .quick-action-row button { grid-column:2; grid-row:1/3; } }

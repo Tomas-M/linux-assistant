@@ -12,7 +12,15 @@ pub enum Theme { #[default] Light,Dark }
 
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Branding { pub name:String,pub default_theme:Theme,pub images:BTreeMap<String,String> }
+pub struct Branding {
+    pub name:String,pub default_theme:Theme,pub images:BTreeMap<String,String>,
+    #[serde(default)]
+    pub quick_actions:Vec<QuickAction>,
+}
+
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickAction { pub label:String,pub prompt:String }
 
 /// Brand uploads contain passive raster images, with bounded bytes and dimensions before publication.
 pub fn decode_brand_image(content:&str,allow_icon:bool)->Result<(&'static str,Vec<u8>)> {

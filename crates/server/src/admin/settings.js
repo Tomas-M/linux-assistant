@@ -3,6 +3,7 @@ let backendSettings;
 const settingsGroups=[
     {page:'general',title:'General',fields:[['public_url','Public URL','url'],['free_credits','Welcome credits','number']]},
     {page:'appearance',title:'Client appearance',hint:'Clients fetch these settings once at startup. Restart a client after changing its branding or default theme. A full logo replaces both the square logo and name in the header.',fields:[['client.name','Assistant name'],['client.default_theme','Default theme','theme'],['client.assistant_image','Assistant image','image'],['client.logo_image','Logo before the name','image'],['client.logo_full','Full header logo','image'],['client.favicon','Favicon','image']]},
+    {page:'appearance',title:'New chat quick actions',hint:'Buttons appear below the new-chat heading in this order. Clicking fills the prompt without sending it. Leave this list empty to hide the buttons. Restart clients after changing these actions.',fields:[['client.quick_actions','Quick actions','quick-actions']]},
     {page:'ai',title:'AI and token prices',hint:'Rates are credits per million tokens. New tasks use the current prices; existing tasks retain their admitted rates.',fields:[['model','Model'],['reasoning_effort','Reasoning level','select'],['pricing.input_credits_per_million','Input credits / 1M tokens','rate'],['pricing.cached_input_credits_per_million','Cached input credits / 1M tokens','rate'],['pricing.output_credits_per_million','Output credits / 1M tokens','rate']]},
     {page:'ai',title:'Image generation',hint:'GPT Image 2 is available through connected ChatGPT and API accounts. The default 21.1 credits per completed image uses OpenAI’s $0.211 high-quality 1024 × 1024 output estimate. Native ChatGPT usage has no image-token counters, so this is a configurable estimate, not a measured provider bill. Text-token charges are added and the whole task is rounded once. Failed or cancelled images are not charged.',fields:[['image_credits_per_image','Credits per completed image','rate']]},
     {page:'ai',title:'Assistant context',hint:'Applies to all conversations, including account tests, and survives context compaction. Changes apply to the next request.',fields:[['assistant_context','Context and instructions','textarea']]},
@@ -119,6 +120,7 @@ async function loadSettings()
         '<div class="settings-grid">'+group.fields.map(([key,label,type='text'])=>
         {
             const value=key.split('.').reduce((value,key)=>value[key],backendSettings);
+            if (type==='quick-actions') return '<div class="setting-wide"><div id="quick-action-rows"></div><button type="button" data-add-quick-action>Add quick action</button></div>';
             if (type==='image') return '<div class="brand-upload" data-image-field="'+key+'"><label for="setting-'+key+'">'+escapeHtml(label)+'</label><div class="brand-preview"><img alt="'+escapeHtml(label)+' preview"'+(value?' src="'+escapeHtml(value)+'"':' hidden')+'></div><input id="setting-'+key+'" type="file" data-image="'+key.slice(7)+'" accept="image/png,image/jpeg,image/webp'+(key==='client.favicon' ? ',.ico,image/x-icon,image/vnd.microsoft.icon' : '')+'"><button type="button" class="quiet" data-clear-image="'+key.slice(7)+'"'+(!value?' disabled':'')+'>Remove image</button><small class="hint">'+(key==='client.favicon' ? 'ICO files are uploaded and served unchanged, with all embedded sizes' : 'PNG, JPEG or WebP · at most 4096 × 4096 pixels')+' · up to 2 MiB</small></div>';
             if (type==='checkbox') return '<label class="setting-switch"><input id="setting-'+key+'" data-setting="'+key+'" type="checkbox"'+(value?' checked':'')+'>'+escapeHtml(label)+'</label>';
             const secret=type==='password',saved=secret && result.saved_secrets.includes(key);
@@ -132,8 +134,33 @@ async function loadSettings()
     document.getElementById('setting-public_url').addEventListener('input',renderCallbacks);
     renderCallbacks();
     renderCreditPacks();
+    renderQuickActions();
     renderAdminPage();
 }
+
+// Keep action labels and prompts in the same ordered settings array used by the client.
+function renderQuickActions()
+{
+    document.getElementById('quick-action-rows').innerHTML=backendSettings.client.quick_actions.map((action,index)=>'<div class="quick-action-row"><label>Button text<input id="setting-client.quick_actions.'+index+'.label" data-action-field="label" maxlength="100" required value="'+escapeHtml(action.label)+'"></label><label>Prompt<textarea id="setting-client.quick_actions.'+index+'.prompt" data-action-field="prompt" rows="3" required>'+escapeHtml(action.prompt)+'</textarea></label><button type="button" class="quiet" data-remove-quick-action="'+index+'" aria-label="Remove quick action"><svg aria-hidden="true"><use href="#icon-remove"/></svg></button></div>').join('');
+}
+document.getElementById('settings-fields').addEventListener('input',event=>
+{
+    const input=event.target.closest('[data-action-field]');
+    if (!input) return;
+    const row=input.closest('.quick-action-row');
+    backendSettings.client.quick_actions[[...row.parentElement.children].indexOf(row)][input.dataset.actionField]=input.value;
+});
+document.getElementById('settings-fields').addEventListener('click',event=>
+{
+    const button=event.target.closest('[data-add-quick-action],[data-remove-quick-action]');
+    if (!button) return;
+    clearSettingsError();
+    const adding=button.hasAttribute('data-add-quick-action');
+    if (adding) backendSettings.client.quick_actions.push({label:'',prompt:''});
+    else backendSettings.client.quick_actions.splice(Number(button.dataset.removeQuickAction),1);
+    renderQuickActions();
+    if (adding) document.querySelector('#quick-action-rows .quick-action-row:last-child input').focus();
+});
 
 // Pack rows are explicit operator configuration; their order determines the client button order.
 function renderCreditPacks()

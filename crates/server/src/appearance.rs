@@ -8,6 +8,8 @@ use crate::{config::FieldError,App,ApiResult};
 #[serde(deny_unknown_fields)]
 pub struct Appearance {
     pub name:String,pub default_theme:protocol::Theme,
+    #[serde(default)]
+    pub quick_actions:Vec<protocol::QuickAction>,
     pub assistant_image:Option<String>,pub logo_image:Option<String>,pub logo_full:Option<String>,pub favicon:Option<String>,
 }
 impl Default for Appearance {
@@ -15,7 +17,7 @@ impl Default for Appearance {
     fn default()->Self {
         Self { name:"Slax Assistant".into(),default_theme:protocol::Theme::Light,
             assistant_image:Some(format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(include_bytes!("../assets/assistant.png")))),
-            logo_image:None,logo_full:None,favicon:None }
+            logo_image:None,logo_full:None,favicon:None,quick_actions:vec![] }
     }
 }
 impl Appearance {
@@ -26,6 +28,11 @@ impl Appearance {
     /// Return field-specific errors without including image contents in diagnostics.
     pub fn validate(&self)->Result<(),FieldError> {
         if self.name.trim().is_empty() || self.name.len()>100 || self.name.chars().any(char::is_control) { return Err(FieldError::new("client.name","Enter an assistant name of 1 to 100 UTF-8 bytes")); }
+        for (index,action) in self.quick_actions.iter().enumerate() {
+            let label_valid=!action.label.trim().is_empty() && action.label.chars().count()<=100 && !action.label.chars().any(char::is_control);
+            if !label_valid { return Err(FieldError::new(&format!("client.quick_actions.{index}.label"),"Enter a button label of 1 to 100 characters on one line")); }
+            protocol::validate_input(&action.prompt,None).map_err(|error|FieldError::new(&format!("client.quick_actions.{index}.prompt"),&error.to_string()))?;
+        }
         for (key,image) in self.images() {
             if let Some(image)=image { protocol::decode_brand_image(image,key=="favicon").map_err(|error|FieldError::new(&format!("client.{}",key.replace('-',"_")),&error.to_string()))?; }
         }
