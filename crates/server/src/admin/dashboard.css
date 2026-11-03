@@ -148,3 +148,6 @@ details[open] summary { margin-bottom:20px; }
 @media(max-width:700px) { .settings-layout { grid-template-columns:1fr; gap:16px; } #settings-nav { position:static; flex-direction:row; flex-wrap:wrap; overflow:visible; } #settings-nav a { padding:8px 10px; } }
 
 .admin-initializing main { visibility:hidden; }
+
+/* The assistant context grows with its contents instead of using an internal scrollbar. */
+#setting-assistant_context { overflow-y:hidden; resize:none; }

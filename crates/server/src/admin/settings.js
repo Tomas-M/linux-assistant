@@ -26,6 +26,16 @@ const settingsPlaceholders={
 const settingsPages=[['general','General'],['appearance','Client appearance'],['ai','AI and context'],['email','Email'],['sign-in','Social sign-in'],['payments','Stripe and credit packs'],['security','Admin password'],['backup','Backup and restore']];
 document.getElementById('settings-nav').innerHTML=settingsPages.map(([key,label])=>'<a href="#settings/'+key+'">'+label+'</a>').join('');
 
+// Measure only a visible textarea so hidden settings pages never collapse its content height.
+function resizeAssistantContext()
+{
+    const input=document.getElementById('setting-assistant_context');
+    if (!input || !input.getClientRects().length) return;
+    input.style.height='auto';
+    input.style.height=(input.scrollHeight+input.offsetHeight-input.clientHeight)+'px';
+}
+window.addEventListener('resize',resizeAssistantContext);
+
 // Navigation changes views without discarding unsaved settings or reloading sensitive credentials.
 function renderAdminPage()
 {
@@ -48,6 +58,7 @@ function renderAdminPage()
     for (const element of document.querySelectorAll('[data-setting-page]')) element.hidden=element.dataset.settingPage!==setting;
     document.getElementById('backend-settings').hidden=setting==='backup';
     document.getElementById('admin-page-title').textContent={accounts:'AI accounts',diagnostics:'Diagnostics',usage:'Usage',users:'Users',payments:'Payments',settings:'Backend settings'}[page];
+    requestAnimationFrame(resizeAssistantContext);
     if (page==='usage') requestAnimationFrame(()=>window.dispatchEvent(new Event('resize')));
 }
 window.addEventListener('hashchange',renderAdminPage);
@@ -193,6 +204,7 @@ document.getElementById('settings-fields').addEventListener('click',event=>
 });
 
 document.getElementById('backend-settings').addEventListener('input',clearSettingsError);
+document.getElementById('backend-settings').addEventListener('input',event=>{ if (event.target.id==='setting-assistant_context') resizeAssistantContext(); });
 
 document.getElementById('backend-settings').addEventListener('submit',async event=>
 {
