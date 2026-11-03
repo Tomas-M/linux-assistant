@@ -40,12 +40,12 @@ impl crate::Args {
 }
 
 #[derive(Default)]
-pub struct Brand { document:RwLock<Option<protocol::Branding>>,providers:RwLock<Value>,loading:tokio::sync::Mutex<()> }
+pub struct Brand { document:RwLock<Option<Value>>,providers:RwLock<Value>,loading:tokio::sync::Mutex<()> }
 impl Brand {
     /// Sign-in options share the startup snapshot and require no browser-triggered backend fetch.
     pub fn providers(&self)->Value { self.providers.read().unwrap().clone() }
     /// The manifest contains only public names, theme and image hashes, never image bodies.
-    pub fn metadata(&self)->Value { serde_json::to_value(self.document.read().unwrap().as_ref()).unwrap() }
+    pub fn metadata(&self)->Value { self.document.read().unwrap().clone().unwrap_or(Value::Null) }
 }
 
 /// Fetch once at startup; retry an unsuccessful startup only when explicitly requested, never poll settings.
@@ -56,9 +56,10 @@ pub async fn load(backend:String,brand:Arc<Brand>,live:crate::stream::Live) {
     let result=async {
         let response=crate::backend::send(crate::backend::client(60)?.get(format!("{backend}/v1/client-config")),&live,None).await?;
         ensure!(response.status().is_success(),"Backend configuration unavailable (HTTP {}). Update the backend and reconnect",response.status());
-        let document:protocol::Branding=response.json().await?;
-        ensure!(!document.name.trim().is_empty() && document.name.len()<=100 && !document.name.chars().any(char::is_control),"Invalid assistant name from backend");
-        ensure!(document.images.iter().all(|(key,hash)|protocol::BRAND_IMAGES.contains(&key.as_str()) && hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())),"Invalid image manifest from backend");
+        let document:Value=response.json().await?;
+        let name=document["name"].as_str().context("Assistant name is missing")?;
+        ensure!(!name.trim().is_empty() && name.len()<=100 && !name.chars().any(char::is_control),"Invalid assistant name from backend");
+        ensure!(document["images"].as_object().context("Brand image manifest is missing")?.values().all(|hash|hash.as_str().is_some_and(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit()))),"Invalid image manifest from backend");
         let response=crate::backend::send(crate::backend::client(60)?.get(format!("{backend}/v1/auth/providers")),&live,None).await?;
         ensure!(response.status().is_success(),"Cannot load sign-in options (HTTP {})",response.status());
         *brand.providers.write().unwrap()=response.json().await?;

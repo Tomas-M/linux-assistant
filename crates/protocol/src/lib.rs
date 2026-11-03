@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub const MAX_REQUEST_BYTES: usize = 96_000;
 pub const MAX_MESSAGE_BYTES: usize = 16_000;
 pub const MAX_UPLOAD_BYTES: usize = 64*1024*1024;
+mod bridge;
+pub use bridge::{Bridge,UiBundle,UiAsset,BRIDGE_API,MAX_UI_BYTES};
 mod branding;
 pub use branding::{Branding,QuickAction,Theme,BRAND_IMAGES,MAX_BRAND_IMAGE_BYTES,decode_brand_image};
 mod attachments;
@@ -30,6 +32,7 @@ pub struct Message { pub role: Role, pub text: String, pub attachments: Option<V
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatRequest {
+    pub bridge:Bridge,
     pub task_id: Uuid,
     pub base: usize,
     pub request_id: Uuid,

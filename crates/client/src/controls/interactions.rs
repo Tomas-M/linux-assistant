@@ -2,8 +2,8 @@ use super::*;
 use protocol::{Interaction,InteractionKind,InteractionAnswer,InteractionResponse,LocalAction};
 use crate::processes::Processes;
 
-#[derive(Serialize,Deserialize)]
-struct Receipt { request:Interaction,answer:Option<InteractionAnswer> }
+#[derive(Clone)]
+pub(super) struct Receipt { request:Interaction,answer:Option<InteractionAnswer> }
 
 impl Controls {
     /// Start each native request once; watch snapshots may repeat it until the backend acknowledges its result.
@@ -59,14 +59,11 @@ impl Controls {
         result.await.context("The task stopped before an answer was received")
     }
 
-    /// Keep an acknowledgement on disk before sending it; transport retries cannot replay side effects.
+    /// Keep an acknowledgement in RAM before sending it; transport retries cannot replay side effects.
     async fn execute(&self,request:&Interaction,processes:&Processes,full_access:&Arc<AtomicBool>,enabled:bool,cwd:&str,cancelled:&Arc<AtomicBool>)->Result<()> {
-        // Bound large image buffers through acknowledgement, including retries from saved receipts.
+        // Bound large image buffers through acknowledgement, including retries from retained receipts.
         let _image_access=if matches!(&request.kind,InteractionKind::Tool { action:LocalAction::ViewImage { .. } }) { Some(self.file_access.clone().lock_owned().await) } else { None };
-        let directory=self.path.parent().unwrap().join("tool-results");
-        std::fs::create_dir_all(&directory)?;
-        let path=directory.join(format!("{}.json",request.id));
-        let receipt:Option<Receipt>=if path.exists() { Some(storage::read(&path)?) } else { None };
+        let receipt=self.receipts.lock().unwrap().get(&request.id).cloned();
         if let Some(receipt)=&receipt { ensure!(serde_json::to_value(&receipt.request)?==serde_json::to_value(request)?,"Tool request ID reused with different arguments"); }
         let recovering=receipt.is_some();
         let answer:InteractionAnswer=if let Some(answer)=receipt.and_then(|receipt|receipt.answer) { answer } else {
@@ -91,13 +88,13 @@ impl Controls {
                             ensure!(matches!(self.wait(request).await?,InteractionAnswer::Approval { approve:true }),"The user declined this operation. Do not work around the refusal");
                         }
                         ensure!(!cancelled.load(Ordering::SeqCst) && !self.stopped.load(Ordering::SeqCst),"Task stopped");
-                        storage::write(&path,&Receipt { request:request.clone(),answer:None })?;
+                        self.receipts.lock().unwrap().insert(request.id,Receipt { request:request.clone(),answer:None });
                         let session=match &action { LocalAction::ExecCommand { .. }|LocalAction::WriteStdin { .. }|LocalAction::StopProcess { .. }=>Some(action.session_id(operation)),_=>None };
                         self.live.0.send_modify(|view|view["tool_results"][&request.item_id]=json!({"session_id":session,"running":true,"output":"","changes":[]}));
                         match &action {
                             LocalAction::ViewImage { path,.. }=> {
-                                let (directory,path)=(self.path.parent().unwrap().to_owned(),PathBuf::from(path)); let id=request.id;
-                                let (output,attachment,preview)=tokio::task::spawn_blocking(move||crate::media::view(&directory,id,&path)).await??;
+                                let (media,path)=(self.media.clone(),std::path::PathBuf::from(path)); let id=request.id;
+                                let (output,attachment,preview)=tokio::task::spawn_blocking(move||media.view(id,&path)).await??;
                                 ensure!(!cancelled.load(Ordering::SeqCst),"Image viewing cancelled");
                                 image=Some(attachment);
                                 self.live.0.send_modify(|view|view["tool_results"][&request.item_id]=json!({"running":false,"changes":[],"image":preview}));
@@ -150,7 +147,7 @@ impl Controls {
                     InteractionAnswer::Tool { output:crate::engine::output::preview(&output),success,image }
                 }
             };
-            storage::write(&path,&Receipt { request:request.clone(),answer:Some(answer.clone()) })?;
+            self.receipts.lock().unwrap().insert(request.id,Receipt { request:request.clone(),answer:Some(answer.clone()) });
             answer
         };
         if let InteractionAnswer::Tool { image:Some(protocol::Attachment::Image { name,.. }),.. }=&answer {

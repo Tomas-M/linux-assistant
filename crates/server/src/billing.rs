@@ -124,7 +124,7 @@ mod tests {
     /// Give each fixture prompt the same task/request identity used by the client.
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
-        ChatRequest { task_id:id,request_id:id,conversation_id:Uuid::new_v4(),base:0,platform:Platform::Linux,
+        ChatRequest { bridge:protocol::Bridge::current(), task_id:id,request_id:id,conversation_id:Uuid::new_v4(),base:0,platform:Platform::Linux,
             messages:vec![Message { attachments:None, role:Role::User,text:"Inspect my computer".into() }],commands_enabled:true,cwd:"/tmp".into() }
     }
 

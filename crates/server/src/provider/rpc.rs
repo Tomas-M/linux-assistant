@@ -156,7 +156,7 @@ impl Rpc {
                 id.to_owned()
             }
             None => {
-                let mut tools=if user.is_some() { protocol::tool_specs() } else { vec![] };
+                let mut tools=if user.is_some() { protocol::tool_specs().into_iter().filter(|tool|request.bridge.tools.iter().any(|name|tool["name"].as_str()==Some(name.as_str()))).collect() } else { vec![] };
                 if user.is_some() { tools.extend(crate::memories::specs()); }
                 if image_key.is_some() { tools.push(crate::imagegen::spec()); }
                 let response = self.call("thread/start",json!({"model":config.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],

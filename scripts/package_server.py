@@ -19,9 +19,10 @@ def main():
         "Cargo.toml","Cargo.lock","rust-toolchain.toml",".cargo/config.toml",
         "README.md","THIRD_PARTY_NOTICES.md","deploy/START-HERE.md",
         "deploy/SOCIAL_SIGN_IN.md","deploy/linux-assistant.service","scripts/build_server.sh","scripts/cargo_backend.py","scripts/install_server_update.sh",
-        "scripts/reset_conversations.sh","scripts/reset_conversations.py")]
+        "scripts/publish_client_ui.py","scripts/reset_conversations.sh","scripts/reset_conversations.py")]
     files+=sorted(path for path in (ROOT/"crates").rglob("*")
                   if path.is_file() and path.suffix in (".rs",".toml",".sql",".html",".css",".js",".svg"))
+    files+=sorted(path for path in (ROOT/"client-ui").rglob("*") if path.is_file())
     output=ROOT/"dist/linux-assistant-server-source.tar.gz"
     output.parent.mkdir(exist_ok=True)
     # Fresh timestamps make Cargo rebuild changed sources when a bundle replaces an older one.

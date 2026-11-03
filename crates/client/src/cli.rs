@@ -12,7 +12,7 @@ use editor::Editor;
 use view::{Screen,Focus,Hit};
 
 #[derive(Clone)]
-struct Client { engine:Arc<Mutex<Engine>>,controls:Arc<Controls>,processes:Processes,live:Live,full_access:Arc<AtomicBool>,path:PathBuf }
+struct Client { engine:Arc<Mutex<Engine>>,controls:Arc<Controls>,processes:Processes,live:Live,full_access:Arc<AtomicBool>,auth:crate::session::Credentials }
 #[derive(Clone)]
 enum Action { Memories,SaveMemories(String,String),Login(String),Verify(String),Submit(Queued,bool),Steer(Uuid),Stop,New,Retry,Account,Refresh,Buy(String),Logout,Edit(Uuid),Remove(Uuid),Attach(String) }
 struct Completed { action:Action,result:Result<Value> }
@@ -24,12 +24,10 @@ struct App {
 }
 
 /// Own the assistant directly; terminal mode never binds a port or starts a browser service.
-pub async fn run(directory:PathBuf,backend:&str)->Result<()> {
+pub async fn run(backend:&str)->Result<()> {
     ensure!(io::stdin().is_terminal() && io::stdout().is_terminal(),"--cli needs an interactive terminal");
-    let lock=std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("The browser client or another terminal owns this profile. Close it first, or set LINUX_ASSISTANT_HOME to a separate directory.")?;
-    let engine=Engine::open(&directory,backend).await?;
-    let client=Client { controls:engine.controls.clone(),processes:engine.processes.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),path:directory.join("state.json") };
+    let engine=Engine::open(backend).await?;
+    let client=Client { controls:engine.controls.clone(),processes:engine.processes.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),auth:engine.auth.clone() };
     let branding=tokio::spawn(crate::config::load(backend.into(),Arc::new(crate::config::Brand::default()),client.live.clone()));
     let mut app=App::new("Assistant",client.live.0.borrow().clone());
     let (send,mut completed)=mpsc::unbounded_channel();
@@ -93,8 +91,8 @@ impl Client {
     async fn action(&self,action:&Action)->Result<Value> {
         if matches!(action,Action::Login(_)) { ensure!(!self.live.0.borrow()["brand"].is_null(),"Wait for backend configuration before signing in"); }
         match action {
-            Action::Memories=>return crate::session::account(&self.path,&self.live,reqwest::Method::GET,"/v1/memories",None).await,
-            Action::SaveMemories(text,revision)=>return crate::session::account(&self.path,&self.live,reqwest::Method::POST,"/v1/memories",Some(json!({"text":text,"revision":revision}))).await,
+            Action::Memories=>return crate::session::account(&self.auth,&self.live,reqwest::Method::GET,"/v1/memories",None).await,
+            Action::SaveMemories(text,revision)=>return crate::session::account(&self.auth,&self.live,reqwest::Method::POST,"/v1/memories",Some(json!({"text":text,"revision":revision}))).await,
             Action::Login(email)=>return Ok(serde_json::to_value(self.engine.try_lock()?.login(email.clone()).await?)?),
             Action::Verify(code)=>return self.engine.try_lock()?.verify_login(code.clone()).await,
             Action::Submit(input,steer)=> {
@@ -130,12 +128,12 @@ impl Client {
                 return Ok(serde_json::to_value(attachment)?);
             }
             Action::Account=> {
-                let packs=crate::session::account(&self.path,&self.live,reqwest::Method::GET,"/v1/credit-packs",None).await?;
-                let purchases=crate::session::account(&self.path,&self.live,reqwest::Method::GET,"/v1/purchases",None).await?;
+                let packs=crate::session::account(&self.auth,&self.live,reqwest::Method::GET,"/v1/credit-packs",None).await?;
+                let purchases=crate::session::account(&self.auth,&self.live,reqwest::Method::GET,"/v1/purchases",None).await?;
                 return Ok(json!({"packs":packs["packs"],"purchases":purchases["purchases"]}));
             }
             Action::Buy(id)=> {
-                let value=crate::session::account(&self.path,&self.live,reqwest::Method::POST,"/v1/checkout",Some(json!({"price_id":id}))).await?;
+                let value=crate::session::account(&self.auth,&self.live,reqwest::Method::POST,"/v1/checkout",Some(json!({"price_id":id}))).await?;
                 let url=value["url"].as_str().context("Checkout URL is missing")?;
                 let parsed=reqwest::Url::parse(url)?;
                 ensure!(parsed.scheme()=="https" && parsed.host_str()==Some("checkout.stripe.com"),"Unexpected checkout URL");
@@ -147,7 +145,7 @@ impl Client {
 }
 
 impl App {
-    /// Start at email sign-in or the durable chat, without changing saved history.
+    /// Start at email sign-in for a fresh in-memory session.
     fn new(name:&str,view:Value)->Self {
         let screen=if view["state"]["authenticated"]==true { Screen::Chat } else { Screen::Email };
         Self { name:name.into(),screen,focus:Focus::Prompt,input:Editor::default(),answer:Editor::default(),view,tasks:vec![],tasks_open:true,task:0,queue:0,scroll:None,chat_bottom:0,detail_scroll:0,detail:None,pending:false,status:String::new(),expanded:false,confirmed:false,email:String::new(),editing:None,attachments:None,question:None,answers:HashMap::new(),choice:0,custom:false,memories:Editor::default(),memory_document:None,packs:vec![],purchases:vec![],hits:vec![],chat_area:ratatui::layout::Rect::default() }
@@ -163,7 +161,7 @@ impl App {
         tokio::spawn(async move {
             let mut result=client.action(&action).await;
             if let Some(expired)=result.as_ref().err().and_then(|error|error.downcast_ref::<crate::backend::SessionExpired>()).cloned() {
-                if let Err(error)=crate::session::expire(&client.engine,&client.controls,&client.path,&expired).await { result=Err(error); }
+                if let Err(error)=crate::session::expire(&client.engine,&client.controls,&client.auth,&expired).await { result=Err(error); }
             }
             let _=send.send(Completed { action,result });
         });

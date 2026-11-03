@@ -13,6 +13,7 @@ trap 'systemctl start linux-assistant.service' EXIT
 install -d -m 755 /usr/local/lib/linux-assistant
 install -m 755 target/release/assistant-server /usr/local/lib/linux-assistant/assistant-server.new
 mv /usr/local/lib/linux-assistant/assistant-server.new /usr/local/lib/linux-assistant/assistant-server
+python3 scripts/publish_client_ui.py
 ln -sfn assistant-server /usr/local/lib/linux-assistant/codex-code-mode-host
 ln -sfn ../lib/linux-assistant/assistant-server /usr/local/bin/assistant-server
 

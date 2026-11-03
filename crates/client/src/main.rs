@@ -11,7 +11,7 @@ mod command;
 mod processes;
 mod engine;
 mod local;
-mod storage;
+mod ui;
 mod stream;
 #[cfg(windows)]
 mod windows_launcher;
@@ -31,8 +31,6 @@ struct Args {
     daemon:bool,
     #[arg(long,value_parser=parse_backend,help="Backend origin; omitted scheme defaults to HTTPS")]
     backend:String,
-    #[arg(long,hide=true)]
-    reset_chat:bool,
 }
 
 /// Default launches print the reusable browser URL; --cli selects the terminal interface.
@@ -40,15 +38,9 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::load()?;
     anyhow::ensure!(!args.cli || !args.daemon,"Choose either terminal mode or server mode");
-    let directory = storage::directory()?;
-    if args.reset_chat { storage::reset_chat(&directory)?; println!("Local chat reset; sign-in and settings retained."); return Ok(()); }
-    if args.cli { return cli::run(directory,&args.backend).await; }
-    if args.daemon {
-        #[cfg(windows)]
-        windows_launcher::redirect_log(&directory)?;
-        return local::serve(directory,&args.backend).await;
-    }
-    let connection=local::connect(&directory,&args).await?;
+    if args.cli { return cli::run(&args.backend).await; }
+    if args.daemon { return local::serve(&args.backend).await; }
+    let connection=local::connect(&args).await?;
     println!("{}",connection.url);
     Ok(())
 }

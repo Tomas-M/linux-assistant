@@ -6,10 +6,10 @@ pub(super) struct LoginAttempt { pub device:DeviceLogin,pub provider:Option<Auth
 impl Engine {
     /// Own the polling secret in the native process; the popup receives only an opaque device ID.
     pub async fn social_start(&mut self,provider:AuthProvider)->Result<Value> {
-        ensure!(self.saved.token.is_none(),"Sign out before starting another sign-in");
+        ensure!(self.auth.token.read().unwrap().is_none(),"Sign out before starting another sign-in");
         if let Some(login)=&self.login { self.social_cancel(login.device.device_id.clone()).await?; }
         let device:DeviceLogin=Self::response(crate::backend::send(self.backend(reqwest::Method::POST,"/v1/auth/device"),&self.live,None).await?).await?;
-        let result=json!({"id":device.device_id,"provider":provider,"expires_at":device.expires_at,"url":format!("{}/auth/{}/{}",self.saved.settings.backend,provider.key(),device.device_id)});
+        let result=json!({"id":device.device_id,"provider":provider,"expires_at":device.expires_at,"url":format!("{}/auth/{}/{}",self.session.settings.backend,provider.key(),device.device_id)});
         self.login=Some(LoginAttempt { device,provider:Some(provider) });
         self.live.state(self.state());
         Ok(result)

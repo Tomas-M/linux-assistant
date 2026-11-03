@@ -1,11 +1,11 @@
-use std::{collections::HashMap, path::{Path,PathBuf}, sync::{Arc,Mutex}, time::{SystemTime,UNIX_EPOCH}};
+use std::{collections::HashMap, path::Path, sync::{Arc,Mutex}, time::{SystemTime,UNIX_EPOCH}};
 use anyhow::{ensure,Context,Result};
 use protocol::CommandProposal;
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use tokio::sync::watch;
 use uuid::Uuid;
-use crate::{command,storage};
+use crate::command;
 mod sessions;
 
 pub const OUTPUT_LIMIT: usize = 1_048_576;
@@ -32,7 +32,7 @@ pub struct Record {
 }
 struct Entry { record: Arc<Mutex<Record>>, cancel: watch::Sender<bool>,input:Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>,cursor:Arc<tokio::sync::Mutex<(usize,usize)>>,files:Arc<Mutex<Option<Vec<crate::changes::Snapshot>>>> }
 #[derive(Clone)]
-pub struct Processes { launch:Arc<Mutex<()>>,directory: PathBuf, entries: Arc<Mutex<HashMap<Uuid,Entry>>> }
+pub struct Processes { launch:Arc<Mutex<()>>,operations:Arc<Mutex<HashMap<Uuid,sessions::OperationOutput>>>, entries: Arc<Mutex<HashMap<Uuid,Entry>>> }
 
 /// Use milliseconds for local process timing in both platforms and the browser.
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 }
@@ -60,26 +60,9 @@ impl Record {
 }
 
 impl Processes {
-    /// Recover the latest 50 command records without ever attaching to an old, possibly reused PID.
-    pub fn open(directory: &Path) -> Result<Self> {
-        let directory=directory.join("processes");
-        std::fs::create_dir_all(&directory)?;
-        let mut files=std::fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
-        files.retain(|file|file.path().extension().is_some_and(|ext|ext=="json"));
-        files.sort_by_cached_key(|file|std::cmp::Reverse(file.metadata().and_then(|m|m.modified()).ok()));
-        let mut entries=HashMap::new();
-        for file in files.into_iter().take(50) {
-            let mut record: Record=storage::read(&file.path())?;
-            if record.finished_at.is_none() {
-                record.finished_at=Some(now());
-                record.background_pids=None;
-                record.error=Some("Assistant restarted; command outcome is unknown. It was not rerun.".into());
-                storage::write(&file.path(),&record)?;
-            }
-            let (cancel,_)=watch::channel(false);
-            entries.insert(record.id,Entry { record:Arc::new(Mutex::new(record)),cancel,input:Arc::new(Default::default()),cursor:Arc::new(Default::default()),files:Arc::new(Default::default()) });
-        }
-        Ok(Self { launch:Arc::new(Mutex::new(())),directory,entries:Arc::new(Mutex::new(entries)) })
+    /// Track only commands started by this native process; there is no on-disk history.
+    pub fn open() -> Result<Self> {
+        Ok(Self { launch:Arc::new(Mutex::new(())),operations:Arc::new(Mutex::new(HashMap::new())),entries:Arc::new(Mutex::new(HashMap::new())) })
     }
 
     /// List metadata only; large output is fetched separately when a record is expanded.
@@ -125,12 +108,11 @@ impl Processes {
         let capture=proposal.clone();
         let files=Arc::new(Mutex::new(Some(tokio::task::spawn_blocking(move||crate::changes::capture(&capture.cwd,capture.files.as_deref().unwrap_or_default())).await?)));
         let record=Arc::new(Mutex::new(Record::new(id,proposal.clone())));
-        storage::write(&self.directory.join(format!("{id}.json")),&*record.lock().unwrap())?;
         let (cancel,receiver)=watch::channel(false);
         let input=Arc::new(tokio::sync::Mutex::new(None));
         {
             let mut entries=self.entries.lock().unwrap();
-            // Bound resident output; older completed records remain on disk.
+            // Bound resident output; discard older completed records.
             let mut completed: Vec<_>=entries.iter().filter_map(|(id,entry)| {
                 let record=entry.record.lock().unwrap();
                 record.finished_at.map(|_|(*id,record.started_at))
@@ -140,7 +122,7 @@ impl Processes {
             entries.insert(id,Entry { record:record.clone(),cancel,input:input.clone(),cursor:Arc::new(Default::default()),files:files.clone() });
         }
         let (completed,launcher)=tokio::sync::oneshot::channel();
-        let (running,proposal,directory)=(record.clone(),proposal.clone(),self.directory.clone());
+        let (running,proposal)=(record.clone(),proposal.clone());
         let (cancelled,launch)=(cancelled.clone(),self.launch.clone());
         // The monitor outlives the launcher so AI follow-ups do not wait for background applications.
         let task=tokio::spawn(async move {
@@ -153,9 +135,7 @@ impl Processes {
             if let Err(error)=result { record.error=Some(error.to_string()); }
             record.finished_at=Some(now());
             if let Some(pids)=&mut record.background_pids { pids.clear(); }
-            let result=storage::write(&directory.join(format!("{id}.json")),&*record);
-            if let Err(error)=&result { record.error=Some(format!("Could not save process result: {error:#}")); }
-            result
+            Ok::<_,anyhow::Error>(())
         });
         let minimum=if cfg!(windows) { 10_000 } else { 250 };
         tokio::select! {
@@ -165,7 +145,6 @@ impl Processes {
             _=yield_now.notified()=> {}
         }
         let record=record.lock().unwrap();
-        storage::write(&self.directory.join(format!("{id}.json")),&*record)?;
         Ok(record.clone())
     }
 

@@ -1,8 +1,11 @@
-use std::{path::Path,sync::{Arc,atomic::Ordering}};
+use std::{sync::{Arc,atomic::Ordering}};
 use anyhow::Result;
 use serde_json::{json,Value};
 use tokio::sync::Mutex;
 use crate::{engine::Engine,stream::Live,controls::Controls,processes::Processes};
+
+#[derive(Clone)]
+pub struct Credentials { pub backend:String,pub token:Arc<std::sync::RwLock<Option<String>>> }
 
 /// Both interfaces use the same queue worker, independently of their display connection.
 pub async fn run(engine:Arc<Mutex<Engine>>,retry:bool)->Result<Value> {
@@ -63,20 +66,19 @@ pub async fn interrupt(controls:&Controls,live:&Live,processes:&Processes)->Resu
     controls.interrupt().await
 }
 
-/// A rejected control/account request wakes a busy turn before clearing that exact saved session.
-pub async fn expire(engine:&Arc<Mutex<Engine>>,controls:&Controls,path:&Path,expired:&crate::backend::SessionExpired)->Result<()> {
-    let saved:crate::engine::Saved=crate::storage::read(path)?;
-    if saved.token.as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
+/// A rejected control/account request wakes a busy turn before clearing that exact in-memory session.
+pub async fn expire(engine:&Arc<Mutex<Engine>>,controls:&Controls,auth:&Credentials,expired:&crate::backend::SessionExpired)->Result<()> {
+    if auth.token.read().unwrap().as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
     controls.failures.send_replace(Some(Arc::new(expired.clone().into())));
     controls.cancel_local();
     engine.lock().await.expire_session(expired).await
 }
 
 /// Account reads stay available during generation; credentials never enter display snapshots.
-pub async fn account(path:&Path,live:&Live,method:reqwest::Method,route:&str,body:Option<Value>)->Result<Value> {
+pub async fn account(auth:&Credentials,live:&Live,method:reqwest::Method,route:&str,body:Option<Value>)->Result<Value> {
     use anyhow::Context;
-    let saved:crate::engine::Saved=crate::storage::read(path)?;
-    let mut request=crate::backend::client(60)?.request(method,format!("{}{route}",saved.settings.backend)).bearer_auth(saved.token.context("Sign in first")?);
+    let token=auth.token.read().unwrap().clone().context("Sign in first")?;
+    let mut request=crate::backend::client(60)?.request(method,format!("{}{route}",auth.backend)).bearer_auth(token);
     if let Some(body)=body { request=request.json(&body); }
     let response=crate::backend::send(request,live,None).await?;
     Engine::response(response).await

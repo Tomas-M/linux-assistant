@@ -6,6 +6,7 @@ mod admin;
 mod config;
 mod settings;
 mod appearance;
+mod client_ui;
 mod db;
 mod diagnostics;
 mod embedded;
@@ -142,7 +143,7 @@ async fn run() -> anyhow::Result<()> {
 
 /// Register hosted authentication and authenticated application APIs in one server.
 fn router(app: App) -> Router {
-    Router::new().merge(admin::router(app.clone())).route("/health",get(||async { Json(json!({"ok":true})) }))
+    Router::new().route("/",get(client_ui::landing)).route("/v1/client-ui",get(client_ui::bundle)).merge(admin::router(app.clone())).route("/health",get(||async { Json(json!({"ok":true})) }))
         .route("/v1/images/{id}",get(imagegen::asset))
         .route("/v1/client-config",get(appearance::manifest)).route("/v1/client-assets/{key}",get(appearance::asset))
         .route("/v1/auth/device",post(auth::start)).route("/v1/auth/poll",post(auth::poll))
@@ -218,6 +219,7 @@ async fn chat(State(app): State<App>, headers: HeaderMap, Json(input): Json<Chat
 
 /// Admission and settlement continue even if the connection disappears during a blocking commit.
 async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Response> {
+    if input.bridge.api!=protocol::BRIDGE_API { return Err(ApiError::bad("This native client must be updated before starting a task")); }
     let config=app.config();
     let streaming=headers.get(header::ACCEPT).is_some_and(|value|value=="text/event-stream");
     let (admission,pricing)=(app.clone(),config.clone());

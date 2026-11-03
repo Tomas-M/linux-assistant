@@ -8,7 +8,7 @@ impl Engine {
             let runs=view["runs"].as_array_mut().unwrap();
             if runs.last().is_some_and(|run|run["finished_at"].is_null()) { return; }
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-            runs.push(json!({"id":self.saved.task_id,"start":start,"end":start,"started_at":now,"finished_at":null,"error":null,"partial":"","summaries":[],"credits":null}));
+            runs.push(json!({"id":self.session.task_id,"start":start,"end":start,"started_at":now,"finished_at":null,"error":null,"partial":"","summaries":[],"credits":null}));
         });
     }
 
@@ -25,13 +25,13 @@ impl Engine {
             let partial=if error.is_some() { view["activity"]["progress"]["text"].as_str().unwrap_or_default().to_owned() } else { String::new() };
             let summaries=if error.is_some() { view["activity"]["progress"]["summaries"].as_array().cloned().unwrap_or_default() } else { vec![] };
             let Some(run)=view["runs"].as_array_mut().unwrap().last_mut().filter(|run|run["finished_at"].is_null()) else { return; };
-            run["end"]=json!(self.saved.messages.len());
+            run["end"]=json!(self.session.messages.len());
             run["finished_at"]=json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64);
             run["error"]=json!(if self.controls.stopped.load(Ordering::SeqCst) { Some("Stopped by you".to_owned()) } else { error });
             run["partial"]=json!(partial);
             run["summaries"]=json!(summaries);
         });
-        self.save()
+        self.publish()
     }
 }
 
@@ -43,8 +43,8 @@ mod tests {
     #[tokio::test]
     async fn stopped_preview_survives_refresh_and_next_task()->Result<()> {
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        engine.saved.messages.push(Message { attachments:None, role:Role::User,text:"Check the logs".into() });
+        let mut engine=Engine::open("http://127.0.0.1:8787").await?;
+        engine.session.messages.push(Message { attachments:None, role:Role::User,text:"Check the logs".into() });
         engine.begin_activity(0);
         engine.live.activity("Checking logs…",Some(protocol::Progress { text:"Partial response 世界".into(),summaries:vec![protocol::ProgressText { id:"summary".into(),item_id:"summary".into(),kind:protocol::ProgressKind::Reasoning,completed:false,data:None,text:"Looking for repeated failures.".into() }],..Default::default() }));
         engine.controls.stopped.store(true,Ordering::SeqCst);
@@ -54,13 +54,13 @@ mod tests {
         assert_eq!(run["error"],"Stopped by you");
         assert_eq!(run["summaries"][0]["text"],"Looking for repeated failures.");
         assert_eq!(run["end"],1);
-        assert_eq!(engine.saved.messages.len(),1);
-        assert_eq!(Engine::open(directory.path(),"http://127.0.0.1:8787").await?.live.0.borrow()["runs"][0],run);
+        assert_eq!(engine.session.messages.len(),1);
+        assert_eq!(Engine::open("http://127.0.0.1:8787").await?.live.0.borrow()["runs"][0],run);
         engine.begin_activity(1);
         assert_eq!(engine.live.0.borrow()["runs"][0],run);
         assert!(engine.live.0.borrow()["runs"][1]["finished_at"].is_null());
         engine.new_chat().await?;
-        assert!(Engine::open(directory.path(),"http://127.0.0.1:8787").await?.live.0.borrow()["runs"].as_array().unwrap().is_empty());
+        assert!(Engine::open("http://127.0.0.1:8787").await?.live.0.borrow()["runs"].as_array().unwrap().is_empty());
         Ok(())
     }
 }

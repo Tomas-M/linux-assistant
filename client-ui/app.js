@@ -3,7 +3,8 @@ const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(ele
 let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 const progressViews=new WeakMap(), steeringRows=new Map();
-let queueKey='', steeringKey='';
+let queueKey='', steeringKey='', themePreference;
+const panelWidths=new Map();
 let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false, providersReady=false;
 let memoryDocument, memoryRequest=0, memoryLoading=false, memorySaving=false;
 const providerNames={google:'Google',microsoft:'Microsoft',github:'GitHub'};
@@ -85,7 +86,7 @@ function render()
     elements['brand-name'].textContent=brand.name;
     elements.brand.setAttribute('aria-label',brand.name+' home');
     for (const element of document.querySelectorAll('[data-brand-name]')) if (element.textContent!==brand.name) element.textContent=brand.name;
-    applyTheme(localStorage.getItem('assistant-theme:'+state.settings.backend) || brand.default_theme);
+    applyTheme(themePreference || brand.default_theme);
     let logo=null;
     if (images['logo-full']) logo='logo-full';
     else if (images['logo-image']) logo='logo-image';
@@ -512,7 +513,7 @@ elements.theme.addEventListener('click',()=>
 {
     const dark=document.documentElement.dataset.theme!=='dark';
     document.documentElement.dataset.theme=dark?'dark':'light';
-    localStorage.setItem('assistant-theme:'+state.settings.backend,dark?'dark':'light');
+    themePreference=dark?'dark':'light';
     setIcon(elements.theme,dark?'sun':'moon');
     elements.theme.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
 });
@@ -1303,7 +1304,7 @@ function configureSidebar(prefix,setting)
         handle.setAttribute('aria-valuemax',String(window.innerWidth));
         handle.setAttribute('aria-valuenow',String(width));
     };
-    resize(Number(localStorage.getItem('assistant-'+setting+'-width')) || 32*parseFloat(getComputedStyle(document.documentElement).fontSize));
+    resize(Number(panelWidths.get(setting)) || 32*parseFloat(getComputedStyle(document.documentElement).fontSize));
     handle.addEventListener('pointerdown',event=>
     {
         if (event.button!==0) return;
@@ -1314,13 +1315,13 @@ function configureSidebar(prefix,setting)
     handle.addEventListener('lostpointercapture',()=>
     {
         drag=null; document.body.classList.remove('resizing-tasks');
-        localStorage.setItem('assistant-'+setting+'-width',handle.getAttribute('aria-valuenow'));
+        panelWidths.set(setting,handle.getAttribute('aria-valuenow'));
     });
     handle.addEventListener('keydown',event=>
     {
         if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
         event.preventDefault(); resize(panel.getBoundingClientRect().width+(event.key==='ArrowLeft'?32:-32));
-        localStorage.setItem('assistant-'+setting+'-width',handle.getAttribute('aria-valuenow'));
+        panelWidths.set(setting,handle.getAttribute('aria-valuenow'));
     });
     window.addEventListener('resize',()=>resize(Number(handle.getAttribute('aria-valuenow'))));
 }

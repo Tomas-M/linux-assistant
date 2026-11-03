@@ -1,17 +1,16 @@
-use std::{fs::OpenOptions, future::IntoFuture, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{future::IntoFuture, sync::Arc, time::Duration};
 use anyhow::{bail, Context, Result};
 use axum::{body::Body, extract::{DefaultBodyLimit, State}, http::{header, Request, StatusCode}, middleware::{self, Next}, response::{Html, IntoResponse, Response}, routing::{get, post}, Json, Router};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
-use crate::{engine::Engine, processes::Processes, storage};
+use crate::{engine::Engine, processes::Processes};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Connection { pub url: String }
 #[derive(Clone)]
-struct Local { account:Arc<std::sync::RwLock<Option<protocol::Account>>>, downloads:Arc<crate::downloads::Downloads>, brand:Arc<crate::config::Brand>, session_path:PathBuf, controls:Arc<crate::controls::Controls>, live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
+pub(crate) struct Local { account:Arc<std::sync::RwLock<Option<protocol::Account>>>, downloads:Arc<crate::downloads::Downloads>, pub(crate) brand:Arc<crate::config::Brand>,pub(crate) ui:Arc<crate::ui::Store>,pub(crate) auth:crate::session::Credentials,media:crate::media::Media, controls:Arc<crate::controls::Controls>, pub(crate) live: crate::stream::Live, full_access: Arc<std::sync::atomic::AtomicBool>, engine: Arc<Mutex<Engine>>, processes: Processes, connection: Connection, stop: Arc<Notify> }
 struct LocalError(anyhow::Error);
 type LocalResult = std::result::Result<Json<Value>,LocalError>;
 
@@ -45,7 +44,7 @@ impl Connection {
         let mut request = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?
             .request(method,format!("{}{path}",self.url));
         // Approved commands can run indefinitely while the terminal waits for their result.
-        if !matches!(path,"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(1800)); }
+        if !matches!(path,"/api/chat"|"/api/retry") { request=request.timeout(Duration::from_secs(if path=="/api/health" { 1 } else { 1800 })); }
         if let Some(body) = body { request = request.json(&body); }
         let response = request.send().await?;
         let status = response.status();
@@ -55,61 +54,59 @@ impl Connection {
     }
 }
 
-/// Reuse a live daemon, or detach this executable and wait for its private discovery file.
-pub async fn connect(directory: &Path, args:&crate::Args) -> Result<Connection> {
-    let backend=args.backend.as_str();
-    let path = directory.join("daemon.json");
-    if let Ok(connection) = storage::read::<Connection>(&path) {
-        if tokio::time::timeout(Duration::from_secs(2),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
-            anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client is already running for a different backend; stop it before changing servers");
-            return Ok(connection);
-        }
+/// Find the live local service through its socket, without any discovery files.
+pub async fn connect(args:&crate::Args) -> Result<Connection> {
+    let connection=Connection { url:"http://127.0.0.1:56592".into() };
+    if let Ok(health)=connection.get("/api/health").await {
+        anyhow::ensure!(health["application"]=="linux-assistant" && health["bridge"]==protocol::BRIDGE_API,"Port 56592 belongs to another application or client version");
+        anyhow::ensure!(health["backend"]==args.backend,"A client is already running for a different backend; stop it before changing servers");
+        return Ok(connection);
     }
     #[cfg(unix)] {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::process::CommandExt;
         use std::process::Stdio;
-        let log=OpenOptions::new().create(true).append(true).mode(0o600).open(directory.join("daemon.log"))?;
         let mut command=std::process::Command::new(std::env::current_exe()?);
-        command.args(args.daemon_args()).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        command.args(args.daemon_args()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         unsafe { command.pre_exec(|| { if libc::setsid()==-1 { return Err(std::io::Error::last_os_error()); } Ok(()) }); }
         command.spawn()?;
     }
     #[cfg(windows)]
     crate::windows_launcher::spawn(&args.daemon_args())?;
-    for _ in 0..3600 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(connection) = storage::read::<Connection>(&path) {
-            if tokio::time::timeout(Duration::from_millis(500),connection.get("/api/health")).await.is_ok_and(|r|r.is_ok()) {
-                anyhow::ensure!(connection.get("/api/state").await?["settings"]["backend"]==backend,"A client started for a different backend; stop it before changing servers");
-                return Ok(connection);
-            }
+    for _ in 0..1800 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if let Ok(health)=connection.get("/api/health").await {
+            anyhow::ensure!(health["application"]=="linux-assistant" && health["bridge"]==protocol::BRIDGE_API && health["backend"]==args.backend,"Another local application is using port 56592");
+            return Ok(connection);
         }
     }
-    bail!("Local daemon did not start; inspect {}",directory.join("daemon.log").display())
+    bail!("Local assistant did not start. Run with --daemon to see the startup error")
 }
 
-/// Bind loopback only and hold an exclusive lock for this entire daemon lifetime.
-pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
-    let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("daemon.lockfile"))?;
-    if lock.try_lock_exclusive().is_err() { return Ok(()); }
-    let engine = Engine::open(&directory,backend).await?;
-    // Retain the local address across restarts so existing browser tabs can simply refresh.
-    let discovery=directory.join("daemon.json");
-    let port=if discovery.exists() { reqwest::Url::parse(&storage::read::<Connection>(&discovery)?.url)?.port().context("Local client URL is missing its port")? } else { 0 };
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1",port)).await?;
-    let connection = Connection { url:format!("http://{}",listener.local_addr()?) };
-    storage::write(&discovery,&connection)?;
+/// Hold the loopback port for this process; all session data and downloaded UI stay in RAM.
+pub async fn serve(backend:&str) -> Result<()> {
+    let listener=tokio::net::TcpListener::bind(("127.0.0.1",56592)).await?;
+    let connection=Connection { url:format!("http://{}",listener.local_addr()?) };
+    let engine=Engine::open(backend).await?;
     let brand=Arc::new(crate::config::Brand::default());
-    // Finish backend discovery before the listener becomes ready and the launcher prints its URL.
+    let ui=Arc::new(crate::ui::Store::default());
+    // Complete startup downloads before the launcher can obtain a ready health response and print its URL.
     crate::config::load(backend.into(),brand.clone(),engine.live.clone()).await;
+    if let Err(error)=ui.load(backend,&engine.live).await { engine.live.0.send_modify(|view|view["backend_error"]=json!(error.to_string())); }
     let processes=engine.processes.clone();
-    let state = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand,session_path:directory.join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
-    let stop = state.stop.clone();
+    let state=Local { account:engine.account.clone(),downloads:Arc::new(crate::downloads::Downloads::default()),brand,ui,auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),engine:Arc::new(Mutex::new(engine)),processes:processes.clone(),connection,stop:Arc::new(Notify::new()) };
+    let stop=state.stop.clone();
     let controls=state.controls.clone();
+    let signal=async {
+        #[cfg(unix)] {
+            let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! { _=terminate.recv()=>{},_=tokio::signal::ctrl_c()=>{} }
+        }
+        #[cfg(not(unix))]
+        { let _=tokio::signal::ctrl_c().await; }
+    };
     tokio::select! {
-        result=axum::serve(listener,router(state)).into_future() => result?,
-        _=async { tokio::select! { _=stop.notified()=>{}, _=tokio::signal::ctrl_c()=>{} } } => {
+        result=axum::serve(listener,router(state)).into_future()=>result?,
+        _=async { tokio::select! { _=stop.notified()=>{},_=signal=>{} } }=> {
             controls.cancel_local();
             processes.stop_foreground(None);
             let _=tokio::time::timeout(Duration::from_secs(3),controls.interrupt()).await;
@@ -119,28 +116,17 @@ pub async fn serve(directory: PathBuf, backend:&str) -> Result<()> {
     Ok(())
 }
 
-/// Embedded assets make the browser mode independent of installed files or Node.js.
+/// The backend owns every browser asset; the native server exposes the stable execution bridge.
 fn router(state: Local) -> Router {
     Router::new()
-        .route("/",get(|State(state):State<Local>|async move {
-            // Brand the initial document too, before scripts or account data have loaded.
-            let name=state.brand.metadata()["name"].as_str().unwrap_or("Assistant").replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&#39;");
-            Html(include_str!("../web/index.html").replace("{{APP_NAME}}",&name).replace("{{DEFAULT_THEME}}",state.brand.metadata()["default_theme"].as_str().unwrap_or("light")).replace("{{ICONS}}",protocol::ICONS_SVG).replace("{{SIGN_IN}}",&state.brand.providers().to_string().replace('<',"\\u003c")))
-        }))
+        .route("/",get(crate::ui::index)).route("/ui/{version}/{*path}",get(crate::ui::asset))
         .route("/branding/{key}",get(brand_image))
         .route("/api/configuration/retry",post(retry_configuration))
-        .route("/images.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/images.js")) }))
-        .route("/files.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/files.js")) }))
-        .route("/attachments.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/attachments.js")) }))
-        .route("/markdown-it.min.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/vendor/markdown-it.min.js")) }))
-        .route("/markdown.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/markdown.js")) }))
-        .route("/native.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/native.js")) }))
-        .route("/app.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")],include_str!("../web/app.js")) }))
-        .route("/style.css",get(||async { ([(header::CONTENT_TYPE,"text/css; charset=utf-8")],include_str!("../web/style.css")) }))
+        .route("/api/bootstrap",get(|State(state):State<Local>|async move { Json(json!({"bridge":protocol::Bridge::current(),"client_version":env!("CARGO_PKG_VERSION"),"brand":state.brand.metadata(),"providers":state.brand.providers()})) }))
         .route("/api/branding",get(|State(state):State<Local>|async move { Json(state.brand.metadata()) }))
         .route("/api/media/{scope}/{index}",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,false).await }))
         .route("/api/media/{scope}/{index}/thumbnail",get(|State(state):State<Local>,axum::extract::Path((scope,index)):axum::extract::Path<(String,usize)>|async move { media_response(state,scope,index,true).await }))
-        .route("/api/health",get(||async { Json(json!({"ok":true})) }))
+        .route("/api/health",get(|State(state):State<Local>|async move { Json(json!({"ok":true,"application":"linux-assistant","bridge":protocol::BRIDGE_API,"backend":state.auth.backend})) }))
         .route("/api/files",post(resolve_files)).route("/api/download/{id}",get(download_file))
         .route("/api/events",get(events)).route("/api/access",post(access))
         .route("/api/state",get(state_view)).route("/api/account",post(account))
@@ -158,8 +144,7 @@ fn router(state: Local) -> Router {
 
 /// Serve only previously captured images without waiting for the conversation engine lock.
 async fn media_response(state:Local,scope:String,index:usize,thumbnail:bool)->Response {
-    let directory=state.session_path.parent().unwrap().to_owned();
-    match tokio::task::spawn_blocking(move||crate::media::read(&directory,&scope,index,thumbnail)).await {
+    match tokio::task::spawn_blocking(move||state.media.read(&scope,index,thumbnail)).await {
         Ok(Ok((mime,bytes)))=>([(header::CONTENT_TYPE,mime)],bytes).into_response(),
         _=>StatusCode::NOT_FOUND.into_response(),
     }
@@ -210,7 +195,7 @@ async fn security(State(state): State<Local>, request: Request<Body>, next: Next
     let mut response = next.run(request).await;
     // Handle expired sessions for every browser API, including controls that bypass the engine lock.
     if let Some(expired)=response.extensions_mut().remove::<crate::backend::SessionExpired>() {
-        if let Err(error)=crate::session::expire(&state.engine,&state.controls,&state.session_path,&expired).await { response=LocalError(error).into_response(); }
+        if let Err(error)=crate::session::expire(&state.engine,&state.controls,&state.auth,&expired).await { response=LocalError(error).into_response(); }
     }
     for (key,value) in [("cache-control","no-store"),("referrer-policy","no-referrer"),("x-content-type-options","nosniff"),
         ("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")] {
@@ -261,7 +246,7 @@ async fn access(State(state): State<Local>, Json(input): Json<Value>) -> LocalRe
     if enabled { state.controls.approve_waiting(); }
     Ok(Json(state.live.0.borrow()["state"].clone()))
 }
-/// Persist execution permission shared by the browser and terminal.
+/// Publish execution permission shared by the browser and terminal.
 async fn settings(State(state): State<Local>, Json(input): Json<SettingsInput>) -> LocalResult {
     let mut engine = state.engine.try_lock().context("Assistant is busy")?;
     engine.settings(input.commands_enabled)?;
@@ -270,7 +255,7 @@ async fn settings(State(state): State<Local>, Json(input): Json<SettingsInput>) 
 /// Refresh authoritative credits even while generation owns the engine lock.
 async fn account(State(state): State<Local>) -> LocalResult {
     if let Ok(mut engine)=state.engine.try_lock() { return Ok(Json(engine.refresh_account().await?)); }
-    let account=crate::session::account(&state.session_path,&state.live,reqwest::Method::GET,"/v1/me",None).await?;
+    let account=crate::session::account(&state.auth,&state.live,reqwest::Method::GET,"/v1/me",None).await?;
     let updated:protocol::Account=serde_json::from_value(account.clone())?;
     let mut current=state.account.write().unwrap();
     // A delayed response must not replace an account that signed out or changed during the request.
@@ -391,9 +376,9 @@ async fn memories(State(state):State<Local>)->LocalResult { account_request(&sta
 /// Forward the user's revision so concurrent assistant writes cannot overwrite a draft silently.
 async fn save_memories(State(state):State<Local>,Json(input):Json<Value>)->LocalResult { account_request(&state,reqwest::Method::POST,"/v1/memories",Some(input)).await }
 
-/// Forward account requests with durable authentication without exposing the token to the browser.
+/// Forward account requests with in-memory authentication without exposing the token to the browser.
 async fn account_request(state:&Local,method:reqwest::Method,path:&str,body:Option<Value>)->LocalResult {
-    Ok(Json(crate::session::account(&state.session_path,&state.live,method,path,body).await?))
+    Ok(Json(crate::session::account(&state.auth,&state.live,method,path,body).await?))
 }
 /// Stop the browser service explicitly; closing its tab leaves the local engine running.
 async fn stop(State(state): State<Local>) -> Json<Value> { state.stop.notify_one(); Json(json!({"ok":true})) }
@@ -407,14 +392,14 @@ mod tests {
     #[tokio::test]
     async fn controls_processes_while_conversation_is_busy() -> Result<()> {
         let directory=tempfile::tempdir()?;
-        let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        let engine=Engine::open("http://127.0.0.1:8787").await?;
         let processes=engine.processes.clone();
         let live=engine.live.clone();
         let full_access=engine.full_access.clone();
         let controls=engine.controls.clone();
         let account=engine.account.clone();
         let engine=Arc::new(Mutex::new(engine));
-        let local=Local { account, downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { account, downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls,live,full_access,engine:engine.clone(),processes:processes.clone(),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app=router(local);
         let id=Uuid::new_v4();
         let proposal=protocol::CommandProposal { files:None, reason:"test".into(),cwd:directory.path().to_string_lossy().into_owned(),
@@ -437,7 +422,7 @@ mod tests {
         assert!(record.pid.is_some() && !record.arguments.is_empty());
         assert!(record.finished_at.is_some() && record.error.as_deref().unwrap().contains("Stopped by user"));
         assert!(processes.stop(id).is_err());
-        let recovered=Processes::open(directory.path())?.get(id)?;
+        let recovered=Processes::open()?.get(id)?;
         assert_eq!(recovered.stdout,record.stdout);
         assert_eq!(recovered.stderr,record.stderr);
         Ok(())
@@ -464,10 +449,10 @@ mod tests {
             Json(json!({"text":input["text"],"revision":"memory-2"}))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path(),&backend).await?;
-        engine.saved.token=Some("checkout-fixture".into());
+        let mut engine=Engine::open(&backend).await?;
+        *engine.auth.token.write().unwrap()=Some("checkout-fixture".into());
         engine.settings(false)?;
-        let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let _busy=local.engine.lock().await;
         let result=tokio::time::timeout(Duration::from_secs(1),checkout(State(local.clone()),Json(protocol::CheckoutRequest { price_id:"price_fixture".into() }))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["url"],"https://checkout.stripe.com/fixture");
@@ -494,9 +479,9 @@ mod tests {
             async move { started.notify_one(); ready.notified().await; Json(json!({"providers":[],"email_enabled":true})) }
         })).route("/v1/me",get(||async { Json(json!({"email":"fixture@example.test","credits":22,"development":true,"input_credits_per_million":200})) }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path(),&backend).await?;
-        engine.saved.token=Some("fixture".into()); engine.settings(true)?;
-        let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let mut engine=Engine::open(&backend).await?;
+        *engine.auth.token.write().unwrap()=Some("fixture".into()); engine.settings(true)?;
+        let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let metadata=local.clone();
         let discovery=tokio::spawn(async move { auth_providers(State(metadata)).await.map_err(|error|error.0) });
         tokio::time::timeout(Duration::from_secs(1),entered.notified()).await?;
@@ -517,8 +502,8 @@ mod tests {
     #[tokio::test]
     async fn protects_local_api() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
-        let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),session_path:directory.path().join("state.json"),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
+        let engine=Engine::open("http://127.0.0.1:8787").await?;
+        let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);
         let page=app.clone().oneshot(Request::builder().uri("/").header(header::HOST,"127.0.0.1:1234").body(Body::empty())?).await?;
         let html=String::from_utf8(axum::body::to_bytes(page.into_body(),256*1024).await?.to_vec())?;

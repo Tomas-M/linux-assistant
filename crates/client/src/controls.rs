@@ -1,32 +1,29 @@
 use std::collections::HashMap;
-use std::{path::{Path,PathBuf},sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}}};
+use std::{sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}}};
 use anyhow::{ensure,Context,Result};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use uuid::Uuid;
-use crate::{storage,stream::Live};
+use crate::stream::Live;
 
 #[derive(Clone,Serialize,Deserialize)]
 pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
-pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<Arc<anyhow::Error>>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, path:PathBuf, live:Live }
+pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<Arc<anyhow::Error>>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, receipts:Mutex<HashMap<Uuid,interactions::Receipt>>,media:crate::media::Media,live:Live }
 struct LocalTask { handle:tokio::task::AbortHandle,cancelled:Arc<AtomicBool> }
 pub struct Active(Arc<Controls>);
 mod interactions;
 
 impl Controls {
-    /// Queue persistence is independent of the engine lock held during commands and generation.
-    pub fn open(directory:&Path,live:Live)->Result<Arc<Self>> {
-        let path=directory.join("queue.json");
-        let queue=if path.exists() { storage::read(&path)? } else { Vec::new() };
-        let controls=Arc::new(Self { failures:tokio::sync::watch::channel(None).0,pending:Mutex::new(HashMap::new()),tasks:Mutex::new(HashMap::new()),stopped:Arc::new(AtomicBool::new(false)),file_access:Arc::new(tokio::sync::Mutex::new(())),command_yield:tokio::sync::Notify::new(),remote:Mutex::new(None),queue:tokio::sync::Mutex::new(queue),path,live });
-        controls.publish(&controls.queue.try_lock().unwrap())?;
+    /// Keep pending input and operation receipts only for this native process's lifetime.
+    pub fn open(live:Live,media:crate::media::Media)->Result<Arc<Self>> {
+        let controls=Arc::new(Self { failures:tokio::sync::watch::channel(None).0,pending:Mutex::new(HashMap::new()),tasks:Mutex::new(HashMap::new()),stopped:Arc::new(AtomicBool::new(false)),file_access:Arc::new(tokio::sync::Mutex::new(())),command_yield:tokio::sync::Notify::new(),remote:Mutex::new(None),queue:tokio::sync::Mutex::new(Vec::new()),receipts:Mutex::new(HashMap::new()),media,live });
+        controls.publish(&[])?;
         Ok(controls)
     }
-    /// Persist the queue before publishing it, so browser reloads and daemon restarts retain input.
+    /// Publish the same queue to every connected view without writing it to disk.
     fn publish(&self,queue:&[Queued])->Result<()> {
-        storage::write(&self.path,&queue)?;
         self.live.0.send_modify(|view|view["queue"]=protocol::display_messages(&queue));
         Ok(())
     }
@@ -59,7 +56,7 @@ impl Controls {
         self.publish(&queue)?;
         Ok(input)
     }
-    /// Claim and durably record input under one queue lock, excluding concurrent edit or steer.
+    /// Claim and register input under one queue lock, excluding concurrent edit or steer.
     pub async fn start_next(&self,prepare:impl FnOnce(Queued)->Result<()>)->Result<bool> {
         let mut queue=self.queue.lock().await;
         let Some(input)=queue.first().filter(|input|!input.editing).cloned() else { return Ok(false); };
@@ -74,7 +71,7 @@ impl Controls {
         let input=queue.iter().find(|input|input.id==id).context("This message is no longer queued")?;
         ensure!(!input.editing,"Submit the edited message before steering it");
         let input=protocol::Steering { attachments:input.attachments.clone(), id,text:input.text.clone() };
-        crate::media::cache_attachments(self.path.parent().unwrap(),&input.id.to_string(),input.attachments.as_deref())?;
+        self.media.cache_attachments(&input.id.to_string(),input.attachments.as_deref())?;
         self.send("steer",json!(input)).await?;
         queue.retain(|queued|queued.id!=id);
         self.publish(&queue)?;
@@ -82,7 +79,7 @@ impl Controls {
     }
     /// Steering an edited draft consumes its held queue slot only after backend acceptance.
     pub async fn steer(&self,input:&protocol::Steering)->Result<Value> {
-        crate::media::cache_attachments(self.path.parent().unwrap(),&input.id.to_string(),input.attachments.as_deref())?;
+        self.media.cache_attachments(&input.id.to_string(),input.attachments.as_deref())?;
         let mut queue=self.queue.lock().await;
         ensure!(!queue.iter().any(|queued|queued.id==input.id && !queued.editing),"Use the queued message's Steer action");
         let result=self.send("steer",json!(input)).await?;
@@ -91,7 +88,7 @@ impl Controls {
         Ok(result)
     }
     /// Starting a new conversation explicitly clears its queued messages.
-    pub async fn clear(&self)->Result<()> { let mut queue=self.queue.lock().await; queue.clear(); self.publish(&queue) }
+    pub async fn clear(&self)->Result<()> { let mut queue=self.queue.lock().await; queue.clear(); self.receipts.lock().unwrap().clear(); self.publish(&queue) }
     /// Publish only steering availability; backend credentials stay in this process.
     pub fn active(self:&Arc<Self>,remote:Remote)->Active {
         self.failures.send_replace(None);
@@ -143,13 +140,13 @@ mod tests {
     #[tokio::test]
     async fn editing_preserves_queue_order()->Result<()> {
         let directory=tempfile::tempdir()?;
-        let controls=Controls::open(directory.path(),Live::new())?;
+        let controls=Controls::open(Live::new(),crate::media::Media::default())?;
         let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
         for input in &inputs { controls.enqueue(input.clone()).await?; }
         controls.edit(inputs[1].id,true).await?;
         assert!(controls.start_next(|input| { assert_eq!(input.text,"first"); Ok(()) }).await?);
         assert!(!controls.start_next(|_|panic!("Edited input was dispatched")).await?);
-        let controls=Controls::open(directory.path(),Live::new())?;
+        let controls=Controls::open(Live::new(),crate::media::Media::default())?;
         assert!(!controls.start_next(|_|panic!("Reload lost the held slot")).await?);
         assert!(controls.edit(inputs[2].id,true).await.is_err());
         controls.enqueue(Queued { text:"edited 世界".into(),..inputs[1].clone() }).await?;
@@ -164,7 +161,7 @@ mod tests {
     async fn steering_excludes_dequeue_and_preserves_rejected_input()->Result<()> {
         use axum::{routing::post,Json,Router};
         let directory=tempfile::tempdir()?;
-        let controls=Controls::open(directory.path(),Live::new())?;
+        let controls=Controls::open(Live::new(),crate::media::Media::default())?;
         let input=Queued { attachments:Some(vec![protocol::Attachment::Text { name:"notes.txt".into(),content:"Attached steering".into() }]), id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
         controls.enqueue(input.clone()).await?;
         assert!(controls.steer_queued(input.id).await.is_err());

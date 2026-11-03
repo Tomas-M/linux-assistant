@@ -278,7 +278,7 @@ mod tests {
     /// Start an independent task using the production request contract.
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
-        ChatRequest { task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
+        ChatRequest { bridge:protocol::Bridge::current(), task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
             messages:vec![Message { attachments:None, role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() }
     }
 

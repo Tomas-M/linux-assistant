@@ -1,10 +1,10 @@
-use std::{path::{Path, PathBuf}, sync::{Arc,atomic::{AtomicBool,Ordering}}};
+use std::{sync::{Arc,atomic::{AtomicBool,Ordering}}};
 use anyhow::{bail, ensure, Context, Result};
 use protocol::{Account, EmailChallenge, EmailLogin, VerifyEmail, ChatRequest, ChatResponse, DeviceLogin, LoginResult, Message, Platform, Role, MAX_REQUEST_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
-use crate::{processes::Processes, storage};
+use crate::processes::Processes;
 pub(crate) mod output;
 mod presentation;
 mod generated;
@@ -13,70 +13,51 @@ mod social;
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Settings { pub backend: String, pub commands_enabled: bool }
 #[derive(Clone, Deserialize, Serialize)]
-pub struct Saved {
+pub struct Session {
     pub conversation_id: Uuid,
     pub task_id: Option<Uuid>,
     pub settings: Settings,
-    pub token: Option<String>,
     pub messages: Vec<Message>,
     pub committed: usize,
     pub request: Option<ChatRequest>,
 }
-pub struct Engine { pub saved: Saved, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, platform: Platform, path: PathBuf, http: reqwest::Client, login: Option<social::LoginAttempt>, pub account: Arc<std::sync::RwLock<Option<Account>>> }
+pub struct Engine { pub session: Session, pub controls: Arc<crate::controls::Controls>, pub processes: Processes, pub live: crate::stream::Live, pub full_access: Arc<AtomicBool>, pub auth:crate::session::Credentials, pub media:crate::media::Media, platform: Platform, http: reqwest::Client, login: Option<social::LoginAttempt>, pub account: Arc<std::sync::RwLock<Option<Account>>> }
 
 impl Engine {
-    /// One interface owns the saved settings and conversation state at a time.
-    pub async fn open(directory: &Path, backend:&str) -> Result<Self> {
-        let platform = match std::env::consts::OS {
-            "linux" => Platform::Linux, "windows" => Platform::Windows,
-            name => bail!("Unsupported operating system: {name}"),
+    /// Start an isolated RAM-only session; executable restarts never replay previous tasks.
+    pub async fn open(backend:&str) -> Result<Self> {
+        let platform=match std::env::consts::OS {
+            "linux"=>Platform::Linux,"windows"=>Platform::Windows,
+            name=>bail!("Unsupported operating system: {name}"),
         };
-        let path = directory.join("state.json");
-        let saved = if path.exists() { storage::read(&path)? } else {
-            Saved { conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },
-                task_id:None,token:None,committed:0,messages:vec![],request:None }
-        };
-        validate_backend(&saved.settings.backend)?;
-        for (index,message) in saved.messages.iter().enumerate() { crate::media::cache_attachments(directory,&format!("{}_{index}",saved.conversation_id),message.attachments.as_deref())?; }
+        validate_backend(backend)?;
         let live=crate::stream::Live::new();
-        let presentation=directory.join("presentation.json");
-        if presentation.exists() {
-            let presentation:Value=storage::read(&presentation)?;
-            if presentation["conversation_id"]==saved.conversation_id.to_string() {
-                ensure!(presentation["tool_results"].is_object(),"Saved chat format changed; stop the client and run it once with --reset-chat (sign-in and settings are retained)");
-                live.0.send_modify(|view| { for key in ["steps","runs","commands","tool_results"] { view[key]=presentation[key].clone(); } });
-            }
-        }
-        let controls=crate::controls::Controls::open(directory,live.clone())?;
-        let mut engine=Self { controls,processes:Processes::open(directory)?,live,full_access:Arc::new(AtomicBool::new(saved.settings.commands_enabled)),saved,platform,path,http:crate::backend::client(0)?,login:None,account:Arc::new(std::sync::RwLock::new(None)) };
-        if let Some(request)=&engine.saved.request { engine.controls.remove(request.request_id).await?; }
-        if engine.saved.settings.backend!=backend { engine.set_backend(backend.into()).await?; }
+        let media=crate::media::Media::default();
+        let session=Session { conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },task_id:None,committed:0,messages:vec![],request:None };
+        let engine=Self { controls:crate::controls::Controls::open(live.clone(),media.clone())?,processes:Processes::open()?,live,full_access:Arc::new(AtomicBool::new(true)),session,
+            auth:crate::session::Credentials { backend:backend.into(),token:Arc::new(std::sync::RwLock::new(None)) },media,platform,http:crate::backend::client(0)?,login:None,account:Arc::new(std::sync::RwLock::new(None)) };
         engine.live.state(engine.state());
         Ok(engine)
     }
 
     /// Never expose authentication tokens or pending request internals to browser state.
     pub fn state(&self) -> Value {
-        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.saved.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.saved.token.is_some(),"messages":crate::media::messages(self.saved.conversation_id,&self.saved.messages),
+        json!({"platform":self.platform,"shell":self.platform.shell(),"settings":self.session.settings,"full_access":self.full_access.load(Ordering::SeqCst),"authenticated":self.auth.token.read().unwrap().is_some(),"messages":crate::media::messages(self.session.conversation_id,&self.session.messages),
             "sign_in":self.login.as_ref().filter(|login|login.provider.is_some()).map(|login|json!({"id":login.device.device_id,"provider":login.provider,"expires_at":login.device.expires_at})),
-            "retry_available":self.saved.request.is_some(),"account":&*self.account.read().unwrap()})
+            "retry_available":self.session.request.is_some(),"account":&*self.account.read().unwrap()})
     }
 
-    /// Keep all state transitions durable before performing external side effects.
-    fn save(&self) -> Result<()> {
-        for (index,message) in self.saved.messages.iter().enumerate() { crate::media::cache_attachments(self.path.parent().unwrap(),&format!("{}_{index}",self.saved.conversation_id),message.attachments.as_deref())?; }
-        storage::write(&self.path,&self.saved)?;
-        let view=self.live.0.borrow();
-        storage::write(&self.path.with_file_name("presentation.json"),&json!({"conversation_id":self.saved.conversation_id,"steps":view["steps"],"runs":view["runs"],"commands":view["commands"],"tool_results":view["tool_results"]}))?;
-        drop(view);
+    /// Publish lightweight state while originals remain in this process's image store.
+    fn publish(&self) -> Result<()> {
+        for (index,message) in self.session.messages.iter().enumerate() { self.media.cache_attachments(&format!("{}_{index}",self.session.conversation_id),message.attachments.as_deref())?; }
         self.live.state(self.state());
         Ok(())
     }
 
-    /// Authenticate outbound backend requests with the locally stored session only.
+    /// Authenticate outbound backend requests with the in-memory session only.
     fn backend(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let mut request = self.http.request(method,format!("{}{path}",self.saved.settings.backend));
-        if let Some(token) = &self.saved.token { request = request.bearer_auth(token); }
+        let mut request = self.http.request(method,format!("{}{path}",self.session.settings.backend));
+        if let Some(token)=self.auth.token.read().unwrap().as_ref() { request=request.bearer_auth(token); }
         request
     }
 
@@ -88,24 +69,11 @@ impl Engine {
         Ok(serde_json::from_value(value)?)
     }
 
-    /// Changing the backend signs out and clears conversation state to prevent cross-server leaks.
-    pub async fn set_backend(&mut self, backend: String) -> Result<()> {
-        let backend = backend.trim_end_matches('/').to_owned();
-        validate_backend(&backend)?;
-        self.saved.settings.backend = backend;
-        self.saved.token = None;
-        self.saved.settings.commands_enabled = true;
-        self.full_access.store(true,Ordering::SeqCst);
-        *self.account.write().unwrap()=None;
-        self.login = None;
-        self.new_chat().await
-    }
-
     /// Disabling execution immediately invalidates every unapproved command.
     pub fn settings(&mut self, enabled: bool) -> Result<()> {
-        self.saved.settings.commands_enabled = enabled;
+        self.session.settings.commands_enabled = enabled;
         if !enabled { self.full_access.store(false,Ordering::SeqCst); }
-        self.save()
+        self.publish()
     }
 
     /// Request a code without opening a browser or exposing the device secret to the UI.
@@ -119,7 +87,7 @@ impl Engine {
         Ok(challenge)
     }
 
-    /// Verify inside the client and persist the session before loading account details.
+    /// Verify inside the client and retain the session before loading account details.
     pub async fn verify_login(&mut self,code:String) -> Result<Value> {
         let login=&self.login.as_ref().context("Request a sign-in code first")?.device;
         let input=VerifyEmail { device_id:login.device_id.clone(),poll_secret:login.poll_secret.clone(),code };
@@ -127,12 +95,12 @@ impl Engine {
         self.finish_login(result).await
     }
 
-    /// Finish email and provider sign-ins through the same durable session transition.
+    /// Finish email and provider sign-ins through the same in-memory session transition.
     async fn finish_login(&mut self,result:LoginResult)->Result<Value> {
-        self.saved.token=Some(result.token.context("Backend did not issue a session")?);
+        *self.auth.token.write().unwrap()=Some(result.token.context("Backend did not issue a session")?);
         self.login=None;
         *self.account.write().unwrap()=None;
-        self.saved.settings.commands_enabled=true;
+        self.session.settings.commands_enabled=true;
         self.full_access.store(true,Ordering::SeqCst);
         self.new_chat().await?;
         self.refresh_account().await
@@ -140,15 +108,15 @@ impl Engine {
 
     /// Forget only the rejected session, leaving newer logins and the access preference untouched.
     pub async fn expire_session(&mut self,expired:&crate::backend::SessionExpired)->Result<()> {
-        if self.saved.token.as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
+        if self.auth.token.read().unwrap().as_deref()!=Some(expired.0.as_str()) { return Ok(()); }
         self.controls.cancel_local();
-        self.saved.token=None;
+        *self.auth.token.write().unwrap()=None;
         self.login=None;
         *self.account.write().unwrap()=None;
         self.new_chat().await
     }
 
-    /// Apply authentication failures to the durable session before publishing another state snapshot.
+    /// Apply authentication failures to the in-memory session before publishing another state snapshot.
     async fn send_authenticated(&mut self,request:reqwest::RequestBuilder,interruptible:bool)->Result<reqwest::Response> {
         let result=crate::backend::send(request,&self.live,interruptible.then_some(self.controls.stopped.as_ref())).await;
         if let Err(error)=&result {
@@ -170,8 +138,8 @@ impl Engine {
     pub async fn logout(&mut self) -> Result<()> {
         let response = crate::backend::send(self.backend(reqwest::Method::POST,"/v1/logout"),&self.live,None).await?;
         if response.status()!=reqwest::StatusCode::UNAUTHORIZED { Self::response::<Value>(response).await?; }
-        self.saved.token = None;
-        self.saved.settings.commands_enabled = false;
+        *self.auth.token.write().unwrap()=None;
+        self.session.settings.commands_enabled = false;
         self.full_access.store(false,Ordering::SeqCst);
         *self.account.write().unwrap()=None;
         self.new_chat().await
@@ -180,33 +148,34 @@ impl Engine {
     /// A fresh chat clears pending approvals and retry state, keeping account settings.
     pub async fn new_chat(&mut self) -> Result<()> {
         self.live.0.send_modify(|view| { for key in ["steps","runs","commands","steering","interactions"] { view[key]=json!([]); } view["tool_results"]=json!({}); view["activity"]=Value::Null; view["error"]=Value::Null; });
-        self.saved.conversation_id = Uuid::new_v4();
-        self.saved.task_id = None;
-        self.saved.messages.clear();
-        self.saved.committed=0;
+        self.media.clear();
+        self.session.conversation_id = Uuid::new_v4();
+        self.session.task_id = None;
+        self.session.messages.clear();
+        self.session.committed=0;
         self.controls.clear().await?;
-        self.saved.request = None;
-        self.save()
+        self.session.request = None;
+        self.publish()
     }
 
-    /// Persist user input before dispatch; a lost response can be retried with the same request ID.
+    /// Register user input before dispatch; a lost response can be retried with the same request ID.
     fn prepare_message(&mut self,text:String,cwd:String,id:Uuid,attachments:Option<Vec<protocol::Attachment>>)->Result<()> {
-        ensure!(self.saved.request.is_none(),"Retry the unfinished request or start a new chat first");
+        ensure!(self.session.request.is_none(),"Retry the unfinished request or start a new chat first");
         protocol::validate_input(&text,attachments.as_deref())?;
-        self.saved.messages.push(Message { attachments, role:Role::User,text });
-        self.saved.task_id=Some(id);
-        if let Err(error)=self.prepare(cwd,id) { self.saved.messages.pop(); self.saved.task_id=None; return Err(error); }
-        self.begin_activity(self.saved.messages.len()-1);
-        self.save()?;
+        self.session.messages.push(Message { attachments, role:Role::User,text });
+        self.session.task_id=Some(id);
+        if let Err(error)=self.prepare(cwd,id) { self.session.messages.pop(); self.session.task_id=None; return Err(error); }
+        self.begin_activity(self.session.messages.len()-1);
+        self.publish()?;
         Ok(())
     }
-    /// Tests and direct engine callers use the same durable input path as queued browser messages.
+    /// Tests and direct engine callers use the same input path as queued browser messages.
     #[cfg(test)]
     pub async fn chat(&mut self,text:String,cwd:String)->Result<Value> {
         self.prepare_message(text,cwd,Uuid::new_v4(),None)?;
         self.retry().await
     }
-    /// Acknowledge dequeue only after saving its stable ID, making crash recovery unambiguous.
+    /// Acknowledge dequeue only after registering its stable ID in the active session.
     pub async fn next(&mut self)->Result<bool> {
         if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id,input.attachments)).await? { return Ok(false); }
         self.retry().await?;
@@ -215,44 +184,44 @@ impl Engine {
 
     /// Send only new input after the last committed conversation revision.
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
-        ensure!(self.saved.token.is_some(),"Sign in first");
-        let request = ChatRequest { task_id:*self.saved.task_id.get_or_insert(id),base:self.saved.committed,request_id:id,conversation_id:self.saved.conversation_id,platform:self.platform,messages:self.saved.messages[self.saved.committed..].to_vec(),commands_enabled:self.saved.settings.commands_enabled,cwd };
+        ensure!(self.auth.token.read().unwrap().is_some(),"Sign in first");
+        let request = ChatRequest { bridge:protocol::Bridge::current(),task_id:*self.session.task_id.get_or_insert(id),base:self.session.committed,request_id:id,conversation_id:self.session.conversation_id,platform:self.platform,messages:self.session.messages[self.session.committed..].to_vec(),commands_enabled:self.session.settings.commands_enabled,cwd };
         ensure!(serde_json::to_vec(&request)?.len()<=protocol::MAX_UPLOAD_BYTES && protocol::display_messages(&request.messages).to_string().len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
-        self.saved.request = Some(request);
-        self.save()
+        self.session.request = Some(request);
+        self.publish()
     }
 
     /// Retain ambiguous requests for idempotent recovery; start a new task after a settled failure.
     pub async fn retry(&mut self) -> Result<Value> {
-        let request = self.saved.request.as_ref().context("No unfinished request")?;
-        self.begin_activity(self.saved.messages.len());
+        let request = self.session.request.as_ref().context("No unfinished request")?;
+        self.begin_activity(self.session.messages.len());
         self.record_credits(None);
-        let _active=self.controls.active(crate::controls::Remote { backend:self.saved.settings.backend.clone(),token:self.saved.token.clone().unwrap(),request:request.request_id });
+        let _active=self.controls.active(crate::controls::Remote { backend:self.session.settings.backend.clone(),token:self.auth.token.read().unwrap().clone().unwrap(),request:request.request_id });
         self.live.activity("Waiting for assistant…",Some(Default::default()));
         let response=self.send_authenticated(self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request),true).await?;
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::PAYMENT_REQUIRED {
                 let id=Uuid::new_v4();
-                self.saved.task_id=Some(id);
-                self.saved.request.as_mut().unwrap().request_id=id;
-                self.saved.request.as_mut().unwrap().task_id=id;
-                self.save()?;
+                self.session.task_id=Some(id);
+                self.session.request.as_mut().unwrap().request_id=id;
+                self.session.request.as_mut().unwrap().task_id=id;
+                self.publish()?;
             }
             return Self::response::<Value>(response).await;
         }
         let result=self.read_stream(response).await?;
-        let expected=self.saved.messages.len()+result.steering.len()+1;
+        let expected=self.session.messages.len()+result.steering.len()+1;
         ensure!(result.revision==expected,"Backend returned an unexpected conversation revision");
         // Completion is authoritative even if the separate steering acknowledgement was lost.
         let steering_ids:Vec<_>=result.steering.iter().map(|input|input.id).collect();
-        let steering_start=self.saved.messages.len();
+        let steering_start=self.session.messages.len();
         for id in &steering_ids { self.controls.remove(*id).await?; }
-        self.saved.messages.extend(result.steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
-        self.saved.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
-        self.saved.committed=result.revision;
-        self.saved.request = None;
-        self.saved.task_id=None;
+        self.session.messages.extend(result.steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
+        self.session.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
+        self.session.committed=result.revision;
+        self.session.request = None;
+        self.session.task_id=None;
         if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=result.credits; }
         if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
         self.finish_activity(None)?;
@@ -290,10 +259,10 @@ impl Engine {
                         let result=async {
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             ensure!(!self.controls.stopped.load(Ordering::SeqCst),"Stopped by you");
-                            let request=self.saved.request.as_ref().context("No unfinished request")?;
+                            let request=self.session.request.as_ref().context("No unfinished request")?;
                             let response=self.backend(reqwest::Method::POST,"/v1/chat").header(reqwest::header::ACCEPT,"text/event-stream").json(request).send().await?;
                             if response.status()==reqwest::StatusCode::UNAUTHORIZED {
-                                let expired=crate::backend::SessionExpired(self.saved.token.clone().unwrap());
+                                let expired=crate::backend::SessionExpired(self.auth.token.read().unwrap().clone().unwrap());
                                 self.expire_session(&expired).await?;
                                 return Err(expired.into());
                             }
@@ -320,8 +289,8 @@ impl Engine {
                         let activity=progress.activity.clone();
                         let label=if let Some(activity)=&activity { activity.as_str() } else if progress.attempt==0 { "Waiting for assistant…" } else if progress.text.is_empty() { "Thinking…" } else { "Responding…" };
                         if let Some(credits)=progress.credits { if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=credits; } self.live.state(self.state()); }
-                        let request=self.saved.request.as_ref().unwrap();
-                        self.controls.receive(&progress.requests,&self.processes,&self.full_access,self.saved.settings.commands_enabled,&request.cwd);
+                        let request=self.session.request.as_ref().unwrap();
+                        self.controls.receive(&progress.requests,&self.processes,&self.full_access,self.session.settings.commands_enabled,&request.cwd);
                         self.live.activity(label,Some(progress));
                     }
                     protocol::ChatEvent::Complete { mut response } => {
@@ -335,15 +304,15 @@ impl Engine {
                         if let (Some(account),Some(credits))=(self.account.write().unwrap().as_mut(),credits) { account.credits=credits; }
                         if settled {
                             let steering_ids:Vec<_>=steering.iter().map(|input|input.id).collect();
-                            let steering_start=self.saved.messages.len();
+                            let steering_start=self.session.messages.len();
                             for id in &steering_ids { self.controls.remove(*id).await?; }
-                            self.saved.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
-                            let cwd=self.saved.request.as_ref().unwrap().cwd.clone();
-                            self.saved.request=None;
-                            self.saved.task_id=None;
+                            self.session.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
+                            let cwd=self.session.request.as_ref().unwrap().cwd.clone();
+                            self.session.request=None;
+                            self.session.task_id=None;
                             if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
                             if !self.controls.stopped.load(Ordering::SeqCst) { self.prepare(cwd,Uuid::new_v4())?; }
-                            self.save()?;
+                            self.publish()?;
                         }
                         bail!("{message}");
                     }
@@ -395,14 +364,14 @@ mod tests {
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open(directory.path(),&backend).await?; engine.saved.token=Some("fixture".into());
+        let mut engine=Engine::open(&backend).await?; *engine.auth.token.write().unwrap()=Some("fixture".into());
         let attachments=Some(vec![protocol::Attachment::Text { name:"日志.txt".into(),content:"PRIVATE_ATTACHMENT_TEXT".into() }]);
         engine.controls.enqueue(crate::controls::Queued { id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
         assert!(engine.next().await.is_err()); drop(engine);
-        let mut engine=Engine::open(directory.path(),&backend).await?; engine.retry().await?;
+        let mut engine=Engine::open(&backend).await?; engine.retry().await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
-        assert_eq!(engine.saved.messages[0].attachments,attachments);
+        assert_eq!(engine.session.messages[0].attachments,attachments);
         assert_eq!(engine.live.0.borrow()["steps"][0]["compacted"][0],"compact");
         let requests=requests.lock().unwrap(); assert_eq!(requests[0].request_id,requests[1].request_id); assert_eq!(requests[1].messages[0].attachments,attachments);
         server.abort(); Ok(())
@@ -425,16 +394,16 @@ mod tests {
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open(directory.path(),&backend).await?;
-        engine.saved.token=Some("fixture".into());
+        let mut engine=Engine::open(&backend).await?;
+        *engine.auth.token.write().unwrap()=Some("fixture".into());
         *engine.account.write().unwrap()=Some(Account { email:"fixture@example.test".into(),credits:1,development:true,input_credits_per_million:200.0 });
         assert!(engine.chat("Hello".into(),"/tmp".into()).await.is_err());
         assert_eq!(engine.state()["account"]["credits"],-2);
-        let next=engine.saved.request.as_ref().unwrap();
+        let next=engine.session.request.as_ref().unwrap();
         assert_eq!(next.task_id,next.request_id);
         assert_ne!(next.task_id,ids.lock().unwrap()[0].0);
         drop(engine);
-        let recovered=Engine::open(directory.path(),&backend).await?;
+        let recovered=Engine::open(&backend).await?;
         assert_eq!(recovered.saved.task_id,Some(recovered.saved.request.as_ref().unwrap().task_id));
         server.abort();
         Ok(())
@@ -460,19 +429,19 @@ mod tests {
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let directory=tempfile::tempdir()?;
-        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        let mut engine=Engine::open("http://127.0.0.1:8787").await?;
         engine.set_backend(backend.clone()).await?;
-        engine.saved.token=Some("fixture".into());
+        *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.settings(true)?;
         assert!(engine.chat("Hello".into(),directory.path().to_string_lossy().into_owned()).await.is_err());
-        assert_eq!(engine.saved.messages.len(),1);
+        assert_eq!(engine.session.messages.len(),1);
         assert_eq!(engine.live.0.borrow()["activity"]["progress"]["text"],"Partial 世界");
         engine.retry().await?;
         let requests=requests.lock().unwrap();
         assert_eq!(requests[0],requests[1]);
-        assert_eq!(engine.saved.messages.len(),2);
-        assert_eq!(engine.saved.messages[1].text,"Complete 世界");
-        assert!(engine.saved.request.is_none());
+        assert_eq!(engine.session.messages.len(),2);
+        assert_eq!(engine.session.messages[1].text,"Complete 世界");
+        assert!(engine.session.request.is_none());
         server.abort();
         Ok(())
     }
@@ -495,31 +464,31 @@ mod tests {
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path(),"http://127.0.0.1:8787").await?;
+        let mut engine=Engine::open("http://127.0.0.1:8787").await?;
         engine.set_backend(backend.clone()).await?;
-        engine.saved.token=Some("fixture".into());
+        *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.settings(false)?;
         let cwd=directory.path().to_string_lossy().into_owned();
         for _ in 0..30 { engine.chat("世界".repeat(2000),cwd.clone()).await?; }
         let runs=engine.live.0.borrow()["runs"].clone();
         assert_eq!(runs.as_array().unwrap().len(),30);
         assert!(runs.as_array().unwrap().iter().all(|run|run["finished_at"].as_u64()>=run["started_at"].as_u64() && run["finished_at"].is_u64()));
-        assert_eq!(runs[29]["end"],engine.saved.messages.len());
-        assert_eq!(Engine::open(directory.path(),&backend).await?.live.0.borrow()["runs"],runs);
-        assert!(serde_json::to_vec(&engine.saved.messages)?.len()>96_000);
-        assert_eq!(engine.saved.committed,60);
+        assert_eq!(runs[29]["end"],engine.session.messages.len());
+        assert_eq!(Engine::open(&backend).await?.live.0.borrow()["runs"],runs);
+        assert!(serde_json::to_vec(&engine.session.messages)?.len()>96_000);
+        assert_eq!(engine.session.committed,60);
         let first=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
         let second=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
         engine.controls.enqueue(first.clone()).await?;
         engine.controls.enqueue(second.clone()).await?;
         engine.prepare_message(first.text,cwd,first.id,None)?;
         drop(engine);
-        let mut engine=Engine::open(directory.path(),&backend).await?;
+        let mut engine=Engine::open(&backend).await?;
         assert_eq!(engine.live.0.borrow()["queue"][0]["id"],second.id.to_string());
         engine.retry().await?;
         assert!(engine.next().await?);
         assert!(engine.live.0.borrow()["queue"].as_array().unwrap().is_empty());
-        assert_eq!(engine.saved.messages.len(),64);
+        assert_eq!(engine.session.messages.len(),64);
         server.abort();
         Ok(())
     }
@@ -547,13 +516,13 @@ mod tests {
             ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&protocol::ChatEvent::Complete { response }).unwrap()))
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let mut engine=Engine::open(directory.path(),&backend).await?;
-        engine.saved.token=Some("fixture".into());
+        let mut engine=Engine::open(&backend).await?;
+        *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.controls.enqueue(crate::controls::Queued { attachments:None, id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
         engine.chat("Original task".into(),"/tmp".into()).await?;
         assert!(!engine.next().await?);
-        assert_eq!(engine.saved.messages.len(),3);
-        assert_eq!(engine.saved.messages[1].text,"Queued steering");
+        assert_eq!(engine.session.messages.len(),3);
+        assert_eq!(engine.session.messages[1].text,"Queued steering");
         server.abort();
         Ok(())
     }
