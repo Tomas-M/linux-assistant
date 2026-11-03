@@ -755,6 +755,7 @@ async function cancelSocial()
 async function requestCode()
 {
     if (loginBusy || !elements['email-form'].reportValidity()) return;
+    elements.login.setAttribute('aria-busy','true');
     loginBusy=true;
     elements['auth-status'].textContent='';
     renderLogin();
@@ -769,7 +770,7 @@ async function requestCode()
         for (const input of codeInputs) input.value='';
     }
     catch (error) { elements['auth-status'].textContent=error.message; }
-    finally { loginBusy=false; renderLogin(); if (!elements['code-form'].hidden) codeInputs[0].focus(); }
+    finally { elements.login.removeAttribute('aria-busy'); loginBusy=false; renderLogin(); if (!elements['code-form'].hidden) codeInputs[0].focus(); }
 }
 elements['email-form'].addEventListener('submit',event=>{event.preventDefault(); requestCode();});
 elements.resend.addEventListener('click',requestCode);
