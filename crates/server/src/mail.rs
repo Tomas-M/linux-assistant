@@ -19,7 +19,7 @@ pub async fn send_code(app: &App, recipient: Address, code: &str) -> Result<()> 
     let mut sender:Mailbox=config.email_from.as_ref().ok_or_else(||anyhow::anyhow!("Configure SMTP in admin Settings"))?.parse()?;
     sender.name=Some(name.clone());
     let message=Message::builder().from(sender)
-        .to(Mailbox::new(None,recipient)).subject(format!("[{}-{}] is your sign in code for {name}",&code[..3],&code[3..]))
+        .to(Mailbox::new(None,recipient)).subject(format!("{}-{} is your sign in code for {name}",&code[..3],&code[3..]))
         .multipart(MultiPart::alternative()
             .singlepart(SinglePart::plain(format!("Sign in to {name}\n\nEnter this code in your assistant:\n\n{code}\n\nThis code expires in 10 minutes and can only be used once.\nIf you did not request it, you can ignore this email.\n\nThe {name} team")))
             .singlepart(SinglePart::html(code_html(code,name))))?;
