@@ -318,7 +318,7 @@ svg { width:1.25rem; height:1.375rem; fill:currentColor; stroke:none; }
 .auth-steps>div,.auth-steps>form { grid-area:1/1; align-self:start; min-width:0; }
 .auth-steps>[hidden] { display:block !important; visibility:hidden; pointer-events:none; }
 .auth-card .code-instruction { margin:0 0 0.75rem; }
-#code-email { display:block; margin:0; line-height:1.4; overflow-wrap:anywhere; }
+#code-email { display:block; margin:0 0 24px; line-height:1.4; overflow-wrap:anywhere; }
 #code-form .primary { margin-top:0.75rem; min-height:3rem; }
 #code-form .auth-actions { margin-top:0.5rem; }
 .auth-offer { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:0.875rem; padding:0.875rem 1rem; margin-bottom:1.5rem; border:0.0625rem solid var(--border); border-radius:0.75rem; background:var(--surface); }
