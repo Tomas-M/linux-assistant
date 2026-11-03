@@ -120,7 +120,7 @@ async fn smtp_delivery_and_authentication_failure() -> anyhow::Result<()> {
             assert!(body["development_code"].is_null());
             let code=message.split("Enter this code in your assistant:").nth(1).unwrap().trim_start().lines().next().unwrap().trim();
             assert_eq!(code.len(),6);
-            assert!(message.contains(&format!("[{} {}] is your sign in code for Slax Assistant",&code[..3],&code[3..])));
+            assert!(message.contains(&format!("[{}-{}] is your sign in code for Slax Assistant",&code[..3],&code[3..])));
             assert!(code.bytes().all(|c|c.is_ascii_digit()));
             assert!(!body.to_string().contains(code));
             assert!(message.contains("multipart/alternative") && message.contains("text/html") && message.contains("text/plain"));
