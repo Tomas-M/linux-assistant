@@ -1203,7 +1203,8 @@ async function pollProcesses()
                 processRows.set(record.id,row);
                 elements['process-list'].append(row);
             }
-            row.cells[0].firstChild.textContent=record.command;
+            row.cells[0].firstChild.innerHTML='<time>'+new Date(record.started_at).toLocaleTimeString('en-GB',{hour12:false})+'</time><span>'+escapeHtml(record.command)+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
+            row.cells[0].firstChild.setAttribute('aria-expanded',String(record.id===selectedProcess));
             row.cells[0].firstChild.title=record.command;
             row.cells[0].firstChild.setAttribute('aria-pressed',String(record.id===selectedProcess));
             const pids=record.background_pids?.length?record.background_pids:[record.pid].filter(Boolean);
@@ -1212,23 +1213,47 @@ async function pollProcesses()
             row.cells[1].title=pids.join(', ');
             row.cells[2].textContent=Math.floor((Date.now()-record.started_at)/1000)+'s';
         }
-        const history=records.filter(record=>record.finished_at), key=JSON.stringify(history);
-        elements['history-heading'].textContent='Completed commands · '+history.length;
+        const history=records.filter(record=>record.finished_at).sort((a,b)=>b.started_at-a.started_at), key=JSON.stringify(history);
+        elements['history-heading'].textContent='Completed commands · '+history.length+' · newest first';
         if (key!==historyKey)
         {
             historyKey=key;
+            if (elements['process-history'].contains(elements['process-detail'])) elements['process-detail'].remove();
             elements['process-history'].replaceChildren();
             for (const record of history)
             {
                 const button=document.createElement('button');
                 button.dataset.select=record.id;
-                button.textContent=(record.error?'Stopped / failed':('Exit '+record.exit_code))+' · '+record.command;
+                button.innerHTML='<time>'+new Date(record.started_at).toLocaleTimeString('en-GB',{hour12:false})+'</time><span>'+escapeHtml((record.error?'Stopped / failed':('Exit '+record.exit_code))+' · '+record.command)+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>'; 
                 button.title=record.command;
                 elements['process-history'].append(button);
             }
         }
-        for (const button of elements['process-history'].children) button.setAttribute('aria-pressed',String(button.dataset.select===selectedProcess));
+        for (const button of elements['process-history'].querySelectorAll('button[data-select]'))
+        {
+            const expanded=button.dataset.select===selectedProcess;
+            button.setAttribute('aria-expanded',String(expanded));
+            button.setAttribute('aria-pressed',String(expanded));
+        }
         const selected=records.find(record=>record.id===selectedProcess);
+        // Move the single detail section under its selected row instead of duplicating output views.
+        if (selected?.finished_at)
+        {
+            const button=elements['process-history'].querySelector('[data-select="'+selected.id+'"]');
+            if (button.nextElementSibling!==elements['process-detail']) button.after(elements['process-detail']);
+        }
+        else if (selected)
+        {
+            const row=processRows.get(selected.id);
+            let detail=row.nextElementSibling;
+            if (!detail?.classList.contains('process-detail-row'))
+            {
+                detail=document.createElement('tr'); detail.className='process-detail-row';
+                const cell=document.createElement('td'); cell.colSpan=4; detail.append(cell); row.after(detail);
+            }
+            detail.firstChild.append(elements['process-detail']);
+        }
+        for (const row of elements['process-list'].querySelectorAll('.process-detail-row')) if (!row.contains(elements['process-detail'])) row.remove();
         const pidsChanged=selected && JSON.stringify(selected.background_pids)!==JSON.stringify(processRecord?.background_pids);
         const changed=selected && (!processRecord || pidsChanged || ['id','pid','finished_at','exit_code','error','stdout_bytes','stderr_bytes'].some(key=>selected[key]!==processRecord[key]));
         if (changed)
@@ -1362,7 +1387,7 @@ elements['process-panel'].addEventListener('click',async event=>
     if (!button) return;
     if (button.dataset.select)
     {
-        selectedProcess=button.dataset.select;
+        selectedProcess=selectedProcess===button.dataset.select?null:button.dataset.select;
         processRecord=null;
         elements['process-detail'].hidden=true;
         await pollProcesses();
