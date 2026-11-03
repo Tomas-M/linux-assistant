@@ -38,19 +38,33 @@ impl ProcessGroup {
         Ok(members)
     }
 
-    /// Explicit Stop kills the owned group without attaching to a reused group ID later.
-    pub fn stop(&mut self)->Result<()> {
+    /// Allow cleanup on explicit Stop, then forcibly terminate surviving members after five seconds.
+    pub async fn stop(&mut self)->Result<()> {
         if !self.terminate_on_drop && self.pids()?.is_empty() { return Ok(()); }
-        if unsafe { libc::kill(-self.id,libc::SIGKILL) }==-1 {
+        self.members=self.snapshot()?;
+        if self.members.is_empty() { self.terminate_on_drop=false; return Ok(()); }
+        self.terminate_on_drop=true;
+        self.signal(libc::SIGTERM)?;
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(5);
+        while !self.pids()?.is_empty() {
+            if tokio::time::Instant::now()>=deadline { self.signal(libc::SIGKILL)?; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        self.terminate_on_drop=false;
+        Ok(())
+    }
+
+    /// Ignore a group which exited between the ownership check and signal delivery.
+    fn signal(&self,signal:i32)->Result<()> {
+        if unsafe { libc::kill(-self.id,signal) }==-1 {
             let error=std::io::Error::last_os_error();
             if error.raw_os_error()!=Some(libc::ESRCH) { return Err(error.into()); }
         }
-        self.terminate_on_drop=false;
         Ok(())
     }
 }
 
 impl Drop for ProcessGroup {
     /// Cancelled foreground execution still cleans up its tree; completed launchers do not.
-    fn drop(&mut self) { if self.terminate_on_drop { let _=self.stop(); } }
+    fn drop(&mut self) { if self.terminate_on_drop { let _=self.signal(libc::SIGKILL); } }
 }

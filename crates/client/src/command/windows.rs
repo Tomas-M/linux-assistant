@@ -74,7 +74,7 @@ impl ProcessGroup {
     }
 
     /// Terminate this job's remaining members, including after its original shell has exited.
-    pub fn stop(&mut self)->Result<()> {
+    pub async fn stop(&mut self)->Result<()> {
         if unsafe { TerminateJobObject(self.job.as_raw_handle(),1) }==0 { return Err(io::Error::last_os_error()).context("Stop command job"); }
         Ok(())
     }

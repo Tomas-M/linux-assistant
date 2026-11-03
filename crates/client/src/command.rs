@@ -96,7 +96,7 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
         record.lock().unwrap().exit_code=status?.code();
         group.preserve()?
     } else {
-        group.stop()?;
+        group.stop().await?;
         let _=child.wait().await;
         vec![]
     };
@@ -111,7 +111,7 @@ pub async fn execute(proposal: &CommandProposal, record: Arc<Mutex<Record>>, mut
         loop {
             tokio::select! {
                 _=stopped(&mut cancel)=> {
-                    group.stop()?;
+                    group.stop().await?;
                     record.lock().unwrap().error=Some("Stopped by user; command process tree terminated.".into());
                     break;
                 }
