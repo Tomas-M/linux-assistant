@@ -111,6 +111,18 @@ function render()
     elements['process-toggle'].hidden=!state.authenticated;
     elements['memories-toggle'].hidden=!state.authenticated;
     elements.welcome.hidden=!emptyChat;
+    const actions=brand.quick_actions,actionsKey=JSON.stringify(actions);
+    if (elements['quick-actions'].dataset.actions!==actionsKey)
+    {
+        elements['quick-actions'].dataset.actions=actionsKey;
+        elements['quick-actions'].hidden=!actions.length;
+        elements['quick-actions'].replaceChildren(...actions.map((action,index)=>
+        {
+            const button=document.createElement('button');
+            button.type='button'; button.dataset.quickAction=index; button.textContent=action.label;
+            return button;
+        }));
+    }
     if (!state.authenticated)
     {
         toggleProcesses(false); toggleMemories(false);
@@ -868,6 +880,7 @@ function renderComposer()
     }
     elements.prompt.disabled=!state.authenticated;
     elements.prompt.readOnly=queueAction || !!startingId;
+    for (const button of elements['quick-actions'].children) button.disabled=elements.prompt.disabled || elements.prompt.readOnly;
     const queue=queuedPrompts(),held=queue.find(input=>input.editing);
     if (held && !editingId && !pendingIds.has(held.id) && !queueAction && !elements.prompt.value && !draftAttachments.length)
     {
@@ -1037,6 +1050,16 @@ elements.prompt.addEventListener('keydown',event=>
         const steer=event.ctrlKey || event.metaKey;
         if (steer || elements.prompt.value.trim() || draftAttachments.length) submitPrompt(steer);
     }
+});
+// Quick actions prepare an editable draft and use the normal textarea sizing without sending it.
+elements['quick-actions'].addEventListener('click',event=>
+{
+    const button=event.target.closest('button[data-quick-action]');
+    if (!button || button.disabled) return;
+    elements.prompt.value=view.brand.quick_actions[Number(button.dataset.quickAction)].prompt;
+    elements.prompt.dispatchEvent(new Event('input',{bubbles:true}));
+    elements.prompt.focus({preventScroll:true});
+    elements.prompt.setSelectionRange(elements.prompt.value.length,elements.prompt.value.length);
 });
 elements.prompt.addEventListener('input',()=>{steerId=null; elements.prompt.style.height='auto'; elements.prompt.style.height=Math.min(162,elements.prompt.scrollHeight)+'px'; renderComposer();});
 // Queue buttons and Ctrl+Enter use the same serialized edit, remove and steer operations.

@@ -40,6 +40,8 @@ h2 { font-size:1.25rem; font-weight:600; line-height:1.2; }
 main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--composer-height) + 2rem); }
 .welcome { margin:0 0 25px; text-align:center; user-select:none; }
 .welcome h1 { margin:0; }
+.quick-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:0.5rem; margin:1.25rem 0 0.5rem; }
+.quick-actions button { max-width:100%; padding:0.5rem 0.875rem; border-radius:2rem; font-size:0.875rem; font-weight:400; overflow-wrap:anywhere; }
 /* Center the empty chat as one group; active conversations keep the composer docked below messages. */
 .empty-chat main { display:flex; flex-direction:column; justify-content:center; width:100%; min-height:calc(100dvh - var(--topbar-height)); padding:20px 1.75rem; }
 .empty-chat #workspace { width:100%; }
