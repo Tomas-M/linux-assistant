@@ -48,7 +48,9 @@ pub async fn send(request:reqwest::RequestBuilder,live:&Live,stopped:Option<&Ato
                 let gateway=matches!(response.status().as_u16(),502|503|504);
                 let application_error=response.status().as_u16()==503 && response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"application/json"));
                 let restarting=response.status()==reqwest::StatusCode::SERVICE_UNAVAILABLE && response.headers().contains_key(reqwest::header::RETRY_AFTER);
-                if !replayable || !gateway || (application_error && !restarting) { return Ok(response); }
+                // The restart response is sent before login/payment mutations are accepted.
+                let retryable=restarting || (replayable && !application_error);
+                if !gateway || !retryable { return Ok(response); }
             }
             Err(error) if error.is_connect() || (replayable && (error.is_timeout() || error.is_request()))=> {},
             Err(error)=>return Err(error.into()),
