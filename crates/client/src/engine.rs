@@ -235,7 +235,6 @@ impl Engine {
         let mut decoder=crate::stream::Decoder::default();
         let mut failures=self.controls.failures.subscribe();
         let mut reconnects=0;
-        let mut reconnect=false;
         loop {
             // A control request can fail before the stream subscribes, so also inspect the current value.
             let failure=failures.borrow_and_update().clone();
@@ -246,10 +245,10 @@ impl Engine {
                 }
                 bail!("{error:#}");
             }
-            let bytes=if reconnect { reconnect=false; Ok(None) } else { tokio::select! {
+            let bytes=tokio::select! {
                 chunk=response.chunk()=>chunk,
                 _=failures.changed()=>continue,
-            } };
+            };
             let bytes=match bytes {
                 Ok(Some(bytes))=>bytes,
                 _=> {
@@ -287,7 +286,6 @@ impl Engine {
             };
             for event in decoder.push(&bytes)? {
                 match serde_json::from_value::<protocol::ChatEvent>(event)? {
-                    protocol::ChatEvent::Reconnect=> { reconnect=true; break; }
                     protocol::ChatEvent::Progress { mut progress } => {
                         self.cache_generated(&mut progress).await?;
                         self.live.0.send_modify(|view|view["can_steer"]=json!(!self.controls.stopped.load(Ordering::SeqCst)));

@@ -308,7 +308,7 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                             return Err(ApiError::from(error));
                         }
                         diagnostics::record("info","chat_reconnect",Some(&id),None,&format!("Backend restart interrupted the provider turn; retaining this request and its recorded usage: {error:#}"));
-                        task_events.send_replace(ChatEvent::Reconnect);
+                        // Dropping the last sender closes SSE, so the client reconnects to this same request.
                         return Err(ApiError::busy("Backend is restarting; reconnect to the same request"));
                     }
                     Err(error) => {
@@ -358,7 +358,7 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
 
 /// Signal a retryable service handoff without treating application errors as network failures.
 fn reconnect_response(message:&str)->Response {
-    (StatusCode::SERVICE_UNAVAILABLE,[(header::RETRY_AFTER,"5")],Json(json!({"error":message}))).into_response()
+    (StatusCode::SERVICE_UNAVAILABLE,[(header::RETRY_AFTER,"5"),(axum::http::HeaderName::from_static("x-assistant-retry"),"1")],Json(json!({"error":message}))).into_response()
 }
 
 /// Heartbeats keep idle proxy connections open; close the body after the terminal snapshot.
