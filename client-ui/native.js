@@ -94,7 +94,6 @@ function renderWork(row,parts,active)
     else if (actions.some(part=>['memory_read','memory_save'].includes(part.data?.tool))) groupIcon='layer-group';
     const use=icon.querySelector('use');
     if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
-    icon.classList.toggle('list-icon',groupIcon==='list-ul');
     const sessions=new Map(), present=new Set(), reasoning=new Set();
     for (const part of actions)
     {
