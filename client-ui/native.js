@@ -1,5 +1,6 @@
 'use strict';
 const questionViews=new Map();
+const explorationTools=['local_read_file','local_list_directory','local_search_files','local_get_metadata'];
 
 // Use the same semantic icon for an action and its progress-group heading.
 function progressIcon(part)
@@ -17,7 +18,7 @@ function progressIcon(part)
     return 'list-ul';
 }
 
-// Keep consecutive native tool activity in one disclosure; commentary, plans and user input break the group.
+// Match Codex's exploration groups; other calls stay separate unless they share a process session.
 function renderProgress(container,parts,active=false,steers=[])
 {
     container.classList.add('progress-list');
@@ -30,8 +31,14 @@ function renderProgress(container,parts,active=false,steers=[])
         const part=parts[index];
         if (!part?.text.trim()) continue;
         const work=['reasoning','action','web_search'].includes(part.kind), previous=groups.at(-1);
-        if (work && previous?.kind==='work') previous.parts.push(part);
-        else groups.push({key:part.id,kind:work?'work':part.kind,parts:[part]});
+        const exploring=explorationTools.includes(part.data?.tool), reasoning=part.kind==='reasoning';
+        const session=view.tool_results[part.id]?.session_id || part.data?.arguments?.session_id;
+        const sameSession=session && previous?.session===session;
+        const sameReasoning=reasoning && previous?.kind==='work' && previous.parts.every(item=>item.kind==='reasoning' && item.item_id===part.item_id);
+        const compatibleExploration=previous?.exploring && (exploring || reasoning);
+        const append=previous?.kind==='work' && (sameSession || sameReasoning || compatibleExploration);
+        if (append) previous.parts.push(part);
+        else groups.push({key:part.id,kind:work?'work':part.kind,parts:[part],exploring,session});
     }
     const present=new Set();
     groups.forEach((group,index)=>
@@ -39,21 +46,22 @@ function renderProgress(container,parts,active=false,steers=[])
         let row=rows.get(group.key);
         if (!row)
         {
-            const element=group.kind==='steer'?steeringRows.get(group.input.id):document.createElement(group.kind==='work'?'details':'div');
-            let label,body=element;
+            const element=group.kind==='steer'?steeringRows.get(group.input.id):document.createElement('div');
+            let label,disclosure,preview,body=element;
             if (group.kind==='work')
             {
-                element.className='tool-result';
+                element.className='activity-group'; disclosure=document.createElement('details'); disclosure.className='tool-result';
                 const summary=document.createElement('summary');
-                summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
-                label=summary.querySelector('span'); body=document.createElement('div'); element.append(summary,body);
+                summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span></span><small class="action-failures" hidden></small><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
+                label=summary.querySelector('span'); body=document.createElement('div'); preview=document.createElement('div'); preview.className='activity-preview';
+                disclosure.append(summary,body); element.append(disclosure,preview);
             }
             else if (group.kind==='plan') element.className='live-plan';
             else if (group.kind!=='steer') element.className='answer progress-commentary';
-            row={element,label,body,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
-            if (group.kind==='work') element.addEventListener('toggle',()=>renderWork(row,row.parts,row.active));
+            row={element,label,body,disclosure,preview,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
+            if (group.kind==='work') disclosure.addEventListener('toggle',()=>renderWork(row,row.parts,row.active));
         }
-        if (group.kind==='work') renderWork(row,group.parts,active && index===groups.length-1);
+        if (group.kind==='work') renderWork(row,group.parts,active && group.parts.some(part=>!part.completed));
         else if (group.kind==='plan')
         {
             const part=group.parts[0], key=JSON.stringify(part.data);
@@ -81,52 +89,91 @@ function renderProgress(container,parts,active=false,steers=[])
     for (const [key,row] of rows) if (!present.has(key)) { if (row.element.parentElement===container) row.element.remove(); rows.delete(key); }
 }
 
-// Polling reuses its session row, while verified changes and reasoning retain their own nested disclosures.
+// Keep call identity and source order separate from compact previews, as Codex's ActivityGroup does.
+function progressCalls(parts)
+{
+    const calls=new Map(),sessions=new Map();
+    for (const part of parts.filter(part=>part.kind!=='reasoning'))
+    {
+        const session=view.tool_results[part.id]?.session_id || part.data?.arguments?.session_id || part.id;
+        if (!sessions.has(session))
+        {
+            const call={parts:[]}; sessions.set(session,call); calls.set(part.id,call);
+        }
+        sessions.get(session).parts.push(part);
+    }
+    return calls;
+}
+
+// Format structured actions without guessing what an arbitrary shell command does.
+function progressAction(parts)
+{
+    const first=parts[0],last=parts.at(-1),result=view.tool_results[last.id],args=first.data?.arguments || {},tool=first.data?.tool;
+    const running=result?.running ?? !last.completed,failed=result?.success===false || last.data?.status==='failed';
+    const output=parts.map(part=>view.tool_results[part.id]?.output || '').filter(Boolean).join('\n\n');
+    let label=last.text,icon=progressIcon(first);
+    if (tool==='local_exec_command') label=(running?'Running ':'Ran ')+args.cmd;
+    if (tool==='local_read_file') label=(running?'Reading ':'Read ')+args.path;
+    if (tool==='local_list_directory') label=(running?'Listing ':'Listed ')+args.path;
+    if (tool==='local_search_files') label=(running?'Searching ':'Searched ')+args.path;
+    if (tool==='local_get_metadata') label=(running?'Inspecting ':'Inspected ')+args.path;
+    if (first.kind==='web_search')
+    {
+        const action=last.data?.action;
+        if (action?.type==='openPage') label=(running?'Opening ':'Opened ')+action.url;
+        else if (action?.type==='findInPage') label=(running?'Finding ':'Found ')+action.pattern+' in '+action.url;
+        else if (action?.query) label=(running?'Searching the web: ':'Searched the web: ')+action.query;
+    }
+    const changes=new Map();
+    for (const part of parts) for (const change of view.tool_results[part.id]?.changes || []) changes.set(change.path,change);
+    if (changes.size) icon='edit';
+    if (failed) label='Failed: '+(tool==='local_exec_command'?args.cmd:label);
+    return {label,icon,output,failed,running,changes,tool,args,process:result?.session_id || args.session_id};
+}
+
+// Compact previews are bounded to three rows; opening a group lazily renders its chronological source.
 function renderWork(row,parts,active)
 {
     row.parts=parts; row.active=active;
-    const actions=parts.filter(part=>part.kind!=='reasoning'), changes=actions.flatMap(part=>view.tool_results[part.id]?.changes || []);
-    let label=actions.at(-1)?.text || 'Thinking…';
-    if (actions.length && (!active || row.element.open))
-    {
-        const commands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
-        const files=actions.some(part=>['local_read_file','local_list_directory','local_search_files','local_get_metadata'].includes(part.data?.tool));
-        const images=actions.some(part=>part.data?.tool==='local_view_image');
-        const generated=actions.some(part=>part.data?.tool==='generate_image');
-        const modified=actions.some(part=>['local_create_directory','local_copy_path','local_move_path','local_remove_path','local_create_symlink','local_set_permissions'].includes(part.data?.tool) && view.tool_results[part.id]?.success);
-        let memoryLabel='';
-        if (actions.some(part=>part.data?.tool==='memory_save')) memoryLabel='updated memories';
-        else if (actions.some(part=>part.data?.tool==='memory_read')) memoryLabel='read memories';
-        label=[changes.length?'Edited files':modified?'Updated files':files?'Read files':'',images?'viewed images':'',generated?'generated images':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':'',memoryLabel].filter(Boolean).join(', ');
-        label=label?label[0].toUpperCase()+label.slice(1):'Completed actions';
-    }
-    // A collapsed live group follows the latest event; its summary stays at the top when expanded.
-    const latest=parts.at(-1), collapsedLive=active && !row.element.open;
-    let title=label;
-    if (collapsedLive) title=latest.text;
-    if (collapsedLive && latest.kind==='reasoning') title=progressTitle([latest]) || 'Thinking…';
+    const calls=progressCalls(parts),actions=new Map([...calls].map(([id,call])=>[id,progressAction(call.parts)]));
+    const exploring=actions.size>0 && [...actions.values()].every(action=>explorationTools.includes(action.tool));
+    const first=actions.values().next().value;
+    let title=progressTitle(parts) || 'Thinking',icon='lightbulb';
+    if (first) { title=first.label; icon=first.icon; }
+    if (exploring) title=active?'Exploring':'Explored';
     if (row.label.textContent!==title) row.label.textContent=title;
-    row.label.classList.toggle('working',collapsedLive);
-    const icon=row.element.querySelector('summary>svg:first-child');
-    icon.toggleAttribute('hidden',!collapsedLive && !actions.length);
-    const hasCommands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
-    let groupIcon=progressIcon(latest);
-    if (!collapsedLive)
+    row.label.title=title; row.label.classList.toggle('working',active);
+    const use=row.disclosure.querySelector('summary use');
+    if (use.getAttribute('href')!=='#icon-'+icon) use.setAttribute('href','#icon-'+icon);
+    const failures=[...actions.values()].filter(action=>action.failed).length,notice=row.disclosure.querySelector('.action-failures');
+    notice.hidden=!exploring || !failures; notice.textContent=failures+' failed';
+    const lines=[];
+    for (const action of actions.values())
     {
-        if (actions.length) groupIcon=progressIcon(actions.at(-1));
-        if (changes.length) groupIcon='edit';
-        else if (hasCommands) groupIcon='terminal';
+        if (exploring)
+        {
+            const previous=lines.at(-1);
+            if (action.tool==='local_read_file' && !action.failed && previous?.paths)
+            {
+                if (!previous.paths.includes(action.args.path)) previous.paths.push(action.args.path);
+                previous.text='Read '+previous.paths.join(', ');
+            }
+            else lines.push({text:action.label,failed:action.failed,paths:action.tool==='local_read_file' && !action.failed?[action.args.path]:null});
+        }
+        else if (action.tool==='local_exec_command' && action.output.trim())
+            for (const text of action.output.trim().split(/\r?\n/u).slice(-3)) lines.push({text,failed:action.failed});
     }
-    const use=icon.querySelector('use');
-    if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
-    const sessions=new Map(), present=new Set(), reasoning=new Set();
-    for (const part of actions)
+    // Codex bounds compact output while its header retains the count of failures outside the preview.
+    const visible=lines.slice(0,3);
+    visible.forEach((line,index)=>
     {
-        const result=view.tool_results[part.id], session=result?.session_id || part.data?.arguments?.session_id || part.id;
-        if (!sessions.has(session)) sessions.set(session,{first:part.id,parts:[]});
-        sessions.get(session).parts.push(part);
-    }
-    row.actionPosition=0;
+        const element=row.preview.children[index] || row.preview.appendChild(document.createElement('div'));
+        element.textContent=line.text; element.title=line.text; element.classList.toggle('action-failed',line.failed);
+    });
+    while (row.preview.children.length>visible.length) row.preview.lastChild.remove();
+    row.preview.hidden=!visible.length;
+    if (!row.disclosure.open) return;
+    const present=new Set(),reasoning=new Set(); row.actionPosition=0;
     for (const part of parts)
     {
         if (part.kind==='reasoning')
@@ -134,39 +181,23 @@ function renderWork(row,parts,active)
             let element=row.reasoning.get(part.id);
             if (!element)
             {
-                element=document.createElement('details'); element.className='past-progress';
-                element.innerHTML='<summary><svg aria-hidden="true"><use href="#icon-lightbulb"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-body"></div>';
-                row.reasoning.set(part.id,element);
+                element=document.createElement('div'); element.className='answer progress-reasoning'; row.reasoning.set(part.id,element);
             }
-            const title=progressTitle([part]) || 'Thinking', label=element.querySelector('summary span');
-            if (label.textContent!==title) label.textContent=title;
-            renderAnswer(element.lastChild,part.text);
+            renderAnswer(element,part.text);
             const position=row.body.children[row.actionPosition++]; if (position!==element) row.body.insertBefore(element,position || null);
             reasoning.add(part.id); continue;
         }
-        const result=view.tool_results[part.id], id=result?.session_id || part.data?.arguments?.session_id || part.id, session=sessions.get(id);
-        if (session.first!==part.id) continue;
-        const last=session.parts.at(-1), latest=view.tool_results[last.id], args=part.data?.arguments || {};
-        const output=session.parts.map(item=>view.tool_results[item.id]?.output || '').filter(Boolean).join('\n\n');
-        const command=part.data?.tool==='local_exec_command';
-        const running=latest?.running ?? !last.completed;
-        const caption=command?(running?'Running ':'Ran ')+args.cmd:part.text;
-        let toolIcon=progressIcon(part);
-        if ((result?.changes || []).length) toolIcon='edit';
-        // The first native item stays stable when the local session ID arrives later.
-        const key=session.first, process=result?.session_id || args.session_id;
-        const generating=part.data?.tool==='generate_image' && running;
-        present.add(key); updateAction(row,key,toolIcon,caption,generating?'':output || JSON.stringify(part.data?.action || args,null,2),process);
-        const preview=row.actions.get(key).pre;
-        preview.classList.toggle('image-loading',generating);
-        if (generating) { preview.setAttribute('role','status'); preview.setAttribute('aria-label','Generating image'); }
-        else { preview.removeAttribute('role'); preview.removeAttribute('aria-label'); }
-        const changes=new Map();
-        for (const item of session.parts)
-            for (const change of view.tool_results[item.id]?.changes || []) changes.set(change.path,change);
-        for (const change of changes.values())
+        const action=actions.get(part.id);
+        if (!action) continue;
+        const generating=action.tool==='generate_image' && action.running;
+        present.add(part.id); updateAction(row,part.id,action.icon,action.label,generating?'':action.output || JSON.stringify(part.data?.action || action.args,null,2),action.process);
+        const item=row.actions.get(part.id);
+        item.summary.classList.toggle('action-failed',action.failed); item.pre.classList.toggle('image-loading',generating);
+        if (generating) { item.pre.setAttribute('role','status'); item.pre.setAttribute('aria-label','Generating image'); }
+        else { item.pre.removeAttribute('role'); item.pre.removeAttribute('aria-label'); }
+        for (const change of action.changes.values())
         {
-            const key=session.first+':'+change.path;
+            const key=part.id+':'+change.path;
             present.add(key); updateAction(row,key,'edit',change.kind+' '+change.path,change.diff,null,change);
         }
     }
