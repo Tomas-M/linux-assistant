@@ -948,7 +948,7 @@ function renderComposer()
     for (const input of queue.filter(input=>!input.editing))
     {
         const row=document.createElement('div'), text=document.createElement('span');
-        row.innerHTML='<svg aria-hidden="true"><use href="#icon-list-ul"/></svg>';
+        row.innerHTML='<svg aria-hidden="true"><use href="#icon-queue-message"/></svg>';
         text.textContent=[input.text,...(input.attachments || []).map(file=>file.name)].filter(Boolean).join(' · ');
         text.title=text.textContent;
         row.append(text);
