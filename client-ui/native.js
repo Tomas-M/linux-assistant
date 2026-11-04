@@ -5,6 +5,7 @@ const questionViews=new Map();
 function progressIcon(part)
 {
     const tool=part.data?.tool;
+    if (part.kind==='reasoning') return 'lightbulb';
     if (part.kind==='web_search') return 'globe';
     if (tool==='local_search_files') return 'search';
     if (['local_exec_command','local_write_stdin','local_stop_process'].includes(tool)) return 'terminal';
@@ -50,6 +51,7 @@ function renderProgress(container,parts,active=false,steers=[])
             else if (group.kind==='plan') element.className='live-plan';
             else if (group.kind!=='steer') element.className='answer progress-commentary';
             row={element,label,body,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
+            if (group.kind==='work') element.addEventListener('toggle',()=>renderWork(row,row.parts,row.active));
         }
         if (group.kind==='work') renderWork(row,group.parts,active && index===groups.length-1);
         else if (group.kind==='plan')
@@ -82,9 +84,10 @@ function renderProgress(container,parts,active=false,steers=[])
 // Polling reuses its session row, while verified changes and reasoning retain their own nested disclosures.
 function renderWork(row,parts,active)
 {
+    row.parts=parts; row.active=active;
     const actions=parts.filter(part=>part.kind!=='reasoning'), changes=actions.flatMap(part=>view.tool_results[part.id]?.changes || []);
     let label=actions.at(-1)?.text || 'Thinking…';
-    if (!active && actions.length)
+    if (actions.length && (!active || row.element.open))
     {
         const commands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
         const files=actions.some(part=>['local_read_file','local_list_directory','local_search_files','local_get_metadata'].includes(part.data?.tool));
@@ -97,15 +100,23 @@ function renderWork(row,parts,active)
         label=[changes.length?'Edited files':modified?'Updated files':files?'Read files':'',images?'viewed images':'',generated?'generated images':'',commands?'ran commands':'',actions.some(part=>part.kind==='web_search')?'searched the web':'',memoryLabel].filter(Boolean).join(', ');
         label=label?label[0].toUpperCase()+label.slice(1):'Completed actions';
     }
-    const title=progressTitle(parts) || label;
+    // A collapsed live group follows the latest event; its summary stays at the top when expanded.
+    const latest=parts.at(-1), collapsedLive=active && !row.element.open;
+    let title=label;
+    if (collapsedLive) title=latest.text;
+    if (collapsedLive && latest.kind==='reasoning') title=progressTitle([latest]) || 'Thinking…';
     if (row.label.textContent!==title) row.label.textContent=title;
-    row.label.classList.toggle('working',active);
-    const icon=row.element.querySelector('summary>svg:first-child'); icon.toggleAttribute('hidden',!actions.length);
+    row.label.classList.toggle('working',collapsedLive);
+    const icon=row.element.querySelector('summary>svg:first-child');
+    icon.toggleAttribute('hidden',!collapsedLive && !actions.length);
     const hasCommands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
-    let groupIcon='list-ul';
-    if (actions.length) groupIcon=progressIcon(actions.at(-1));
-    if (changes.length) groupIcon='edit';
-    else if (hasCommands) groupIcon='terminal';
+    let groupIcon=progressIcon(latest);
+    if (!collapsedLive)
+    {
+        if (actions.length) groupIcon=progressIcon(actions.at(-1));
+        if (changes.length) groupIcon='edit';
+        else if (hasCommands) groupIcon='terminal';
+    }
     const use=icon.querySelector('use');
     if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
     const sessions=new Map(), present=new Set(), reasoning=new Set();
@@ -124,7 +135,7 @@ function renderWork(row,parts,active)
             if (!element)
             {
                 element=document.createElement('details'); element.className='past-progress';
-                element.innerHTML='<summary><span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-body"></div>';
+                element.innerHTML='<summary><svg aria-hidden="true"><use href="#icon-lightbulb"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-body"></div>';
                 row.reasoning.set(part.id,element);
             }
             const title=progressTitle([part]) || 'Thinking', label=element.querySelector('summary span');
