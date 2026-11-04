@@ -100,7 +100,8 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .tool-result summary:focus-visible,.work-summary>summary:focus-visible { outline:0.125rem solid var(--accent); outline-offset:0.1875rem; }
 .tool-result summary svg,.work-summary>summary svg { width:1rem; height:1rem; flex-shrink:0; }
 
-.tool-result .disclosure-arrow,.work-summary>summary svg { opacity:.5; transition:transform .15s; }
+.tool-result .disclosure-arrow,.work-summary>summary svg { opacity:0; transition:opacity .15s ease,transform .2s ease; }
+.tool-result summary:hover>.disclosure-arrow,.tool-result summary:focus-visible>.disclosure-arrow,.work-summary>summary:hover>svg,.work-summary>summary:focus-visible>svg { opacity:.5; }
 .tool-result[open] > summary .disclosure-arrow,.work-summary[open]>summary svg { transform:rotate(90deg); }
 .tool-result pre { max-height:20rem; overflow:auto; margin:0.75rem 0; }
 .tool-result button { font-size:0.8125rem; padding:0.375rem 0; text-decoration:underline; text-underline-offset:0.1875rem; }
