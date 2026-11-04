@@ -101,6 +101,7 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .tool-result .disclosure-arrow,.work-summary>summary svg { width:0.8rem; height:0.8rem; opacity:0; transform:rotate(0deg); transition:opacity .15s ease,transform .2s ease; }
 .tool-result summary:hover>.disclosure-arrow,.tool-result summary:focus-visible>.disclosure-arrow,.work-summary>summary:hover>svg,.work-summary>summary:focus-visible>svg { opacity:.5; }
 .tool-result[open]>summary>.disclosure-arrow,.action-item[open]>summary>.disclosure-arrow,.work-summary[open]>summary>svg { opacity:.5; transform:rotate(90deg); }
+.tool-result.disclosure-closing>summary>.disclosure-arrow,.action-item.disclosure-closing>summary>.disclosure-arrow,.work-summary.disclosure-closing>summary>svg { transform:rotate(0deg); }
 .tool-result pre { max-height:20rem; overflow:auto; margin:0.75rem 0; }
 .tool-result button { font-size:0.8125rem; padding:0.375rem 0; text-decoration:underline; text-underline-offset:0.1875rem; }
 .command-activity { margin:0.75rem 0; padding-left:0.875rem; border-left:0.0625rem solid var(--border); overflow-wrap:anywhere; }

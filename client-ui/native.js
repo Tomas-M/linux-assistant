@@ -1,6 +1,37 @@
 'use strict';
 const questionViews=new Map();
 
+// Keep native disclosure semantics, and leave content visible until a closing slide finishes.
+function enableDisclosureAnimation(details,prepare)
+{
+    let animation;
+    const summary=details.firstElementChild;
+    summary.addEventListener('click',event=>
+    {
+        event.preventDefault();
+        const start=details.getBoundingClientRect().height,opening=!details.open || details.classList.contains('disclosure-closing');
+        animation?.cancel();
+        details.classList.toggle('disclosure-closing',!opening);
+        if (opening) { details.open=true; prepare?.(); }
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches)
+        {
+            details.open=opening; details.classList.remove('disclosure-closing'); details.style.overflow=''; animation=null; return;
+        }
+        details.style.overflow='clip';
+        const style=getComputedStyle(details);
+        const closedHeight=summary.getBoundingClientRect().height+parseFloat(style.paddingTop)+parseFloat(style.paddingBottom)+parseFloat(style.borderTopWidth)+parseFloat(style.borderBottomWidth);
+        const end=opening?details.getBoundingClientRect().height:closedHeight;
+        const transition=details.animate({height:[start+'px',end+'px']},{duration:220,easing:'cubic-bezier(0.2,0,0,1)'});
+        animation=transition;
+        transition.onfinish=()=>
+        {
+            if (animation!==transition) return;
+            details.open=opening; transition.cancel(); animation=null;
+            details.classList.remove('disclosure-closing'); details.style.overflow='';
+        };
+    });
+}
+
 // Use the same semantic icon for an action and its progress-group heading.
 function progressIcon(part)
 {
@@ -52,7 +83,11 @@ function renderProgress(container,parts,active=false,steers=[])
             else if (group.kind==='plan') element.className='live-plan';
             else if (group.kind!=='steer') element.className='answer progress-commentary';
             row={element,label,body,disclosure,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
-            if (group.kind==='work') disclosure.addEventListener('toggle',()=>renderWork(row,row.parts,row.active));
+            if (group.kind==='work')
+            {
+                const update=()=>renderWork(row,row.parts,row.active);
+                disclosure.addEventListener('toggle',update); enableDisclosureAnimation(disclosure,update);
+            }
         }
         if (group.kind==='work') renderWork(row,group.parts,active && group.parts.some(part=>!part.completed));
         else if (group.kind==='plan')
@@ -160,7 +195,7 @@ function renderWork(row,parts,active)
             {
                 element=document.createElement('details'); element.className='action-item';
                 element.innerHTML='<summary><svg aria-hidden="true"><use href="#icon-lightbulb"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-reasoning"></div>';
-                row.reasoning.set(part.id,element);
+                enableDisclosureAnimation(element); row.reasoning.set(part.id,element);
             }
             const title=progressTitle([part]) || 'Thinking',label=element.querySelector('summary span');
             if (label.textContent!==title) label.textContent=title;

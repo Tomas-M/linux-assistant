@@ -267,7 +267,7 @@ function updateAction(row,key,icon,label,output,process,change)
         const element=document.createElement('details'), summary=document.createElement('summary'), pre=document.createElement('pre');
         element.className='action-item';
         summary.innerHTML='<svg aria-hidden="true"><use href="#icon-'+icon+'"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
-        element.append(summary,pre);
+        element.append(summary,pre); enableDisclosureAnimation(element);
         item={element,summary,pre}; row.actions.set(key,item); row.body.append(element);
     }
     const position=row.body.children[row.actionPosition++];
@@ -345,7 +345,7 @@ function renderCompletions()
             summary.innerHTML='<span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
             summary.firstChild.textContent='Worked for '+duration;
             const images=document.createElement('div'); images.className='image-gallery';
-            work.append(summary,body); element.append(work,images,answer);
+            work.append(summary,body); enableDisclosureAnimation(work); element.append(work,images,answer);
             let notes;
             if (run.summaries.some(part=>part.text.trim()))
             {
