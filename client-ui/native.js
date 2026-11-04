@@ -1,9 +1,25 @@
 'use strict';
 const questionViews=new Map();
 
+// Use the same semantic icon for an action and its progress-group heading.
+function progressIcon(part)
+{
+    const tool=part.data?.tool;
+    if (part.kind==='web_search') return 'globe';
+    if (tool==='local_search_files') return 'search';
+    if (['local_exec_command','local_write_stdin','local_stop_process'].includes(tool)) return 'terminal';
+    if (['local_view_image','generate_image'].includes(tool)) return 'image';
+    if (['memory_read','memory_save'].includes(tool)) return 'layer-group';
+    if (tool==='local_list_directory') return 'folder';
+    if (['local_read_file','local_get_metadata'].includes(tool)) return 'file';
+    if (['local_apply_patch','local_write_file','local_create_directory','local_copy_path','local_move_path','local_remove_path','local_create_symlink','local_set_permissions'].includes(tool)) return 'edit';
+    return 'list-ul';
+}
+
 // Keep consecutive native tool activity in one disclosure; commentary, plans and user input break the group.
 function renderProgress(container,parts,active=false,steers=[])
 {
+    container.classList.add('progress-list');
     let rows=progressViews.get(container);
     if (!rows) { rows=new Map(); progressViews.set(container,rows); }
     const groups=[];
@@ -87,11 +103,9 @@ function renderWork(row,parts,active)
     const icon=row.element.querySelector('summary>svg:first-child'); icon.toggleAttribute('hidden',!actions.length);
     const hasCommands=actions.some(part=>['local_exec_command','local_write_stdin','local_stop_process'].includes(part.data?.tool));
     let groupIcon='list-ul';
+    if (actions.length) groupIcon=progressIcon(actions.at(-1));
     if (changes.length) groupIcon='edit';
     else if (hasCommands) groupIcon='terminal';
-    else if (actions.some(part=>part.data?.tool==='generate_image')) groupIcon='image';
-    else if (actions.some(part=>part.kind==='web_search')) groupIcon='external';
-    else if (actions.some(part=>['memory_read','memory_save'].includes(part.data?.tool))) groupIcon='layer-group';
     const use=icon.querySelector('use');
     if (use.getAttribute('href')!=='#icon-'+groupIcon) use.setAttribute('href','#icon-'+groupIcon);
     const sessions=new Map(), present=new Set(), reasoning=new Set();
@@ -126,9 +140,8 @@ function renderWork(row,parts,active)
         const command=part.data?.tool==='local_exec_command';
         const running=latest?.running ?? !last.completed;
         const caption=command?(running?'Running ':'Ran ')+args.cmd:part.text;
-        let toolIcon=part.kind==='web_search'?'external':command || args.session_id?'terminal':(result?.changes || []).length?'edit':'list-ul';
-        if (['memory_read','memory_save'].includes(part.data?.tool)) toolIcon='layer-group';
-        if (part.data?.tool==='generate_image') toolIcon='image';
+        let toolIcon=progressIcon(part);
+        if ((result?.changes || []).length) toolIcon='edit';
         // The first native item stays stable when the local session ID arrives later.
         const key=session.first, process=result?.session_id || args.session_id;
         const generating=part.data?.tool==='generate_image' && running;
