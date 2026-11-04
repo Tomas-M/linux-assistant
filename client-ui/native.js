@@ -1,6 +1,5 @@
 'use strict';
 const questionViews=new Map();
-const explorationTools=['local_read_file','local_list_directory','local_search_files','local_get_metadata'];
 
 // Use the same semantic icon for an action and its progress-group heading.
 function progressIcon(part)
@@ -18,7 +17,7 @@ function progressIcon(part)
     return 'list-ul';
 }
 
-// Match Codex's exploration groups; other calls stay separate unless they share a process session.
+// Commentary, plans and steering end a consecutive activity group; each group keeps its own disclosure.
 function renderProgress(container,parts,active=false,steers=[])
 {
     container.classList.add('progress-list');
@@ -31,14 +30,8 @@ function renderProgress(container,parts,active=false,steers=[])
         const part=parts[index];
         if (!part?.text.trim()) continue;
         const work=['reasoning','action','web_search'].includes(part.kind), previous=groups.at(-1);
-        const exploring=explorationTools.includes(part.data?.tool), reasoning=part.kind==='reasoning';
-        const session=view.tool_results[part.id]?.session_id || part.data?.arguments?.session_id;
-        const sameSession=session && previous?.session===session;
-        const sameReasoning=reasoning && previous?.kind==='work' && previous.parts.every(item=>item.kind==='reasoning' && item.item_id===part.item_id);
-        const compatibleExploration=previous?.exploring && (exploring || reasoning);
-        const append=previous?.kind==='work' && (sameSession || sameReasoning || compatibleExploration);
-        if (append) previous.parts.push(part);
-        else groups.push({key:part.id,kind:work?'work':part.kind,parts:[part],exploring,session});
+        if (work && previous?.kind==='work') previous.parts.push(part);
+        else groups.push({key:part.id,kind:work?'work':part.kind,parts:[part]});
     }
     const present=new Set();
     groups.forEach((group,index)=>
@@ -47,18 +40,18 @@ function renderProgress(container,parts,active=false,steers=[])
         if (!row)
         {
             const element=group.kind==='steer'?steeringRows.get(group.input.id):document.createElement('div');
-            let label,disclosure,preview,body=element;
+            let label,disclosure,body=element;
             if (group.kind==='work')
             {
-                element.className='activity-group'; disclosure=document.createElement('details'); disclosure.className='tool-result';
+                element.className='activity-group'; disclosure=document.createElement('details'); disclosure.className='tool-result activity-stack';
                 const summary=document.createElement('summary');
-                summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span></span><small class="action-failures" hidden></small><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
-                label=summary.querySelector('span'); body=document.createElement('div'); preview=document.createElement('div'); preview.className='activity-preview';
-                disclosure.append(summary,body); element.append(disclosure,preview);
+                summary.innerHTML='<svg aria-hidden="true"><use href="#icon-terminal"/></svg><span class="activity-latest"></span><span class="activity-collapse">Hide activities</span><small class="action-failures" hidden></small><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg>';
+                label=summary.querySelector('span'); body=document.createElement('div');
+                disclosure.append(summary,body); element.append(disclosure);
             }
             else if (group.kind==='plan') element.className='live-plan';
             else if (group.kind!=='steer') element.className='answer progress-commentary';
-            row={element,label,body,disclosure,preview,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
+            row={element,label,body,disclosure,actions:new Map(),reasoning:new Map()}; rows.set(group.key,row);
             if (group.kind==='work') disclosure.addEventListener('toggle',()=>renderWork(row,row.parts,row.active));
         }
         if (group.kind==='work') renderWork(row,group.parts,active && group.parts.some(part=>!part.completed));
@@ -134,48 +127,28 @@ function progressAction(parts)
     return {label,icon,output,failed,running,changes,tool,args,process:result?.session_id || args.session_id};
 }
 
-// Compact previews are bounded to three rows; opening a group lazily renders its chronological source.
+// A group previews only its latest activity; its top collapse control is separate from every row's details.
 function renderWork(row,parts,active)
 {
     row.parts=parts; row.active=active;
     const calls=progressCalls(parts),actions=new Map([...calls].map(([id,call])=>[id,progressAction(call.parts)]));
-    const exploring=actions.size>0 && [...actions.values()].every(action=>explorationTools.includes(action.tool));
-    const first=actions.values().next().value;
-    let title=progressTitle(parts) || 'Thinking',icon='lightbulb';
-    if (first) { title=first.label; icon=first.icon; }
-    if (exploring) title=active?'Exploring':'Explored';
+    const latest=parts.at(-1),call=[...calls].find(([,call])=>call.parts.includes(latest));
+    const current=call && actions.get(call[0]);
+    let title=progressTitle([latest]) || 'Thinking',icon=progressIcon(latest);
+    if (current) { title=current.label; icon=current.icon; }
     if (row.label.textContent!==title) row.label.textContent=title;
     row.label.title=title; row.label.classList.toggle('working',active);
-    row.label.classList.toggle('action-failed',!exploring && first?.failed===true);
+    row.label.classList.toggle('action-failed',current?.failed===true);
     const use=row.disclosure.querySelector('summary use');
     if (use.getAttribute('href')!=='#icon-'+icon) use.setAttribute('href','#icon-'+icon);
     const failures=[...actions.values()].filter(action=>action.failed).length,notice=row.disclosure.querySelector('.action-failures');
-    notice.hidden=!exploring || !failures; notice.textContent=failures+' failed';
-    const lines=[];
-    for (const action of actions.values())
-    {
-        if (exploring)
-        {
-            const previous=lines.at(-1);
-            if (action.tool==='local_read_file' && !action.failed && previous?.paths)
-            {
-                if (!previous.paths.includes(action.args.path)) previous.paths.push(action.args.path);
-                previous.text='Read '+previous.paths.join(', ');
-            }
-            else lines.push({text:action.label,failed:action.failed,paths:action.tool==='local_read_file' && !action.failed?[action.args.path]:null});
-        }
-        else if (action.tool==='local_exec_command' && action.output.trim())
-            for (const text of action.output.trim().split(/\r?\n/u).slice(-3)) lines.push({text,failed:action.failed});
-    }
-    // Codex bounds compact output while its header retains the count of failures outside the preview.
-    const visible=lines.slice(0,3);
-    visible.forEach((line,index)=>
-    {
-        const element=row.preview.children[index] || row.preview.appendChild(document.createElement('div'));
-        element.textContent=line.text; element.title=line.text; element.classList.toggle('action-failed',line.failed);
-    });
-    while (row.preview.children.length>visible.length) row.preview.lastChild.remove();
-    row.preview.hidden=!visible.length;
+    notice.hidden=!failures; notice.textContent=failures+' failed';
+    const count=actions.size+parts.filter(part=>part.kind==='reasoning').length+[...actions.values()].reduce((count,action)=>count+action.changes.size,0);
+    const single=count===1,wasSingle=row.disclosure.classList.contains('single-activity');
+    // A single row opens its own details directly; adding another row retains any already-open details.
+    if (single) row.disclosure.open=true;
+    else if (wasSingle) row.disclosure.open=[...row.body.children].some(element=>element.open);
+    row.disclosure.classList.toggle('single-activity',single);
     if (!row.disclosure.open) return;
     const present=new Set(),reasoning=new Set(); row.actionPosition=0;
     for (const part of parts)
@@ -185,9 +158,14 @@ function renderWork(row,parts,active)
             let element=row.reasoning.get(part.id);
             if (!element)
             {
-                element=document.createElement('div'); element.className='answer progress-reasoning'; row.reasoning.set(part.id,element);
+                element=document.createElement('details'); element.className='action-item';
+                element.innerHTML='<summary><svg aria-hidden="true"><use href="#icon-lightbulb"/></svg><span></span><svg class="disclosure-arrow" aria-hidden="true"><use href="#icon-chevron"/></svg></summary><div class="answer progress-reasoning"></div>';
+                row.reasoning.set(part.id,element);
             }
-            renderAnswer(element,part.text);
+            const title=progressTitle([part]) || 'Thinking',label=element.querySelector('summary span');
+            if (label.textContent!==title) label.textContent=title;
+            label.classList.toggle('working',active && part===latest);
+            renderAnswer(element.lastChild,part.text);
             const position=row.body.children[row.actionPosition++]; if (position!==element) row.body.insertBefore(element,position || null);
             reasoning.add(part.id); continue;
         }
@@ -197,6 +175,7 @@ function renderWork(row,parts,active)
         present.add(part.id); updateAction(row,part.id,action.icon,action.label,generating?'':action.output || JSON.stringify(part.data?.action || action.args,null,2),action.process);
         const item=row.actions.get(part.id);
         item.summary.classList.toggle('action-failed',action.failed); item.pre.classList.toggle('image-loading',generating);
+        item.summary.querySelector('span').classList.toggle('working',active && action.running);
         if (generating) { item.pre.setAttribute('role','status'); item.pre.setAttribute('aria-label','Generating image'); }
         else { item.pre.removeAttribute('role'); item.pre.removeAttribute('aria-label'); }
         for (const change of action.changes.values())

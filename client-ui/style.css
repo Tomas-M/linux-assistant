@@ -83,9 +83,12 @@ main { max-width:53.125rem; margin:auto; padding:2.5rem 1.75rem calc(var(--compo
 .progress-list { margin:0.75rem 0 1.25rem; }
 .activity-group { margin:0.75rem 0; }
 .tool-result { color:var(--muted); font-size:0.875rem; margin:0; }
-.activity-preview { padding-left:1.5rem; color:var(--muted); font-size:0.875rem; line-height:1.6; }
-.activity-preview>div { overflow:hidden; text-overflow:ellipsis; white-space:pre; }
-.tool-result[open]+.activity-preview { display:none; }
+.activity-collapse { display:none; }
+.activity-stack[open]>summary>.activity-latest,.activity-stack[open]>summary>svg:first-child { display:none; }
+.activity-stack[open]>summary>.activity-collapse { display:inline; }
+.activity-stack.single-activity>summary { display:none; }
+.activity-stack>summary>.disclosure-arrow { transform:rotate(90deg); }
+.tool-result.activity-stack[open]>summary>.disclosure-arrow { transform:rotate(-90deg); }
 .action-failures,.action-failed { color:var(--warning); }
 .action-failures { flex-shrink:0; }
 .progress-reasoning { margin:0.75rem 0; color:var(--muted); font-size:0.875rem; }
