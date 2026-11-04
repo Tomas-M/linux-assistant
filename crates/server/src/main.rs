@@ -110,7 +110,7 @@ async fn run() -> anyhow::Result<()> {
     let lock=OpenOptions::new().create(true).truncate(false).read(true).write(true).open(database.with_extension("lockfile"))?;
     lock.try_lock_exclusive().map_err(|_|anyhow::anyhow!("Another backend is using this database"))?;
     let db=Arc::new(Db::open(&database)?);
-    db.recover()?;
+    let interrupted=db.recover()?;
     let mut config=settings::load(&db)?;
     config.database=database;
     config.dev=args.dev;
@@ -124,6 +124,7 @@ async fn run() -> anyhow::Result<()> {
     println!("Linux Assistant backend on {}{}",listener.local_addr()?,if args.dev { " (DEVELOPMENT, simulated AI)" } else { "" });
     diagnostics::record("info","startup",None,None,&format!("Backend started; Codex {}; configure at /admin",env!("CODEX_VERSION")));
     storage::startup(&app)?;
+    tokio::spawn(storage::expire_interrupted(app.clone(),interrupted));
     let monitor=if args.dev { None } else { Some(tokio::spawn(app.pool.clone().monitor(app.db.clone()))) };
     let maintenance=tokio::spawn(storage::maintain(app.clone()));
     let (stop,stopped)=tokio::sync::oneshot::channel();
@@ -164,7 +165,7 @@ fn router(app: App) -> Router {
 
 /// Public bearer-token APIs allow any origin; cookie-based admin and OAuth routes stay same-origin.
 async fn browser_security(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
-    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) { return ApiError::busy("Backend is restarting; retry shortly").into_response(); }
+    if app.stopping.load(std::sync::atomic::Ordering::SeqCst) { return reconnect_response("Backend is restarting; retry shortly"); }
     let config=app.config();
     let admin=request.uri().path().starts_with("/admin");
     let payment=request.uri().path().starts_with("/payment/");
@@ -250,23 +251,21 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
             events.send_replace(ChatEvent::Error { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None,message:error,settled:true,credits:Some(app.db.balance(user)?),steering:app.db.steering(user,input.request_id)? });
             return Ok(chat_stream(receiver));
         },
-        Reservation::Pending => {
-            if streaming {
-                if let Some(active)=app.turns.lock().unwrap().get(&(user,input.request_id)) { return Ok(chat_stream(active.events.clone())); }
-            }
-            return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into()));
-        },
         Reservation::Insufficient => return Err(ApiError(StatusCode::PAYMENT_REQUIRED,"No application credits remaining".into())),
         Reservation::Stale => return Err(ApiError::bad("Conversation revision changed; start a new chat after a server reset")),
-        Reservation::New => {
+        Reservation::New | Reservation::Pending => {
             let (controls,mut control_receiver)=tokio::sync::mpsc::channel(16);
             let (cancel,mut cancellation)=tokio::sync::watch::channel(false);
             {
                 let mut turns=app.turns.lock().unwrap();
+                if let Some(active)=turns.get(&(user,input.request_id)) { return Ok(chat_stream(active.events.clone())); }
                 if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-                    app.db.settle(user,&id,Err("Backend is restarting; retry with a new request".into()))?;
-                    return Err(ApiError::busy("Backend is restarting; retry shortly"));
+                    app.db.interrupt(user,&id)?;
+                    return Ok(reconnect_response("Backend is restarting; retry shortly"));
                 }
+                // Admission and completion can race; only a still-pending request may acquire the execution slot.
+                let pending=app.db.0.lock().unwrap().query_row("SELECT response IS NULL AND error IS NULL FROM requests WHERE user_id=?1 AND id=?2",rusqlite::params![user,id],|row|row.get::<_,bool>(0))?;
+                if !pending { return Ok(reconnect_response("Request state changed; retry the same request")); }
                 turns.insert((user,input.request_id),turns::ActiveTurn { sender:controls.clone(),cancel,events:receiver.clone() });
             }
             let task_app = app.clone();
@@ -302,11 +301,19 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
                 };
                 let result=match result {
                     Ok(reply) => Ok(reply),
+                    Err(error) if task_app.stopping.load(std::sync::atomic::Ordering::SeqCst)=> {
+                        if let Err(error)=task_app.db.interrupt(user,&id) {
+                            task_events.send_replace(ChatEvent::Error { task_credits:None,progress:None,message:"Could not confirm interrupted usage. Retry the same request.".into(),settled:false,credits:None,steering:vec![] });
+                            return Err(ApiError::from(error));
+                        }
+                        diagnostics::record("info","chat_reconnect",Some(&id),None,&format!("Backend restart interrupted the provider turn; retaining this request and its recorded usage: {error:#}"));
+                        task_events.send_replace(ChatEvent::Reconnect);
+                        return Err(ApiError::busy("Backend is restarting; reconnect to the same request"));
+                    }
                     Err(error) => {
                         diagnostics::record("error","chat",Some(&id),None,&format!("{error:#}"));
                         let message = if error.downcast_ref::<turns::Interrupted>().is_some() {
-                            if task_app.stopping.load(std::sync::atomic::Ordering::SeqCst) { "Backend is restarting. Recorded token usage was charged.".to_owned() }
-                            else { "Stopped by user. Recorded token usage was charged.".to_owned() }
+                            "Stopped by user. Recorded token usage was charged.".to_owned()
                         } else if let Some(reason)=error.downcast_ref::<provider::PublicFailure>() {
                             format!("{reason} Recorded usage was charged. Reference: {id}")
                         } else { format!("AI request failed. Recorded usage was charged; retry shortly. Reference: {id}") };
@@ -346,6 +353,11 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
     let response=ChatResponse { task_credits:Some(app.db.task_credits(user,request_id)?), progress:None, reply:reply.reply,credits:app.db.balance(user)?,revision:reply.revision,steering:reply.steering };
     events.send_replace(ChatEvent::Complete { response });
     Ok(chat_stream(receiver))
+}
+
+/// Signal a retryable service handoff without treating application errors as network failures.
+fn reconnect_response(message:&str)->Response {
+    (StatusCode::SERVICE_UNAVAILABLE,[(header::RETRY_AFTER,"5")],Json(json!({"error":message}))).into_response()
 }
 
 /// Heartbeats keep idle proxy connections open; close the body after the terminal snapshot.

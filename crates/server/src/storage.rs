@@ -115,6 +115,21 @@ pub async fn maintain(app:App) {
     }
 }
 
+/// Give interrupted clients five minutes to reclaim their request before closing abandoned tasks.
+pub async fn expire_interrupted(app:App,pending:Vec<(i64,String)>) {
+    if pending.is_empty() { return; }
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    let result=tokio::task::spawn_blocking(move||->Result<()> {
+        for (user,id) in pending {
+            let turns=app.turns.lock().unwrap();
+            if turns.contains_key(&(user,uuid::Uuid::parse_str(&id)?)) { continue; }
+            app.db.settle(user,&id,Err("The client did not reconnect within 5 minutes after the backend restarted".into()))?;
+        }
+        Ok(())
+    }).await;
+    if let Err(error)=result.map_err(anyhow::Error::from).and_then(|result|result) { crate::diagnostics::record("error","restart_cleanup",None,None,&format!("{error:#}")); }
+}
+
 /// systemd sends SIGTERM; interactive runs also support Ctrl+C.
 pub async fn signal() {
     #[cfg(unix)] {

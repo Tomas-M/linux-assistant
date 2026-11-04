@@ -176,7 +176,7 @@ mod tests {
         db.recover()?;
         db.recover()?;
         assert_eq!(db.balance(user)?,-2);
-        assert!(matches!(db.reserve(user,&interrupted,"restart",&pricing)?,Reservation::Failed(_)));
+        assert!(matches!(db.reserve(user,&interrupted,"restart",&pricing)?,Reservation::Pending));
         let free=db.user("unknown@example.test",None,3)?;
         let missing=request();
         db.reserve(free,&missing,"unknown",&pricing)?;

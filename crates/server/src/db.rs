@@ -228,16 +228,24 @@ impl Db {
         Ok(())
     }
 
+    /// Charge measured work without closing a task that will reconnect after a backend restart.
+    pub fn interrupt(&self,user:i64,id:&str)->Result<()> {
+        let mut connection=self.0.lock().unwrap();
+        let transaction=connection.transaction()?;
+        crate::billing::settle(&transaction,user,id,false,false)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Recover interrupted reservations after acquiring the exclusive backend lock.
-    pub fn recover(&self) -> Result<()> {
+    pub fn recover(&self) -> Result<Vec<(i64,String)>> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("UPDATE usage SET finished_at=?1,error='Backend restarted before completion; token counts may be partial' WHERE finished_at IS NULL",[now()])?;
         let pending=tx.prepare("SELECT user_id,id FROM requests WHERE response IS NULL AND error IS NULL")?.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        for (user,id) in pending { crate::billing::settle(&tx,user,&id,false,true)?; }
-        tx.execute("UPDATE requests SET error='Server restarted; recorded usage was settled. Retry.' WHERE response IS NULL AND error IS NULL", [])?;
+        for (user,id) in &pending { crate::billing::settle(&tx,*user,id,false,false)?; }
         tx.commit()?;
-        Ok(())
+        Ok(pending)
     }
 }
 

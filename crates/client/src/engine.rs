@@ -235,6 +235,7 @@ impl Engine {
         let mut decoder=crate::stream::Decoder::default();
         let mut failures=self.controls.failures.subscribe();
         let mut reconnects=0;
+        let mut reconnect=false;
         loop {
             // A control request can fail before the stream subscribes, so also inspect the current value.
             let failure=failures.borrow_and_update().clone();
@@ -245,18 +246,21 @@ impl Engine {
                 }
                 bail!("{error:#}");
             }
-            let bytes=tokio::select! {
+            let bytes=if reconnect { reconnect=false; Ok(None) } else { tokio::select! {
                 chunk=response.chunk()=>chunk,
                 _=failures.changed()=>continue,
-            };
+            } };
             let bytes=match bytes {
                 Ok(Some(bytes))=>bytes,
                 _=> {
                     // Reattach to the same paid request; never create or execute a replacement task.
+                    let live=self.live.clone();
+                    let _connecting=crate::backend::Connecting { live:&live,id:"stream".into() };
                     loop {
                         ensure!(reconnects<5,"Connection lost after 5 reconnect attempts. Retry to recover the same request.");
                         reconnects+=1;
-                        self.live.0.send_modify(|view|view["connections"]["stream"]=json!({"attempt":reconnects,"retry_at":null}));
+                        let retry_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64+5000;
+                        self.live.0.send_modify(|view|view["connections"]["stream"]=json!({"attempt":reconnects,"retry_at":retry_at}));
                         let result=async {
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             ensure!(!self.controls.stopped.load(Ordering::SeqCst),"Stopped by you");
@@ -271,7 +275,6 @@ impl Engine {
                             ensure!(response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"text/event-stream")),"Backend did not return a conversation stream");
                             Ok::<_,anyhow::Error>(response)
                         }.await;
-                        self.live.0.send_modify(|view| { view["connections"].as_object_mut().unwrap().remove("stream"); });
                         match result {
                             Ok(connected)=> { response=connected; decoder=crate::stream::Decoder::default(); break; }
                             Err(error) if error.downcast_ref::<crate::backend::SessionExpired>().is_some() || self.controls.stopped.load(Ordering::SeqCst)=>return Err(error),
@@ -284,6 +287,7 @@ impl Engine {
             };
             for event in decoder.push(&bytes)? {
                 match serde_json::from_value::<protocol::ChatEvent>(event)? {
+                    protocol::ChatEvent::Reconnect=> { reconnect=true; break; }
                     protocol::ChatEvent::Progress { mut progress } => {
                         self.cache_generated(&mut progress).await?;
                         self.live.0.send_modify(|view|view["can_steer"]=json!(!self.controls.stopped.load(Ordering::SeqCst)));

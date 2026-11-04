@@ -165,6 +165,7 @@ pub use tools::*;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag="type",rename_all="snake_case")]
 pub enum ChatEvent {
+    Reconnect,
     Progress { progress: Progress },
     Complete { response: ChatResponse },
     Error { message: String, settled: bool, credits: Option<i64>, task_credits:Option<i64>, steering: Vec<Steering>, progress:Option<Progress> },

@@ -23,7 +23,7 @@ impl std::fmt::Display for SessionExpired {
 }
 impl std::error::Error for SessionExpired {}
 
-struct Connecting<'a> { live:&'a Live,id:String }
+pub(crate) struct Connecting<'a> { pub live:&'a Live,pub id:String }
 impl Drop for Connecting<'_> {
     /// Clear only this request's indicator, including when its future is cancelled.
     fn drop(&mut self) { self.live.0.send_if_modified(|view|view["connections"].as_object_mut().unwrap().remove(&self.id).is_some()); }
@@ -47,7 +47,8 @@ pub async fn send(request:reqwest::RequestBuilder,live:&Live,stopped:Option<&Ato
                 }
                 let gateway=matches!(response.status().as_u16(),502|503|504);
                 let application_error=response.status().as_u16()==503 && response.headers().get(reqwest::header::CONTENT_TYPE).is_some_and(|value|value.as_bytes().starts_with(b"application/json"));
-                if !replayable || !gateway || application_error { return Ok(response); }
+                let restarting=response.status()==reqwest::StatusCode::SERVICE_UNAVAILABLE && response.headers().contains_key(reqwest::header::RETRY_AFTER);
+                if !replayable || !gateway || (application_error && !restarting) { return Ok(response); }
             }
             Err(error) if error.is_connect() || (replayable && (error.is_timeout() || error.is_request()))=> {},
             Err(error)=>return Err(error.into()),

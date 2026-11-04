@@ -1453,6 +1453,8 @@ function renderConnection()
     else if (retry) label='Reconnecting '+retry.attempt+'/5';
     else if (error) label='Offline';
     elements['connection-indicator'].querySelector('span').textContent=label;
+    elements.reconnecting.hidden=!view.busy || !retry;
+    elements.reconnecting.querySelector('span').textContent=retry?'Reconnecting '+retry.attempt+'/5':'';
     elements['connection-indicator'].title=local?'Reconnecting to the local assistant':error || 'Connecting to the backend';
     let status='Loading server settings…';
     if (local) status='Reconnecting to the local assistant…';

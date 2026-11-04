@@ -14,6 +14,8 @@ body { margin:0; background:var(--bg); color:var(--text); }
 #startup-status { max-width:36rem; color:var(--muted); }
 #connection-indicator { display:inline-flex; align-items:center; gap:0.5rem; margin-left:auto; color:var(--muted); font-size:0.875rem; white-space:nowrap; }
 #connection-indicator svg { width:1rem; height:1rem; }
+.connection-progress { display:flex; align-items:center; gap:0.5rem; margin:1rem 0; color:var(--muted); font-size:0.875rem; }
+.connection-progress svg { width:1rem; height:1rem; }
 .account-identity { display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem; }
 .sign-out { border:0; padding:0; color:var(--muted); background:transparent; font-size:0.875rem; text-decoration:none; }
 button,input,select,textarea { font:inherit; color:inherit; }
