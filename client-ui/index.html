@@ -34,9 +34,18 @@
             <button id="credit-balance" class="credit-balance" title="Account and credits" hidden></button>
         </nav>
     </header>
+    <section id="notifications" class="notifications" aria-label="Notifications">
+        <div id="status" class="notification" role="alert" aria-atomic="true" hidden>
+            <p id="status-message" class="notification-message"></p>
+            <button id="status-dismiss" type="button" class="icon-button" aria-label="Dismiss notification" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
+        </div>
+        <div id="balance-note" class="notification" role="status" hidden>
+            <div class="notification-message"><p>Add credits to start a new task or steer. Your running task can finish.</p><button id="buy-inline" type="button">Buy credits</button></div>
+            <button id="balance-dismiss" type="button" class="icon-button" aria-label="Dismiss credit notice" title="Dismiss"><svg aria-hidden="true"><use href="#icon-close"/></svg></button>
+        </div>
+    </section>
     <section id="startup" aria-live="polite" hidden><h1>Connecting to your assistant</h1><p id="startup-status">Loading server settings…</p><button id="configuration-retry" type="button" hidden>Reconnect</button></section>
     <main>
-        <div id="status" role="status" aria-live="polite"></div>
         <section id="workspace">
             <section id="setup" class="auth-layout" hidden aria-label="Sign in">
                 <header class="auth-heading">
@@ -101,7 +110,6 @@
             <div id="scroll-anchor"></div>
             <button id="scroll-bottom" type="button" data-icon="send" aria-label="Jump to latest message" title="Jump to latest message" hidden><span class="scroll-dots" aria-hidden="true"><span></span><span></span><span></span></span><svg aria-hidden="true"><use href="#icon-send"/></svg></button>
             <div id="composer-wrap" class="composer-wrap" hidden>
-                <div id="balance-note" class="balance-note" hidden><span>Add credits to start a new task or steer. Your running task can finish.</span><button id="buy-inline" type="button">Buy credits</button></div>
                 <p id="queue-heading" class="sr-only" role="status" hidden></p>
                 <div id="editing-message" class="editing-message" hidden><span>Editing queued message</span><button id="cancel-edit" type="button" class="quiet">Cancel edit</button></div>
                 <section id="welcome" class="welcome" hidden>

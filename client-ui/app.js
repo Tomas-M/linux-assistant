@@ -3,7 +3,7 @@ const elements=Object.fromEntries([...document.querySelectorAll('[id]')].map(ele
 let steerId, editingId, startingId, queueAction=false, loginBusy=false, buying=false, resendAt=0, state, view={busy:false,steps:[],runs:[],commands:[],connections:{}}, busy=false, acting=false, startedAt, renderFrame, followOutput=true;
 const pendingIds=new Set(), messageRows=[], completionRows=[];
 const progressViews=new WeakMap(), steeringRows=new Map();
-let queueKey='', steeringKey='', themePreference;
+let queueKey='', steeringKey='', themePreference, lastTaskError;
 const panelWidths=new Map();
 let socialLogin, enabledProviders=[], emailEnabled=false, refreshingBalance=false, providersReady=false;
 let memoryDocument, memoryRequest=0, memoryLoading=false, memorySaving=false;
@@ -16,6 +16,21 @@ function setIcon(button,name)
     button.dataset.icon=name;
     button.innerHTML='<svg aria-hidden="true"><use href="#icon-'+name+'"/></svg>';
 }
+
+// Render a new notification once; live snapshots cannot reopen a dismissed task error.
+function showError(message)
+{
+    delete elements.status.dataset.taskError;
+    elements['status-message'].textContent=message;
+    elements.status.hidden=!message;
+}
+
+elements['status-dismiss'].addEventListener('click',()=>{ elements.status.hidden=true; });
+elements['balance-dismiss'].addEventListener('click',()=>
+{
+    elements['balance-note'].dataset.dismissed='true';
+    elements['balance-note'].hidden=true;
+});
 
 // Return conversation actions to the prompt without interrupting a dialog or another text field.
 function focusPrompt()
@@ -158,7 +173,8 @@ function render()
     elements['credit-balance'].textContent=state.account?state.account.credits+' credits':'Credits…';
     const depleted=state.account && state.account.credits<=0;
     for (const id of ['credit-balance','settings-balance']) elements[id].classList.toggle('depleted',!!depleted);
-    elements['balance-note'].hidden=!depleted;
+    if (!depleted) delete elements['balance-note'].dataset.dismissed;
+    elements['balance-note'].hidden=!depleted || elements['balance-note'].dataset.dismissed==='true';
     elements.credits.disabled=refreshingBalance || !state.authenticated;
     elements.logout.disabled=busy || !state.authenticated;
     elements.logout.title=busy?'Stop the running task before signing out':'';
@@ -232,8 +248,13 @@ function render()
         renderAnswer(elements['stream-text'],activity.progress?.text || '');
         elements['stream-text'].classList.toggle('streaming',view.busy);
     }
-    if (view.error) { elements.status.textContent=view.error; elements.status.dataset.taskError='true'; }
-    else if (elements.status.dataset.taskError) { elements.status.textContent=''; delete elements.status.dataset.taskError; }
+    const errorKey=view.error?JSON.stringify([view.runs.at(-1)?.started_at,view.error]):null;
+    if (errorKey!==lastTaskError)
+    {
+        lastTaskError=errorKey;
+        if (view.error) { showError(view.error); elements.status.dataset.taskError='true'; }
+        else if (elements.status.dataset.taskError) showError('');
+    }
     renderScrollButton();
 }
 
@@ -407,7 +428,7 @@ elements.workspace.addEventListener('click',async event=>
             copy.setAttribute('aria-label','Copied');
             setTimeout(()=>{setIcon(copy,'copy');copy.title=label;copy.setAttribute('aria-label',label);},1600);
         }
-        catch (error) { elements.status.textContent='Could not copy: '+error.message; }
+        catch (error) { showError('Could not copy: '+error.message); }
     }
     if (process)
     {
@@ -451,7 +472,7 @@ async function watch()
         {
             const response=await fetch('/api/events');
             if (!response.ok) throw new Error('The local assistant rejected the connection.');
-            if (elements.status.dataset.connection) { elements.status.textContent=''; delete elements.status.dataset.connection; }
+            if (elements.status.dataset.connection) delete elements.status.dataset.connection;
             const reader=response.body.getReader(), decoder=new TextDecoder();
             let buffer='';
             while (true)
@@ -485,7 +506,6 @@ async function watch()
         catch (error)
         {
             elements.status.dataset.connection='true';
-            elements.status.textContent='';
             renderConnection();
             await new Promise(resolve=>setTimeout(resolve,1500));
         }
@@ -497,7 +517,7 @@ async function action(callback)
 {
     if (busy) return false;
     acting=true;
-    elements.status.textContent='';
+    showError('');
     render(); focusPrompt();
     try
     {
@@ -505,7 +525,7 @@ async function action(callback)
         state=await api('state');
         return true;
     }
-    catch (error) { elements.status.textContent=error.message; return false; }
+    catch (error) { showError(error.message); return false; }
     finally { acting=false; render(); }
 }
 
@@ -676,7 +696,7 @@ function signedIn(current)
     socialLogin=undefined;
     state=current;
     view.error=null;
-    elements.status.textContent='';
+    showError('');
     delete elements.status.dataset.taskError;
     elements['auth-status'].textContent='';
     elements['code-form'].hidden=true;
@@ -850,7 +870,7 @@ elements['full-access'].addEventListener('change',async()=>
             await api('settings',{commands_enabled:true});
         state=await api('access',{enabled});
     }
-    catch (error) { elements.status.textContent=error.message; }
+    catch (error) { showError(error.message); }
     render();
 });
 // Reset a submitted draft after acceptance, or immediately when queueing behind an active task.
@@ -887,7 +907,7 @@ function renderComposer()
     {
         editingId=held.id;
         queueAction=true;
-        api('queue/'+held.id+'/edit',{editing:true}).then(input=>{ elements.prompt.value=input.text; draftAttachments=input.attachments || []; }).catch(error=>{ elements.status.textContent=error.message; }).finally(()=>{ queueAction=false; renderComposer(); });
+        api('queue/'+held.id+'/edit',{editing:true}).then(input=>{ elements.prompt.value=input.text; draftAttachments=input.attachments || []; }).catch(error=>{ showError(error.message); }).finally(()=>{ queueAction=false; renderComposer(); });
     }
     if (editingId && !queue.some(input=>input.id===editingId)) editingId=null;
     elements['editing-message'].hidden=!editingId;
@@ -963,21 +983,21 @@ async function submitPrompt(steer=false)
             if (first) await updateQueuedMessage(first.id,'steer');
             return;
         }
-        if (view.busy) try { await api('interrupt',{}); } catch (error) { elements.status.textContent=error.message; }
+        if (view.busy) try { await api('interrupt',{}); } catch (error) { showError(error.message); }
         return;
     }
     if (elements.send.disabled || elements['input-cost-dialog'].open) return;
     try { if (!await confirmInputCost(text,attachments)) return; }
-    catch (error) { elements.status.textContent=error.message; return; }
-    if (steer && view.busy && state.account?.credits<=0) { elements.status.textContent='Add credits to steer the conversation.'; return; }
-    if (steer && view.busy && !view.can_steer) { elements.status.textContent='No AI turn is accepting steering. Press Enter to queue this message.'; return; }
+    catch (error) { showError(error.message); return; }
+    if (steer && view.busy && state.account?.credits<=0) { showError('Add credits to steer the conversation.'); return; }
+    if (steer && view.busy && !view.can_steer) { showError('No AI turn is accepting steering. Press Enter to queue this message.'); return; }
     const steering=steer && view.busy, draftId=editingId, submittedAt=state.messages.length;
     const id=draftId || (steering?(steerId || crypto.randomUUID()):crypto.randomUUID());
     pendingIds.add(id);
     const direct=!view.busy && !draftId;
     if (direct) startingId=id;
     else clearPrompt();
-    elements.status.textContent='';
+    showError('');
     renderComposer();
     scrollToEnd();
     try
@@ -989,7 +1009,7 @@ async function submitPrompt(steer=false)
     {
         if (startingId===id) startingId=null;
         pendingIds.delete(id);
-        elements.status.textContent=error.message;
+        showError(error.message);
         const accepted=state.messages.slice(submittedAt).some(message=>message.role==='user' && message.text===text) || (view.queue || []).some(input=>input.id===id && !input.editing);
         if (!elements.prompt.value && !draftAttachments.length && !editingId && !accepted)
         {
@@ -1069,10 +1089,10 @@ async function updateQueuedMessage(id,action)
     if (queueAction || startingId) return;
     if (action==='steer')
     {
-        if (state.account?.credits<=0) { elements.status.textContent='Add credits to steer the conversation.'; return; }
-        if (!view.can_steer) { elements.status.textContent='No AI turn is accepting steering.'; return; }
+        if (state.account?.credits<=0) { showError('Add credits to steer the conversation.'); return; }
+        if (!view.can_steer) { showError('No AI turn is accepting steering.'); return; }
     }
-    if (action==='edit' && (elements.prompt.value || draftAttachments.length || editingId)) { elements.status.textContent='Send or clear your current draft before editing a queued message.'; elements.prompt.focus(); return; }
+    if (action==='edit' && (elements.prompt.value || draftAttachments.length || editingId)) { showError('Send or clear your current draft before editing a queued message.'); elements.prompt.focus(); return; }
     queueAction=true;
     renderComposer(); focusPrompt();
     try
@@ -1080,7 +1100,7 @@ async function updateQueuedMessage(id,action)
         const result=await api('queue/'+id+'/'+action,action==='edit'?{editing:true}:{});
         if (action==='edit') { editingId=id; elements.prompt.value=result.text; draftAttachments=result.attachments || []; }
     }
-    catch (error) { elements.status.textContent=error.message; }
+    catch (error) { showError(error.message); }
     finally { queueAction=false; renderComposer(); focusPrompt(); }
 }
 elements['queued-messages'].addEventListener('click',event=>
@@ -1096,7 +1116,7 @@ elements['cancel-edit'].addEventListener('click',async()=>
     queueAction=true;
     renderComposer(); focusPrompt();
     try { await api('queue/'+id+'/edit',{editing:false}); editingId=null; elements.prompt.value=''; draftAttachments=[]; }
-    catch (error) { pendingIds.delete(id); elements.status.textContent=error.message; }
+    catch (error) { pendingIds.delete(id); showError(error.message); }
     finally { queueAction=false; renderComposer(); }
 });
 for (const [id,path] of [['new','new'],['retry','retry']])
@@ -1130,7 +1150,7 @@ elements['credit-packs'].addEventListener('click',async event=>
         else location.assign(url.href);
         watchPurchase(checkout.purchase_id,email);
     }
-    catch (error) { checkoutWindow?.close(); elements.status.textContent=error.message; elements['settings-status'].textContent=error.message; }
+    catch (error) { checkoutWindow?.close(); showError(error.message); elements['settings-status'].textContent=error.message; }
     finally { buying=false; render(); }
 });
 let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
@@ -1486,9 +1506,9 @@ const initialState=api('state').then(async current=>
     }
     if (state.authenticated && !view.busy)
     {
-        try { state=await api('account',{}); render(); } catch (error) { elements.status.textContent=error.message; }
+        try { state=await api('account',{}); render(); } catch (error) { showError(error.message); }
     }
-}).catch(error=>{elements.status.textContent=error.message;});
+}).catch(error=>{showError(error.message);});
 const initialProviders=Promise.resolve(JSON.parse(document.getElementById('sign-in-options').textContent)).then(result=>{enabledProviders=result.providers; emailEnabled=result.email_enabled; renderLogin(); if (!emailEnabled && !enabledProviders.length) elements['auth-status'].textContent='Sign-in is disabled. Contact the administrator.';}).catch(error=>{elements['auth-status'].textContent='Social sign-in unavailable: '+error.message;});
 
 // Reveal the complete sign-in screen and focus without shifting its centered position.
