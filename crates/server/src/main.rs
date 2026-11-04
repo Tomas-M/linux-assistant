@@ -259,13 +259,14 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
             {
                 let mut turns=app.turns.lock().unwrap();
                 if let Some(active)=turns.get(&(user,input.request_id)) { return Ok(chat_stream(active.events.clone())); }
+                // A second task in the same conversation must not claim the first task's reservation.
+                let pending=app.db.0.lock().unwrap().query_row("SELECT (SELECT response IS NULL AND error IS NULL FROM requests WHERE user_id=?1 AND id=?2)",rusqlite::params![user,id],|row|row.get::<_,Option<bool>>(0))?;
+                let Some(pending)=pending else { return Err(ApiError(StatusCode::CONFLICT,"Request is still running; retry the same request shortly".into())); };
+                if !pending { return Ok(reconnect_response("Request state changed; retry the same request")); }
                 if app.stopping.load(std::sync::atomic::Ordering::SeqCst) {
                     app.db.interrupt(user,&id)?;
                     return Ok(reconnect_response("Backend is restarting; retry shortly"));
                 }
-                // Admission and completion can race; only a still-pending request may acquire the execution slot.
-                let pending=app.db.0.lock().unwrap().query_row("SELECT response IS NULL AND error IS NULL FROM requests WHERE user_id=?1 AND id=?2",rusqlite::params![user,id],|row|row.get::<_,bool>(0))?;
-                if !pending { return Ok(reconnect_response("Request state changed; retry the same request")); }
                 turns.insert((user,input.request_id),turns::ActiveTurn { sender:controls.clone(),cancel,events:receiver.clone() });
             }
             let task_app = app.clone();

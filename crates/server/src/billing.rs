@@ -177,6 +177,10 @@ mod tests {
         db.recover()?;
         assert_eq!(db.balance(user)?,-2);
         assert!(matches!(db.reserve(user,&interrupted,"restart",&pricing)?,Reservation::Pending));
+        measured(&db,user,&interrupted,1000,0,0)?;
+        db.settle(user,&interrupted.request_id.to_string(),Ok("reply".into()))?;
+        assert_eq!(db.task_credits(user,interrupted.request_id)?,11);
+        assert_eq!(db.balance(user)?,-3);
         let free=db.user("unknown@example.test",None,3)?;
         let missing=request();
         db.reserve(free,&missing,"unknown",&pricing)?;
