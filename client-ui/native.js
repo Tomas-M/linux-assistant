@@ -117,6 +117,9 @@ function progressAction(parts)
     if (tool==='local_list_directory') label=(running?'Listing ':'Listed ')+args.path;
     if (tool==='local_search_files') label=(running?'Searching ':'Searched ')+args.path;
     if (tool==='local_get_metadata') label=(running?'Inspecting ':'Inspected ')+args.path;
+    if (tool==='local_apply_patch') label=(running?'Editing ':'Edited ')+args.path;
+    if (tool==='local_write_file') label=(running?'Creating ':'Created ')+args.path;
+    if (tool==='local_view_image') label=(running?'Viewing image: ':'Viewed image: ')+args.path;
     if (first.kind==='web_search')
     {
         const action=last.data?.action;
@@ -127,7 +130,7 @@ function progressAction(parts)
     const changes=new Map();
     for (const part of parts) for (const change of view.tool_results[part.id]?.changes || []) changes.set(change.path,change);
     if (changes.size) icon='edit';
-    if (failed) label='Failed: '+(tool==='local_exec_command'?args.cmd:label);
+    if (failed) label='Failed: '+(args.cmd || last.text);
     return {label,icon,output,failed,running,changes,tool,args,process:result?.session_id || args.session_id};
 }
 
@@ -143,6 +146,7 @@ function renderWork(row,parts,active)
     if (exploring) title=active?'Exploring':'Explored';
     if (row.label.textContent!==title) row.label.textContent=title;
     row.label.title=title; row.label.classList.toggle('working',active);
+    row.label.classList.toggle('action-failed',!exploring && first?.failed===true);
     const use=row.disclosure.querySelector('summary use');
     if (use.getAttribute('href')!=='#icon-'+icon) use.setAttribute('href','#icon-'+icon);
     const failures=[...actions.values()].filter(action=>action.failed).length,notice=row.disclosure.querySelector('.action-failures');
