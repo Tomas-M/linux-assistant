@@ -24,7 +24,7 @@ impl Runtime {
         if !config.public_url.is_empty() { config.validate()?; }
         let mail=if config.dev || config.smtp_username.is_none() { None } else { Some(crate::mail::transport(&config)?.build()) };
         let images=config.client.assets()?;
-        let branding=protocol::Branding { name:config.client.name.clone(),default_theme:config.client.default_theme,quick_actions:config.client.quick_actions.clone(),images:images.iter().map(|(key,(_,_,hash))|(key.clone(),hash.clone())).collect() };
+        let branding=protocol::Branding { name:config.client.name.clone(),default_theme:config.client.default_theme,quick_actions:config.client.quick_actions.iter().filter(|action|!action.hidden).map(|action|protocol::QuickAction { label:action.label.clone(),prompt:action.prompt.clone() }).collect(),images:images.iter().map(|(key,(_,_,hash))|(key.clone(),hash.clone())).collect() };
         Ok(Self { config,mail,branding,images })
     }
 }

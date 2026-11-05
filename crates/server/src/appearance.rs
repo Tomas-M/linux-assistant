@@ -9,9 +9,14 @@ use crate::{config::FieldError,App,ApiResult};
 pub struct Appearance {
     pub name:String,pub default_theme:protocol::Theme,
     #[serde(default)]
-    pub quick_actions:Vec<protocol::QuickAction>,
+    pub quick_actions:Vec<QuickAction>,
     pub assistant_image:Option<String>,pub logo_image:Option<String>,pub logo_full:Option<String>,pub favicon:Option<String>,
 }
+/// Visibility belongs to admin settings; public branding contains only visible labels and prompts.
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickAction { pub label:String,pub prompt:String,#[serde(default)] pub hidden:bool }
+
 impl Default for Appearance {
     /// Keep the supplied assistant available on a fresh backend; all images are editable and included in backups.
     fn default()->Self {
