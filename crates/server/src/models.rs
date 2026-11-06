@@ -6,14 +6,14 @@ use crate::config::{Config,FieldError};
 pub fn resolve(config:&Config,requested:&GenerationOptions)->Result<GenerationOptions,FieldError> {
     requested.validate().map_err(|error|FieldError::new("generation",&error.to_string()))?;
     let defaults=GenerationOptions { model:config.model.clone(),reasoning_effort:config.reasoning_effort.clone() };
-    if !config.allow_model_selection || requested==&GenerationOptions::default() { return Ok(defaults); }
+    if !config.allow_model_selection { return Ok(defaults); }
     let model=requested.model.as_ref().or(config.model.as_ref()).ok_or_else(||FieldError::new("generation.model","Choose a model before selecting its reasoning level"))?;
     let available=config.available_models.iter().find(|available|&available.id==model).ok_or_else(||FieldError::new("generation.model","This model is not available for client selection"))?;
-    if let Some(effort)=&requested.reasoning_effort {
-        if !available.reasoning_levels.contains(effort) { return Err(FieldError::new("generation.reasoning_effort","This reasoning level is not available for the selected model")); }
-    }
-    // Selecting another model without an effort uses that provider model's default, not a mismatched global effort.
-    Ok(GenerationOptions { model:Some(model.clone()),reasoning_effort:requested.reasoning_effort.clone() })
+    let global_effort=if Some(model)==config.model.as_ref() { config.reasoning_effort.as_ref() } else { None };
+    let effort=requested.reasoning_effort.as_ref().or(global_effort).or(available.reasoning_levels.first());
+    if effort.is_some_and(|effort|!available.reasoning_levels.contains(effort)) { return Err(FieldError::new("generation.reasoning_effort","This reasoning level is not available for the selected model")); }
+    // Explicit defaults prevent a loaded provider thread from inheriting a previous task's choice.
+    Ok(GenerationOptions { model:Some(model.clone()),reasoning_effort:effort.cloned() })
 }
 
 /// The catalog is an operator-managed allowlist; identifiers stay data rather than compiled enum variants.
@@ -29,6 +29,9 @@ pub fn validate(config:&Config)->Result<(),FieldError> {
             if !levels.insert(level) { return Err(FieldError::new(&format!("{field}.reasoning_levels"),"Each reasoning level must appear only once per model")); }
         }
     }
-    if config.allow_model_selection && config.available_models.is_empty() { return Err(FieldError::new("available_models","Add at least one model before enabling client selection")); }
+    if config.allow_model_selection {
+        let default=config.available_models.iter().find(|model|Some(&model.id)==config.model.as_ref()).ok_or_else(||FieldError::new("model","Before enabling client selection, set a default model included in Available models"))?;
+        if config.reasoning_effort.as_ref().is_some_and(|effort|!default.reasoning_levels.contains(effort)) { return Err(FieldError::new("reasoning_effort","The default reasoning level must be allowed for the default model")); }
+    }
     Ok(())
 }

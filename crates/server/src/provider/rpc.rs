@@ -157,7 +157,7 @@ impl Rpc {
             Some(id) => {
                 let response=self.call("thread/resume",json!({"threadId":id,"excludeTurns":true,"baseInstructions":instructions,
                     "model":generation.model,"sandbox":"read-only","approvalPolicy":"never","config":{"features.image_generation":native_images}})).await?;
-                if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
+                if model.is_none() { model=response["model"].as_str().map(str::to_owned); }
                 id.to_owned()
             }
             None => {
@@ -166,7 +166,7 @@ impl Rpc {
                 if image_key.is_some() { tools.push(crate::imagegen::spec()); }
                 let response = self.call("thread/start",json!({"model":generation.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],
                     "sandbox":"read-only","approvalPolicy":"never","baseInstructions":instructions,"serviceName":"linux_assistant","dynamicTools":tools,"config":{"features.image_generation":native_images}})).await?;
-                if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
+                if model.is_none() { model=response["model"].as_str().map(str::to_owned); }
                 response["thread"]["id"].as_str().context("Provider did not return a thread ID")?.to_owned()
             }
         };
@@ -180,7 +180,7 @@ impl Rpc {
             json!({"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":0})
         } else { attempt.db.provider_counters(&thread_id)?.context("Missing recorded token baseline; start a new chat")? };
         // An empty environment selection prevents access to the backend host, including on resumed threads.
-        let started=self.call("turn/start",json!({"threadId":thread_id,"environments":[],"input":protocol::provider_input(input,&request.messages),
+        let started=self.call("turn/start",json!({"threadId":thread_id,"model":generation.model,"environments":[],"input":protocol::provider_input(input,&request.messages),
             "effort":generation.reasoning_effort,"summary":"auto","outputSchema":schema})).await?;
         let turn_id=started["turn"]["id"].as_str().context("Missing provider turn ID")?;
         attempt.identify(&thread_id,turn_id,model.as_deref())?;
