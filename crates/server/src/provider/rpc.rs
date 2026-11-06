@@ -111,7 +111,12 @@ impl Rpc {
 
     /// Resume the pinned thread with new input; replacements receive a bounded checkpoint and recent messages.
     pub(super) async fn answer(&mut self, config: &Config, request: &ChatRequest, thread: Option<&str>, recovery: &Value, checkpoint: bool, user: Option<i64>, mut controls: Option<&mut tokio::sync::mpsc::Receiver<crate::turns::Control>>, attempt: &crate::usage::Attempt<'_>, reporter: &mut super::progress::Reporter) -> Result<(AssistantReply,String,Option<String>)> {
-        let mut model=config.model.clone();
+        // Freeze task options across retries and failover without copying the config's base64 brand images.
+        let generation=match user {
+            Some(user)=>attempt.db.generation(user,request.request_id)?,
+            None=>protocol::GenerationOptions { model:config.model.clone(),reasoning_effort:config.reasoning_effort.clone() },
+        };
+        let mut model=generation.model.clone();
         let image_key=if user.is_some() { crate::imagegen::api_key(attempt)? } else { None };
         let native_images=user.is_some() && image_key.is_none();
         let mut instructions = format!("You are a general-purpose assistant for a user's {:?} computer using {}. \
@@ -151,7 +156,7 @@ impl Rpc {
         let thread_id = match thread {
             Some(id) => {
                 let response=self.call("thread/resume",json!({"threadId":id,"excludeTurns":true,"baseInstructions":instructions,
-                    "model":config.model,"sandbox":"read-only","approvalPolicy":"never","config":{"features.image_generation":native_images}})).await?;
+                    "model":generation.model,"sandbox":"read-only","approvalPolicy":"never","config":{"features.image_generation":native_images}})).await?;
                 if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
                 id.to_owned()
             }
@@ -159,7 +164,7 @@ impl Rpc {
                 let mut tools=if user.is_some() { protocol::tool_specs().into_iter().filter(|tool|request.bridge.tools.iter().any(|name|tool["name"].as_str()==Some(name.as_str()))).collect() } else { vec![] };
                 if user.is_some() { tools.extend(crate::memories::specs()); }
                 if image_key.is_some() { tools.push(crate::imagegen::spec()); }
-                let response = self.call("thread/start",json!({"model":config.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],
+                let response = self.call("thread/start",json!({"model":generation.model,"ephemeral":attempt.purpose=="admin_test","historyMode":"legacy","environments":[],
                     "sandbox":"read-only","approvalPolicy":"never","baseInstructions":instructions,"serviceName":"linux_assistant","dynamicTools":tools,"config":{"features.image_generation":native_images}})).await?;
                 if let Some(name)=response["model"].as_str() { model=Some(name.into()); }
                 response["thread"]["id"].as_str().context("Provider did not return a thread ID")?.to_owned()
@@ -176,7 +181,7 @@ impl Rpc {
         } else { attempt.db.provider_counters(&thread_id)?.context("Missing recorded token baseline; start a new chat")? };
         // An empty environment selection prevents access to the backend host, including on resumed threads.
         let started=self.call("turn/start",json!({"threadId":thread_id,"environments":[],"input":protocol::provider_input(input,&request.messages),
-            "effort":config.reasoning_effort,"summary":"auto","outputSchema":schema})).await?;
+            "effort":generation.reasoning_effort,"summary":"auto","outputSchema":schema})).await?;
         let turn_id=started["turn"]["id"].as_str().context("Missing provider turn ID")?;
         attempt.identify(&thread_id,turn_id,model.as_deref())?;
         let mut answer = String::new();

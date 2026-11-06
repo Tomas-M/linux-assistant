@@ -89,10 +89,6 @@ impl Pool {
 
     /// Stream preview snapshots while retaining the same affinity, usage and final validation path.
     pub async fn answer_stream(&self, config: &Config, db: &Db, user: i64, request: &ChatRequest, events: Option<&tokio::sync::watch::Sender<protocol::ChatEvent>>, mut controls: Option<&mut tokio::sync::mpsc::Receiver<crate::turns::Control>>) -> Result<Answer> {
-        // Freeze model and effort for this admitted task across reconnects, retries and account failover.
-        let generation=db.generation(user,request.request_id)?;
-        let mut config=config.clone();
-        config.model=generation.model; config.reasoning_effort=generation.reasoning_effort;
         if config.dev {
             let reply=demo(request);
             if let Some(events)=events {
@@ -159,7 +155,7 @@ impl Pool {
                 current.messages.extend(db.steering(user,request.request_id)?.into_iter().map(crate::turns::steering_message));
                 let mut recovery=recovery.clone();
                 recovery["local_operations"]=db.tool_history(user,request.request_id)?;
-                let result=rpc.answer(&config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
+                let result=rpc.answer(config,&current,thread,&recovery,checkpoint,Some(user),controls.as_deref_mut(),&attempt,&mut reporter).await;
                 let failure=result.as_ref().err().map(|error|crate::diagnostics::clean(&format!("{error:#}")));
                 if let Some(message)=&failure { crate::diagnostics::record("error","generation",Some(&request.request_id.to_string()),Some(&account.home),message); }
                 attempt.finish(failure.as_deref())?;
