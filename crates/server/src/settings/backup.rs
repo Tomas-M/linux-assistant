@@ -59,6 +59,8 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let config=Config { database:directory.path().join("assistant.db"),dev:true,public_url:"http://assistant.example.test".into(),
             assistant_context:Some("Slax product context 世界".into()),smtp_username:Some("fixture@example.test".into()),smtp_password:Some("private-smtp-secret".into()),email_from:Some("Fixture <fixture@example.test>".into()),
+            model:Some("fixture-model".into()),reasoning_effort:Some("medium".into()),allow_model_selection:true,
+            available_models:vec![protocol::ModelOption { id:"fixture-model".into(),reasoning_levels:vec!["low".into(),"medium".into()] }],
             admin_password_hash:Some(password_hash("unchanged-admin-password")),..Config::default() };
         for auth in [json!({"OPENAI_API_KEY":"private-api-key"}),json!({"tokens":{"access_token":"private-access","refresh_token":"private-refresh","id_token":"private-id"}})] {
             let home=directory.path().join("managed-accounts").join(uuid::Uuid::new_v4().to_string());
@@ -92,6 +94,8 @@ mod tests {
         assert_eq!(status,StatusCode::OK); assert!(headers[header::CONTENT_DISPOSITION].to_str()?.starts_with("attachment;"));
         assert_eq!(backup["settings"]["smtp_password"],"private-smtp-secret");
         assert_eq!(backup["settings"]["assistant_context"],"Slax product context 世界");
+        assert_eq!(backup["settings"]["allow_model_selection"],true);
+        assert_eq!(backup["settings"]["available_models"][0]["reasoning_levels"],json!(["low","medium"]));
         assert_eq!(backup["accounts"].as_array().unwrap().len(),2);
         assert!(!backup.to_string().contains("admin_password")); assert!(!backup.to_string().contains(hash.as_deref().unwrap()));
         let user=app.db.user("preserved@example.test",None,107)?;

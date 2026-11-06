@@ -141,7 +141,8 @@ mod tests {
     #[tokio::test]
     async fn editing_preserves_queue_order()->Result<()> {
         let controls=Controls::open(Live::new(),crate::media::Media::default())?;
-        let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
+        let mut inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
+        inputs[1].generation=protocol::GenerationOptions { model:Some("model-b".into()),reasoning_effort:Some("high".into()) };
         for input in &inputs { controls.enqueue(input.clone()).await?; }
         controls.edit(inputs[1].id,true).await?;
         assert!(controls.start_next(|input| { assert_eq!(input.text,"first"); Ok(()) }).await?);
@@ -150,7 +151,7 @@ mod tests {
         assert!(!controls.start_next(|_|panic!("Reload lost the held slot")).await?);
         assert!(controls.edit(inputs[2].id,true).await.is_err());
         controls.enqueue(Queued { text:"edited 世界".into(),..inputs[1].clone() }).await?;
-        assert!(controls.start_next(|input| { assert_eq!(input.id,inputs[1].id); assert_eq!(input.text,"edited 世界"); Ok(()) }).await?);
+        assert!(controls.start_next(|input| { assert_eq!(input.id,inputs[1].id); assert_eq!(input.text,"edited 世界"); assert_eq!(input.generation,inputs[1].generation); Ok(()) }).await?);
         controls.remove(inputs[2].id).await?;
         assert!(!controls.start_next(|_|panic!("Deleted input was dispatched")).await?);
         Ok(())

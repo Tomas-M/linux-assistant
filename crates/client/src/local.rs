@@ -30,11 +30,6 @@ impl IntoResponse for LocalError {
 }
 
 impl Connection {
-    /// Send requests only to the exact loopback origin.
-    #[cfg(test)]
-    pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
-        self.request(reqwest::Method::POST,path,Some(body)).await
-    }
     /// Read shared daemon state from terminal clients.
     pub async fn get(&self, path: &str) -> Result<Value> { self.request(reqwest::Method::GET,path,None).await }
     /// Refuse discovery files that point outside the local computer.

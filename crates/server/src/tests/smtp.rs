@@ -102,7 +102,7 @@ async fn smtp_delivery_and_authentication_failure() -> anyhow::Result<()> {
         config.smtp_port=listener.local_addr()?.port();
         config.validate()?;
         let trust=TlsParameters::builder(config.smtp_host.clone()).add_root_certificate(certificate).build()?;
-        *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime { mail:Some(crate::mail::transport(&config)?.tls(Tls::Wrapper(trust)).build()),config });
+        *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime { mail:Some(crate::mail::transport(&config)?.tls(Tls::Wrapper(trust)).build()),..crate::settings::Runtime::new(config)? });
         let server=tokio::spawn(async move {
             tokio::time::timeout(Duration::from_secs(10),smtp_session(listener,tls,reject_auth)).await?
         });
@@ -142,7 +142,7 @@ async fn smtp_rejects_untrusted_certificate() -> anyhow::Result<()> {
     let state=application()?;
     let mut config=smtp_config();
     config.smtp_port=listener.local_addr()?.port();
-    *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime { mail:Some(crate::mail::transport(&config)?.build()),config });
+    *state.settings.write().unwrap()=Arc::new(crate::settings::Runtime::new(config)?);
     let server=tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(10),smtp_session(listener,tls,false)).await?
     });
