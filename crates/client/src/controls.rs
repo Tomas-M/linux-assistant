@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::stream::Live;
 
 #[derive(Clone,Serialize,Deserialize)]
-pub struct Queued { pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
+pub struct Queued { #[serde(default)] pub generation:protocol::GenerationOptions,pub id:Uuid,pub text:String,pub cwd:String,pub editing:bool, pub attachments:Option<Vec<protocol::Attachment>> }
 #[derive(Clone)]
 pub struct Remote { pub backend:String,pub token:String,pub request:Uuid }
 pub struct Controls { pub failures:tokio::sync::watch::Sender<Option<Arc<anyhow::Error>>>,pending:Mutex<HashMap<Uuid,(protocol::Interaction,tokio::sync::oneshot::Sender<protocol::InteractionAnswer>)>>,tasks:Mutex<HashMap<Uuid,LocalTask>>,pub stopped:Arc<AtomicBool>,file_access:Arc<tokio::sync::Mutex<()>>, pub command_yield:tokio::sync::Notify, remote:Mutex<Option<Remote>>, queue:tokio::sync::Mutex<Vec<Queued>>, receipts:Mutex<HashMap<Uuid,interactions::Receipt>>,media:crate::media::Media,live:Live }
@@ -30,10 +30,11 @@ impl Controls {
     /// Enqueue user input once by its client-generated ID; commands are never supplied here.
     pub async fn enqueue(&self,input:Queued)->Result<()> {
         protocol::validate_input(&input.text,input.attachments.as_deref())?;
+        input.generation.validate()?;
         let mut queue=self.queue.lock().await;
         if let Some(old)=queue.iter_mut().find(|old|old.id==input.id) {
-            if old.editing { old.text=input.text; old.attachments=input.attachments; old.editing=false; return self.publish(&queue); }
-            ensure!(old.text==input.text && old.attachments==input.attachments && old.cwd==input.cwd,"Queue ID reused");
+            if old.editing { old.text=input.text; old.attachments=input.attachments; old.generation=input.generation; old.editing=false; return self.publish(&queue); }
+            ensure!(old.text==input.text && old.attachments==input.attachments && old.cwd==input.cwd && old.generation==input.generation,"Queue ID reused");
             return Ok(());
         }
         ensure!(queue.len()<50,"Message queue is full");
@@ -141,7 +142,7 @@ mod tests {
     async fn editing_preserves_queue_order()->Result<()> {
         let directory=tempfile::tempdir()?;
         let controls=Controls::open(Live::new(),crate::media::Media::default())?;
-        let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
+        let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
         for input in &inputs { controls.enqueue(input.clone()).await?; }
         controls.edit(inputs[1].id,true).await?;
         assert!(controls.start_next(|input| { assert_eq!(input.text,"first"); Ok(()) }).await?);
@@ -162,7 +163,7 @@ mod tests {
         use axum::{routing::post,Json,Router};
         let directory=tempfile::tempdir()?;
         let controls=Controls::open(Live::new(),crate::media::Media::default())?;
-        let input=Queued { attachments:Some(vec![protocol::Attachment::Text { name:"notes.txt".into(),content:"Attached steering".into() }]), id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
+        let input=Queued { generation:Default::default(),attachments:Some(vec![protocol::Attachment::Text { name:"notes.txt".into(),content:"Attached steering".into() }]), id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
         controls.enqueue(input.clone()).await?;
         assert!(controls.steer_queued(input.id).await.is_err());
         assert_eq!(controls.queue.lock().await[0].text,input.text);

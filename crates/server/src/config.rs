@@ -46,6 +46,10 @@ pub struct Config {
     pub image_credits_per_image:crate::billing::Rate,
     pub model:Option<String>,
     pub reasoning_effort:Option<String>,
+    #[serde(default)]
+    pub allow_model_selection:bool,
+    #[serde(default)]
+    pub available_models:Vec<protocol::ModelOption>,
     pub assistant_context:Option<String>,
     pub google_client_id:Option<String>,
     pub google_client_secret:Option<String>,
@@ -69,7 +73,7 @@ impl Default for Config {
         Self { listen:None,database:database_path(),dev:false,admin_password_hash:None,client:Default::default(),
             #[cfg(test)] test_homes:vec![],public_url:String::new(),email_enabled:false,google_enabled:false,microsoft_enabled:false,github_enabled:false,free_credits:100,
             pricing:crate::billing::Pricing { input_credits_per_million:crate::billing::Rate(200_000_000),cached_input_credits_per_million:crate::billing::Rate(10_000_000),output_credits_per_million:crate::billing::Rate(1_000_000_000) },
-            image_credits_per_image:crate::imagegen::default_rate(),model:None,reasoning_effort:None,assistant_context:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
+            image_credits_per_image:crate::imagegen::default_rate(),model:None,reasoning_effort:None,allow_model_selection:false,available_models:vec![],assistant_context:None,google_client_id:None,google_client_secret:None,microsoft_client_id:None,microsoft_client_secret:None,
             github_client_id:None,github_client_secret:None,smtp_host:"smtp.gmail.com".into(),smtp_port:465,smtp_username:None,smtp_password:None,email_from:None,
             stripe_secret:None,stripe_webhook_secret:None,credit_packs:vec![] }
     }
@@ -102,6 +106,7 @@ impl Config {
     /// Optional integrations may be absent, but a partially configured integration must be corrected before saving.
     pub fn validate(&self)->Result<(),FieldError> {
         self.client.validate()?;
+        crate::models::validate(self)?;
         require(self.image_credits_per_image.0<=1_000_000_000_000_000,"image_credits_per_image","Enter at most 1000000000 credits per generated image")?;
         require((0..=1_000_000_000).contains(&self.free_credits),"free_credits","Enter a whole number between 0 and 1000000000")?;
         let url=reqwest::Url::parse(&self.public_url).map_err(|_|FieldError::new("public_url","Enter a full URL, e.g. https://ai.slax.org"))?;

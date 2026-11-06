@@ -14,6 +14,7 @@ pub enum Theme { #[default] Light,Dark }
 #[serde(deny_unknown_fields)]
 pub struct Branding {
     pub name:String,pub default_theme:Theme,pub images:BTreeMap<String,String>,
+    pub model_catalog:crate::ModelCatalog,
     #[serde(default)]
     pub quick_actions:Vec<QuickAction>,
 }

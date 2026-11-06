@@ -19,7 +19,7 @@ struct Completed { action:Action,result:Result<Value> }
 struct App {
     name:String,screen:Screen,focus:Focus,input:Editor,answer:Editor,view:Value,tasks:Vec<Value>,tasks_open:bool,
     task:usize,queue:usize,scroll:Option<usize>,chat_bottom:usize,detail_scroll:usize,detail:Option<Uuid>,pending:bool,status:String,expanded:bool,confirmed:bool,
-    email:String,editing:Option<Uuid>,attachments:Option<Vec<protocol::Attachment>>,question:Option<Uuid>,answers:HashMap<String,Vec<String>>,choice:usize,custom:bool,
+    generation:protocol::GenerationOptions,email:String,editing:Option<Uuid>,attachments:Option<Vec<protocol::Attachment>>,question:Option<Uuid>,answers:HashMap<String,Vec<String>>,choice:usize,custom:bool,
     memories:Editor,memory_document:Option<Value>,packs:Vec<Value>,purchases:Vec<Value>,hits:Vec<(ratatui::layout::Rect,Hit)>,chat_area:ratatui::layout::Rect,
 }
 
@@ -148,7 +148,7 @@ impl App {
     /// Start at email sign-in for a fresh in-memory session.
     fn new(name:&str,view:Value)->Self {
         let screen=if view["state"]["authenticated"]==true { Screen::Chat } else { Screen::Email };
-        Self { name:name.into(),screen,focus:Focus::Prompt,input:Editor::default(),answer:Editor::default(),view,tasks:vec![],tasks_open:true,task:0,queue:0,scroll:None,chat_bottom:0,detail_scroll:0,detail:None,pending:false,status:String::new(),expanded:false,confirmed:false,email:String::new(),editing:None,attachments:None,question:None,answers:HashMap::new(),choice:0,custom:false,memories:Editor::default(),memory_document:None,packs:vec![],purchases:vec![],hits:vec![],chat_area:ratatui::layout::Rect::default() }
+        Self { generation:Default::default(),name:name.into(),screen,focus:Focus::Prompt,input:Editor::default(),answer:Editor::default(),view,tasks:vec![],tasks_open:true,task:0,queue:0,scroll:None,chat_bottom:0,detail_scroll:0,detail:None,pending:false,status:String::new(),expanded:false,confirmed:false,email:String::new(),editing:None,attachments:None,question:None,answers:HashMap::new(),choice:0,custom:false,memories:Editor::default(),memory_document:None,packs:vec![],purchases:vec![],hits:vec![],chat_area:ratatui::layout::Rect::default() }
     }
     /// Authentication comes from the engine, never from terminal display modes.
     fn authenticated(&self)->bool { self.view["state"]["authenticated"]==true }
@@ -188,6 +188,7 @@ impl App {
             Action::Logout=> { self.memories=Editor::default(); self.memory_document=None; self.screen=Screen::Email; self.input=Editor::default(); self.packs.clear(); self.purchases.clear(); }
             Action::Edit(id)=> {
                 self.input=Editor::new(value["text"].as_str().unwrap_or_default()); self.editing=Some(id);
+                self.generation=serde_json::from_value(value["generation"].clone()).unwrap();
                 self.attachments=serde_json::from_value(value["attachments"].clone()).unwrap_or(None); self.focus=Focus::Prompt;
             }
             Action::Attach(_)=> { self.attachments.get_or_insert_with(Vec::new).push(serde_json::from_value(value).unwrap()); self.input=Editor::default(); self.confirmed=false; }
@@ -209,6 +210,22 @@ impl App {
         if self.screen==Screen::Email { ensure!(!text.is_empty(),"Enter your email address"); self.dispatch(client,send,Action::Login(text)); return Ok(()); }
         if self.screen==Screen::Code { ensure!(text.len()==6 && text.bytes().all(|b|b.is_ascii_digit()),"Enter the six-digit code"); self.dispatch(client,send,Action::Verify(text)); return Ok(()); }
         ensure!(self.authenticated(),"Sign in first");
+        // Prepared for later activation: no model override takes effect until the backend enables selection.
+        if text=="/model" || text.starts_with("/model ") {
+            let catalog:protocol::ModelCatalog=serde_json::from_value(self.view["brand"]["model_catalog"].clone())?;
+            ensure!(catalog.enabled,"Model selection is not enabled");
+            let arguments=text.split_whitespace().skip(1).collect::<Vec<_>>();
+            if arguments.is_empty() { self.status=catalog.models.iter().map(|model|format!("{} ({})",model.id,model.reasoning_levels.join(", "))).collect::<Vec<_>>().join("; "); return Ok(()); }
+            ensure!(arguments.len()<=2,"Use /model MODEL [REASONING] or /model default");
+            if arguments==["default"] { self.generation=Default::default(); }
+            else {
+                let model=catalog.models.iter().find(|model|model.id==arguments[0]).context("This model is not available")?;
+                let effort=arguments.get(1).map(|value|value.to_string());
+                ensure!(effort.as_ref().is_none_or(|effort|model.reasoning_levels.contains(effort)),"This reasoning level is not available for the selected model");
+                self.generation=protocol::GenerationOptions { model:Some(model.id.clone()),reasoning_effort:effort };
+            }
+            self.input=Editor::default(); self.status="Model preferences updated for subsequent prompts".into(); return Ok(());
+        }
         if let Some(path)=text.strip_prefix("/attach ") { self.dispatch(client,send,Action::Attach(path.into())); return Ok(()); }
         if text=="/clear-attachments" { self.attachments=None; self.input=Editor::default(); self.confirmed=false; return Ok(()); }
         let credits=self.view["state"]["account"]["credits"].as_i64().context("Refresh your account balance first (F6, R)")?;
@@ -231,7 +248,7 @@ impl App {
             self.status=format!("This input may use around {credits} credits. Send again to confirm.");
             return Ok(());
         }
-        let input=Queued { id:self.editing.unwrap_or_else(Uuid::new_v4),text,cwd:std::env::current_dir()?.to_string_lossy().into_owned(),editing:false,attachments:self.attachments.clone() };
+        let input=Queued { generation:self.generation.clone(),id:self.editing.unwrap_or_else(Uuid::new_v4),text,cwd:std::env::current_dir()?.to_string_lossy().into_owned(),editing:false,attachments:self.attachments.clone() };
         self.dispatch(client,send,Action::Submit(input,steer && self.view["busy"]==true));
         Ok(())
     }

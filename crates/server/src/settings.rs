@@ -25,7 +25,8 @@ impl Runtime {
         let mail=if config.dev || config.smtp_username.is_none() { None } else { Some(crate::mail::transport(&config)?.build()) };
         let images=config.client.assets()?;
         let quick_actions=config.client.quick_actions.iter().filter(|action|!action.hidden).map(|action|protocol::QuickAction { label:action.label.clone(),prompt:action.prompt.clone() }).collect();
-        let branding=protocol::Branding { name:config.client.name.clone(),default_theme:config.client.default_theme,quick_actions,images:images.iter().map(|(key,(_,_,hash))|(key.clone(),hash.clone())).collect() };
+        let model_catalog=protocol::ModelCatalog { enabled:config.allow_model_selection,defaults:protocol::GenerationOptions { model:config.model.clone(),reasoning_effort:config.reasoning_effort.clone() },models:config.available_models.clone() };
+        let branding=protocol::Branding { model_catalog, name:config.client.name.clone(),default_theme:config.client.default_theme,quick_actions,images:images.iter().map(|(key,(_,_,hash))|(key.clone(),hash.clone())).collect() };
         Ok(Self { config,mail,branding,images })
     }
 }

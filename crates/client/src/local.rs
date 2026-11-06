@@ -217,7 +217,7 @@ struct SocialInput { provider:protocol::AuthProvider }
 #[derive(Deserialize)]
 struct LoginId { id:String }
 #[derive(Deserialize)]
-struct ChatInput { text: String, cwd: Option<String>, id: Option<Uuid>, attachments:Option<Vec<protocol::Attachment>> }
+struct ChatInput { #[serde(default)] generation:protocol::GenerationOptions,text: String, cwd: Option<String>, id: Option<Uuid>, attachments:Option<Vec<protocol::Attachment>> }
 
 /// Read the same assistant state in either interface.
 async fn state_view(State(state): State<Local>) -> Json<Value> { Json(state.live.0.borrow()["state"].clone()) }
@@ -276,10 +276,10 @@ async fn logout(State(state): State<Local>) -> LocalResult {
     engine.logout().await?;
     Ok(Json(engine.state()))
 }
-/// Accept only text and a working directory, never client-supplied tool definitions.
+/// Forward optional model/effort data for a future server-gated selector, never client-supplied tool definitions.
 async fn chat(State(state): State<Local>, Json(input): Json<ChatInput>) -> LocalResult {
     let cwd = match input.cwd { Some(path) => path,None => dirs::home_dir().context("Home directory not found")?.to_string_lossy().into_owned() };
-    state.controls.enqueue(crate::controls::Queued { attachments:input.attachments, id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
+    state.controls.enqueue(crate::controls::Queued { generation:input.generation,attachments:input.attachments, id:input.id.unwrap_or_else(Uuid::new_v4),text:input.text,cwd,editing:false }).await?;
     if state.live.0.borrow()["busy"]==true { return Ok(Json(state.live.0.borrow()["state"].clone())); }
     run(state,Operation::Next).await
 }

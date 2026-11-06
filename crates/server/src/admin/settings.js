@@ -5,6 +5,7 @@ const settingsGroups=[
     {page:'appearance',title:'Client appearance',hint:'Clients fetch these settings once at startup. Restart a client after changing its branding or default theme. A full logo replaces both the square logo and name in the header.',fields:[['client.name','Assistant name'],['client.default_theme','Default theme','theme'],['client.assistant_image','Assistant image','image'],['client.logo_image','Logo before the name','image'],['client.logo_full','Full header logo','image'],['client.favicon','Favicon','image']]},
     {page:'appearance',title:'New chat quick actions',hint:'Buttons appear below the new-chat heading in this order. Clicking fills the prompt without sending it. Hide an action to keep it in Admin without sending it to clients. Restart clients after changing these actions.',fields:[['client.quick_actions','Quick actions','quick-actions']]},
     {page:'ai',title:'AI and token prices',hint:'Rates are credits per million tokens. New tasks use the current prices; existing tasks retain their admitted rates.',fields:[['model','Model'],['reasoning_effort','Reasoning level','select'],['pricing.input_credits_per_million','Input credits / 1M tokens','rate'],['pricing.cached_input_credits_per_million','Cached input credits / 1M tokens','rate'],['pricing.output_credits_per_million','Output credits / 1M tokens','rate']]},
+    {page:'ai',title:'Future client model selection',hint:'Prepared for a future client selector; disabled by default. Configure an allowlist of model IDs and reasoning levels as JSON. Later enable this setting and publish the selector UI without rebuilding either executable. Token billing still uses the global prices above.',fields:[['allow_model_selection','Allow clients to select a model and reasoning level','checkbox'],['available_models','Available models and reasoning levels','json']]},
     {page:'ai',title:'Image generation',hint:'GPT Image 2 is available through connected ChatGPT and API accounts. The default 21.1 credits per completed image uses OpenAI’s $0.211 high-quality 1024 × 1024 output estimate. Native ChatGPT usage has no image-token counters, so this is a configurable estimate, not a measured provider bill. Text-token charges are added and the whole task is rounded once. Failed or cancelled images are not charged.',fields:[['image_credits_per_image','Credits per completed image','rate']]},
     {page:'ai',title:'Assistant context',hint:'Applies to all conversations, including account tests, and survives context compaction. Changes apply to the next request.',fields:[['assistant_context','Context and instructions','textarea']]},
     {page:'email',title:'Email and SMTP',provider:'email',hint:'Gmail: use smtp.gmail.com, port 465, your full email and a Google app password (Google Account → Security → App passwords). SMTP uses implicit TLS. SMTP also sends ownership-confirmation codes for social sign-in.',fields:[['email_enabled','Enable email sign-in','checkbox'],['smtp_host','SMTP hostname'],['smtp_port','SMTP port','number'],['smtp_username','SMTP username'],['smtp_password','SMTP password','password'],['email_from','Sender name and email address']]},
@@ -15,6 +16,7 @@ const settingsGroups=[
 ];
 const settingsPlaceholders={
     'client.name':'Slax Assistant',public_url:'https://ai.slax.org',free_credits:'100',model:'Provider default; e.g. gpt-6.1-sol',
+    available_models:'[{"id":"your-model-id","reasoning_levels":["low","medium","high"]}]',
     assistant_context:'Describe your product, users, preferred guidance and relevant background. Leave blank for no additional context.',
     'pricing.input_credits_per_million':'200','pricing.cached_input_credits_per_million':'10','pricing.output_credits_per_million':'1000',
     smtp_host:'smtp.gmail.com',smtp_port:'465',smtp_username:'tomas@slax.org',smtp_password:'Gmail app password or SMTP password',email_from:'Slax AI <tomas@slax.org>',
@@ -84,6 +86,7 @@ function showSettingsError(message,field)
     clearSettingsError();
     const pack=/^credit_packs\.(\d+)\.(price_id|usd|credits)$/u.exec(field || '');
     let input=document.getElementById('setting-'+field);
+    if (field?.startsWith('available_models.')) input=document.getElementById('setting-available_models');
     if (field==='new_password') input=document.getElementById('new-password');
     if (field==='confirmation') input=document.getElementById('confirm-password');
     if (pack) input=document.querySelectorAll('#pack-rows .pack-row')[Number(pack[1])]?.querySelector('[data-pack="'+pack[2]+'"]');
@@ -126,10 +129,11 @@ async function loadSettings()
             const secret=type==='password',saved=secret && result.saved_secrets.includes(key);
             const placeholder=saved?'Saved; leave blank to keep':settingsPlaceholders[key] || '';
             let input;
-            if (type==='textarea') input='<textarea id="setting-'+key+'" data-setting="'+key+'" rows="8" placeholder="'+escapeHtml(placeholder)+'">'+escapeHtml(value??'')+'</textarea>';
+            if (type==='json') input='<textarea id="setting-'+key+'" data-setting="'+key+'" data-json rows="6" placeholder="'+escapeHtml(placeholder)+'">'+escapeHtml(JSON.stringify(value,null,2))+'</textarea>';
+            else if (type==='textarea') input='<textarea id="setting-'+key+'" data-setting="'+key+'" rows="8" placeholder="'+escapeHtml(placeholder)+'">'+escapeHtml(value??'')+'</textarea>';
             else if (type==='select' || type==='theme') input='<select id="setting-'+key+'" data-setting="'+key+'">'+(type==='theme'?['light','dark']:['','none','minimal','low','medium','high','xhigh','max','ultra','persistent']).map(option=>'<option value="'+option+'"'+((value || '')===option?' selected':'')+'>'+(type==='theme'?(option==='dark'?'Dark':'Light'):(option || 'Provider default'))+'</option>').join('')+'</select>';
             else input='<input id="setting-'+key+'" data-setting="'+key+'" type="'+(type==='rate'?'number':type)+'"'+(type==='rate'?' min="0" step="0.000001" required':type==='number'?' min="'+(key==='free_credits'?'0':'1')+'" max="'+(key==='smtp_port'?'65535':'1000000000')+'" step="1" required':'')+' value="'+escapeHtml(secret?'':value??'')+'" placeholder="'+escapeHtml(placeholder)+'"'+(secret?' autocomplete="new-password"':'')+(['public_url','smtp_host'].includes(key)?' required':'')+(key==='model'?' maxlength="200"':'')+'>';
-            return '<div'+(type==='textarea'?' class="setting-wide"':'')+'><label for="setting-'+key+'">'+escapeHtml(label)+'</label>'+input+(key==='email_from'?'<small class="hint">Use an email address, e.g. '+escapeHtml('Slax AI <tomas@slax.org>')+'. A name alone is not valid.</small>':'')+(saved?'<label class="setting-switch"><input type="checkbox" data-clear-secret="'+key+'">Clear saved secret</label>':'')+'</div>';
+            return '<div'+(['textarea','json'].includes(type)?' class="setting-wide"':'')+'><label for="setting-'+key+'">'+escapeHtml(label)+'</label>'+input+(key==='email_from'?'<small class="hint">Use an email address, e.g. '+escapeHtml('Slax AI <tomas@slax.org>')+'. A name alone is not valid.</small>':'')+(saved?'<label class="setting-switch"><input type="checkbox" data-clear-secret="'+key+'">Clear saved secret</label>':'')+'</div>';
         }).join('')+'</div></fieldset>').join('');
     document.getElementById('setting-public_url').addEventListener('input',renderCallbacks);
     renderCallbacks();
@@ -256,6 +260,12 @@ document.getElementById('backend-settings').addEventListener('submit',async even
     for (const input of document.querySelectorAll('[data-setting]'))
     {
         const key=input.dataset.setting;
+        if (input.hasAttribute('data-json'))
+        {
+            try { settings[key]=JSON.parse(input.value); }
+            catch { showSettingsError('Enter a valid JSON array of models and their reasoning_levels.',key); return; }
+            continue;
+        }
         if (key==='image_credits_per_image') { settings[key]=input.value; continue; }
         if (key.startsWith('pricing.')) { settings.pricing[key.slice(8)]=input.value; continue; }
         if (key.startsWith('client.')) { settings.client[key.slice(7)]=input.value; continue; }

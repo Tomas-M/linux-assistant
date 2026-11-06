@@ -4,6 +4,7 @@
 mod auth;
 mod admin;
 mod config;
+mod models;
 mod settings;
 mod appearance;
 mod client_ui;
@@ -239,7 +240,9 @@ async fn chat_request(app:App,headers:HeaderMap,input:ChatRequest)->ApiResult<Re
         if input.messages.iter().any(|m|m.text.len()>64_000) {
             return Err(ApiError::bad("Message is too long"));
         }
-        let reservation = admission.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&pricing.pricing)?;
+        let reservation = admission.db.reserve(user,&input,&hash(std::str::from_utf8(&bytes).unwrap()),&pricing).map_err(|error| {
+            if let Some(field)=error.downcast_ref::<config::FieldError>() { ApiError::bad(&field.to_string()) } else { ApiError::from(error) }
+        })?;
         Ok((user,input,reservation))
     }).await??;
     let request_id=input.request_id;

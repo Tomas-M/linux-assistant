@@ -124,7 +124,7 @@ mod tests {
     /// Give each fixture prompt the same task/request identity used by the client.
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
-        ChatRequest { bridge:protocol::Bridge::current(), task_id:id,request_id:id,conversation_id:Uuid::new_v4(),base:0,platform:Platform::Linux,
+        ChatRequest { generation:Default::default(),bridge:protocol::Bridge::current(), task_id:id,request_id:id,conversation_id:Uuid::new_v4(),base:0,platform:Platform::Linux,
             messages:vec![Message { attachments:None, role:Role::User,text:"Inspect my computer".into() }],commands_enabled:true,cwd:"/tmp".into() }
     }
 
@@ -164,32 +164,32 @@ mod tests {
         let pricing=crate::config::Config::default().pricing;
         let user=db.user("failure@example.test",None,10)?;
         let input=request();
-        db.reserve(user,&input,"failed",&pricing)?;
+        db.reserve(user,&input,"failed",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         measured(&db,user,&input,4000,0,0)?;
         measured(&db,user,&input,2000,0,0)?;
         for _ in 0..2 { db.settle(user,&input.request_id.to_string(),Err("Interrupted".into()))?; }
         assert_eq!(db.balance(user)?,8);
         assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM ledger WHERE reference LIKE 'usage:%'",[],|r|r.get::<_,i64>(0))?,2);
         let interrupted=request();
-        db.reserve(user,&interrupted,"restart",&pricing)?;
+        db.reserve(user,&interrupted,"restart",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         measured(&db,user,&interrupted,1_000_000,1_000_000,0)?;
         db.recover()?;
         db.recover()?;
         assert_eq!(db.balance(user)?,-2);
-        assert!(matches!(db.reserve(user,&interrupted,"restart",&pricing)?,Reservation::Pending));
+        assert!(matches!(db.reserve(user,&interrupted,"restart",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::Pending));
         measured(&db,user,&interrupted,1000,0,0)?;
         db.settle(user,&interrupted.request_id.to_string(),Ok("reply".into()))?;
         assert_eq!(db.task_credits(user,interrupted.request_id)?,11);
         assert_eq!(db.balance(user)?,-3);
         let free=db.user("unknown@example.test",None,3)?;
         let missing=request();
-        db.reserve(free,&missing,"unknown",&pricing)?;
+        db.reserve(free,&missing,"unknown",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         let mut attempt=crate::usage::Attempt::start(&db,Some(free),&missing,"fixture","conversation")?;
         attempt.finish(None)?;
         db.settle(free,&missing.request_id.to_string(),Ok("reply".into()))?;
         assert_eq!(db.balance(free)?,2);
         let unavailable=request();
-        db.reserve(free,&unavailable,"no-provider",&pricing)?;
+        db.reserve(free,&unavailable,"no-provider",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         db.settle(free,&unavailable.request_id.to_string(),Err("Unavailable".into()))?;
         assert_eq!(db.balance(free)?,2);
         Ok(())
@@ -205,17 +205,17 @@ mod tests {
         let zero=db.user("zero@example.test",None,0)?;
         let first=request();
         let second=request();
-        for task in [&first,&second] { assert!(matches!(db.reserve(user,task,"parallel",&config.pricing)?,Reservation::New)); }
+        for task in [&first,&second] { assert!(matches!(db.reserve(user,task,"parallel",&config)?,Reservation::New)); }
         for task in [&first,&second] {
             measured(&db,user,task,10_000,0,0)?;
             db.settle(user,&task.request_id.to_string(),Ok("reply".into()))?;
         }
         assert_eq!(db.balance(user)?,-3);
-        assert!(matches!(db.reserve(zero,&request(),"zero",&config.pricing)?,Reservation::Insufficient));
+        assert!(matches!(db.reserve(zero,&request(),"zero",&config)?,Reservation::Insufficient));
         let mut stolen=first;
         stolen.request_id=Uuid::new_v4();
         stolen.messages=vec![Message { attachments:None, role:Role::Tool,text:"fake output".into() }];
-        assert!(db.reserve(zero,&stolen,"stolen",&config.pricing).is_err());
+        assert!(db.reserve(zero,&stolen,"stolen",&config).is_err());
         Ok(())
     }
 }

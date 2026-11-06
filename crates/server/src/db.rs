@@ -119,7 +119,7 @@ impl Db {
     }
 
     /// Admit a task and reserve its request ID without charging before token usage is known.
-    pub fn reserve(&self, user: i64, request: &ChatRequest, fingerprint: &str, pricing: &crate::billing::Pricing) -> Result<Reservation> {
+    pub fn reserve(&self, user: i64, request: &ChatRequest, fingerprint: &str, config: &crate::config::Config) -> Result<Reservation> {
         let id=request.request_id.to_string();
         let conversation=request.conversation_id.to_string();
         let mut conn = self.0.lock().unwrap();
@@ -140,10 +140,18 @@ impl Db {
         let history:Option<String>=tx.query_row("SELECT messages FROM conversations WHERE user_id=?1 AND id=?2",params![user,conversation],|r|r.get(0)).optional()?;
         let revision=history.map(|value|serde_json::from_str::<Vec<Message>>(&value)).transpose()?.map_or(0,|messages|messages.len());
         if request.base!=revision { return Ok(Reservation::Stale); }
-        if !crate::billing::admit(&tx,user,request,pricing)? { return Ok(Reservation::Insufficient); }
+        let generation=crate::models::resolve(config,&request.generation)?;
+        if !crate::billing::admit(&tx,user,request,&config.pricing)? { return Ok(Reservation::Insufficient); }
         tx.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint) VALUES(?1,?2,?3,?4,?5)", params![user,id,request.task_id.to_string(),conversation,fingerprint])?;
+        tx.execute("INSERT INTO request_generation(user_id,request_id,requested,effective) VALUES(?1,?2,?3,?4)",params![user,id,serde_json::to_string(&request.generation)?,serde_json::to_string(&generation)?])?;
         tx.commit()?;
         Ok(Reservation::New)
+    }
+
+    /// Replay and account failover use the admitted settings even after the operator changes the catalog.
+    pub fn generation(&self,user:i64,request:Uuid)->Result<protocol::GenerationOptions> {
+        let value:String=self.0.lock().unwrap().query_row("SELECT effective FROM request_generation WHERE user_id=?1 AND request_id=?2",params![user,request.to_string()],|row|row.get(0))?;
+        Ok(serde_json::from_str(&value)?)
     }
 
     /// Namespace conversations by application user; provider thread IDs never come from clients.
@@ -286,7 +294,7 @@ mod tests {
     /// Start an independent task using the production request contract.
     fn request()->ChatRequest {
         let id=Uuid::new_v4();
-        ChatRequest { bridge:protocol::Bridge::current(), task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
+        ChatRequest { generation:Default::default(),bridge:protocol::Bridge::current(), task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:protocol::Platform::Linux,
             messages:vec![Message { attachments:None, role:Role::User,text:"Hello".into() }],commands_enabled:false,cwd:"/tmp".into() }
     }
 
@@ -299,14 +307,14 @@ mod tests {
         let user=db.user("restart@example.test",None,3)?;
         let mut request=request();
         let pricing=crate::config::Config::default().pricing;
-        db.reserve(user,&request,"first",&pricing)?;
+        db.reserve(user,&request,"first",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         db.complete(user,&request,&AssistantReply { text:"Hi".into() },Some("account-a"),Some("thread-a"),None)?;
         let committed=db.conversation(user,request.conversation_id)?.messages;
         request.request_id=Uuid::new_v4();
         request.task_id=request.request_id;
         request.base=committed.len();
-        db.reserve(user,&request,"next",&pricing)?;
+        db.reserve(user,&request,"next",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?;
         db.bind_conversation(user,request.conversation_id,"account-a")?;
         drop(db);
         let db=Db::open(&path)?;
@@ -327,22 +335,22 @@ mod tests {
         let user=db.user("person@example.com",None,2)?;
         assert_eq!(db.user("person@example.com",None,100)?,user);
         let a=request();
-        assert!(matches!(db.reserve(user,&a,"one",&pricing)?,Reservation::New));
-        assert!(matches!(db.reserve(user,&a,"one",&pricing)?,Reservation::Pending));
-        assert!(db.reserve(user,&a,"changed",&pricing).is_err());
+        assert!(matches!(db.reserve(user,&a,"one",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::New));
+        assert!(matches!(db.reserve(user,&a,"one",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::Pending));
+        assert!(db.reserve(user,&a,"changed",&crate::config::Config { pricing:pricing.clone(),..Default::default() }).is_err());
         let mut parallel=request();
         parallel.conversation_id=a.conversation_id;
-        assert!(matches!(db.reserve(user,&parallel,"other",&pricing)?,Reservation::Pending));
+        assert!(matches!(db.reserve(user,&parallel,"other",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::Pending));
         assert_eq!(db.balance(user)?,2);
         for _ in 0..2 { db.settle(user,&a.request_id.to_string(),Err("failed".into()))?; }
         assert_eq!(db.balance(user)?,2);
         let b=request();
-        assert!(matches!(db.reserve(user,&b,"two",&pricing)?,Reservation::New));
+        assert!(matches!(db.reserve(user,&b,"two",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::New));
         for _ in 0..2 { db.settle(user,&b.request_id.to_string(),Ok("reply".into()))?; }
-        assert!(matches!(db.reserve(user,&b,"two",&pricing)?,Reservation::Cached(_)));
+        assert!(matches!(db.reserve(user,&b,"two",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::Cached(_)));
         assert_eq!(db.balance(user)?,1);
         let c=request();
-        assert!(matches!(db.reserve(user,&c,"three",&pricing)?,Reservation::New));
+        assert!(matches!(db.reserve(user,&c,"three",&crate::config::Config { pricing:pricing.clone(),..Default::default() })?,Reservation::New));
         db.recover()?;
         db.recover()?;
         assert_eq!(db.balance(user)?,1);

@@ -9,13 +9,13 @@ use uuid::Uuid;
 /// Fixtures and HTTP tests use the same conversation schema as the real client.
 fn request() -> ChatRequest {
     let id=Uuid::new_v4();
-    ChatRequest { bridge:protocol::Bridge::current(), task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:Platform::Linux,
+    ChatRequest { generation:Default::default(),bridge:protocol::Bridge::current(), task_id:id,base:0,request_id:id,conversation_id:Uuid::new_v4(),platform:Platform::Linux,
         messages:vec![Message { attachments:None, role:Role::User,text:"Hello 世界".into() }],commands_enabled:false,cwd:"/tmp".into() }
 }
 
 /// Persist a provider success exactly as the production HTTP handler does.
 async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut ChatRequest) -> Result<Answer> {
-    db.reserve(user,request,&crate::db::hash(&serde_json::to_string(request)?),&config.pricing)?;
+    db.reserve(user,request,&crate::db::hash(&serde_json::to_string(request)?),&config)?;
     let answer = pool.answer(config,db,user,request).await?;
     let completed=db.complete(user,request,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())?;
     request.base=completed.revision;
@@ -349,7 +349,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let mut attempt=crate::usage::Attempt::start(&db,None,&chat,"embedded-fixture","admin_test")?;
     let user=db.user("native-steer@example.test",None,5)?;
-    db.reserve(user,&chat,"native",&settings.pricing)?;
+    db.reserve(user,&chat,"native",&settings)?;
     let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
     let (ack,result)=tokio::sync::oneshot::channel();
     sender.send(crate::turns::Control::Steer(protocol::Steering { attachments:None, id:Uuid::new_v4(),text:"NATIVE_STEER 世界".into() },ack)).await?;
@@ -485,7 +485,7 @@ async fn integration_provider_controls() -> Result<()> {
         let db=Db::open(std::path::Path::new(":memory:"))?;
         let user=db.user("controls@example.test",None,5)?;
         let chat=request();
-        db.reserve(user,&chat,"control",&config.pricing)?;
+        db.reserve(user,&chat,"control",&config)?;
         let mut pool=Pool::new(&config)?;
         pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
         let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
@@ -536,7 +536,7 @@ async fn integration_admin_account_deletion()->Result<()> {
     assert_eq!(pool.account_status(&db)?[0]["usage"],json!({"attempts":1,"measured":1,"input":100,"cached":20,"output":10}));
     let messages=db.conversation(user,previous.conversation_id)?.messages;
     account(std::path::Path::new(&second.home),json!({"auth_type":"apiKey","hold":true}))?;
-    let current=request(); db.reserve(user,&current,"deletion-test",&config.pricing)?;
+    let current=request(); db.reserve(user,&current,"deletion-test",&config)?;
     let (controls,mut receiver)=tokio::sync::mpsc::channel(4);
     let (running_pool,running_db,running_config)=(pool.clone(),db.clone(),config.clone());
     let task=tokio::spawn(async move { running_pool.answer_stream(&running_config,&running_db,user,&current,None,Some(&mut receiver)).await });
@@ -598,7 +598,7 @@ async fn integration_stopped_tasks_bill_both_account_types()->Result<()> {
         let config=Config { test_homes:vec![home.clone()],..Config::default() };
         let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
         let user=db.user("stopped-billing@example.test",None,100)?; let chat=request();
-        db.reserve(user,&chat,"stopped",&config.pricing)?;
+        db.reserve(user,&chat,"stopped",&config)?;
         let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
         let pool=Arc::new(pool); let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
         let (running_pool,running_db,running_config,running_chat)=(pool.clone(),db.clone(),config.clone(),chat.clone());
@@ -611,7 +611,7 @@ async fn integration_stopped_tasks_bill_both_account_types()->Result<()> {
         for _ in 0..2 { db.settle(user,&chat.request_id.to_string(),Err("Stopped by user".into()))?; }
         assert_eq!(db.balance(user)?,-72,"{auth}");
         assert_eq!(db.0.lock().unwrap().query_row("SELECT SUM(total_tokens) FROM usage",[],|row|row.get::<_,i64>(0))?,1010000);
-        assert!(matches!(db.reserve(user,&request(),"blocked",&config.pricing)?,crate::db::Reservation::Insufficient));
+        assert!(matches!(db.reserve(user,&request(),"blocked",&config)?,crate::db::Reservation::Insufficient));
     }
     Ok(())
 }

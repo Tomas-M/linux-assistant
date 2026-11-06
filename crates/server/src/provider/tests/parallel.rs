@@ -50,7 +50,7 @@ async fn same_account_conversations_are_isolated()->Result<()> {
     for (index,user) in [user,user,other].into_iter().enumerate() {
         let mut chat=request();
         chat.messages[0].text=format!("Conversation {index} 世界");
-        db.reserve(user,&chat,"parallel",&config.pricing)?;
+        db.reserve(user,&chat,"parallel",&config)?;
         let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
         controls.push(sender);
         chats.push(chat.clone());

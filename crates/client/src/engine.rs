@@ -17,6 +17,7 @@ pub struct Session {
     pub conversation_id: Uuid,
     pub task_id: Option<Uuid>,
     pub settings: Settings,
+    pub generation:protocol::GenerationOptions,
     pub messages: Vec<Message>,
     pub committed: usize,
     pub request: Option<ChatRequest>,
@@ -33,7 +34,7 @@ impl Engine {
         validate_backend(backend)?;
         let live=crate::stream::Live::new();
         let media=crate::media::Media::default();
-        let session=Session { conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },task_id:None,committed:0,messages:vec![],request:None };
+        let session=Session { generation:Default::default(),conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },task_id:None,committed:0,messages:vec![],request:None };
         let engine=Self { controls:crate::controls::Controls::open(live.clone(),media.clone())?,processes:Processes::open()?,live,full_access:Arc::new(AtomicBool::new(true)),session,
             auth:crate::session::Credentials { backend:backend.into(),token:Arc::new(std::sync::RwLock::new(None)) },media,platform,http:crate::backend::client(0)?,login:None,account:Arc::new(std::sync::RwLock::new(None)) };
         engine.live.state(engine.state());
@@ -153,6 +154,7 @@ impl Engine {
         self.session.conversation_id = Uuid::new_v4();
         self.session.task_id = None;
         self.session.messages.clear();
+        self.session.generation=Default::default();
         self.session.committed=0;
         self.controls.clear().await?;
         self.session.request = None;
@@ -160,11 +162,12 @@ impl Engine {
     }
 
     /// Register user input before dispatch; a lost response can be retried with the same request ID.
-    fn prepare_message(&mut self,text:String,cwd:String,id:Uuid,attachments:Option<Vec<protocol::Attachment>>)->Result<()> {
+    fn prepare_message(&mut self,text:String,cwd:String,id:Uuid,attachments:Option<Vec<protocol::Attachment>>,generation:protocol::GenerationOptions)->Result<()> {
         ensure!(self.session.request.is_none(),"Retry the unfinished request or start a new chat first");
         protocol::validate_input(&text,attachments.as_deref())?;
         self.session.messages.push(Message { attachments, role:Role::User,text });
         self.session.task_id=Some(id);
+        self.session.generation=generation;
         if let Err(error)=self.prepare(cwd,id) { self.session.messages.pop(); self.session.task_id=None; return Err(error); }
         self.begin_activity(self.session.messages.len()-1);
         self.publish()?;
@@ -173,12 +176,12 @@ impl Engine {
     /// Tests and direct engine callers use the same input path as queued browser messages.
     #[cfg(test)]
     pub async fn chat(&mut self,text:String,cwd:String)->Result<Value> {
-        self.prepare_message(text,cwd,Uuid::new_v4(),None)?;
+        self.prepare_message(text,cwd,Uuid::new_v4(),None,Default::default())?;
         self.retry().await
     }
     /// Acknowledge dequeue only after registering its stable ID in the active session.
     pub async fn next(&mut self)->Result<bool> {
-        if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id,input.attachments)).await? { return Ok(false); }
+        if !self.controls.clone().start_next(|input|self.prepare_message(input.text,input.cwd,input.id,input.attachments,input.generation)).await? { return Ok(false); }
         self.retry().await?;
         Ok(true)
     }
@@ -186,7 +189,7 @@ impl Engine {
     /// Send only new input after the last committed conversation revision.
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
         ensure!(self.auth.token.read().unwrap().is_some(),"Sign in first");
-        let request = ChatRequest { bridge:protocol::Bridge::current(),task_id:*self.session.task_id.get_or_insert(id),base:self.session.committed,request_id:id,conversation_id:self.session.conversation_id,platform:self.platform,messages:self.session.messages[self.session.committed..].to_vec(),commands_enabled:self.session.settings.commands_enabled,cwd };
+        let request = ChatRequest { generation:self.session.generation.clone(),bridge:protocol::Bridge::current(),task_id:*self.session.task_id.get_or_insert(id),base:self.session.committed,request_id:id,conversation_id:self.session.conversation_id,platform:self.platform,messages:self.session.messages[self.session.committed..].to_vec(),commands_enabled:self.session.settings.commands_enabled,cwd };
         ensure!(serde_json::to_vec(&request)?.len()<=protocol::MAX_UPLOAD_BYTES && protocol::display_messages(&request.messages).to_string().len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
         self.session.request = Some(request);
         self.publish()
@@ -368,7 +371,7 @@ mod tests {
         let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(&backend).await?; *engine.auth.token.write().unwrap()=Some("fixture".into());
         let attachments=Some(vec![protocol::Attachment::Text { name:"日志.txt".into(),content:"PRIVATE_ATTACHMENT_TEXT".into() }]);
-        engine.controls.enqueue(crate::controls::Queued { id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
+        engine.controls.enqueue(crate::controls::Queued { generation:Default::default(),id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
         assert!(engine.next().await.is_err());
         assert!(Engine::open(&backend).await?.session.request.is_none());
@@ -479,11 +482,11 @@ mod tests {
         assert!(Engine::open(&backend).await?.live.0.borrow()["runs"].as_array().unwrap().is_empty());
         assert!(serde_json::to_vec(&engine.session.messages)?.len()>96_000);
         assert_eq!(engine.session.committed,60);
-        let first=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
-        let second=crate::controls::Queued { attachments:None, id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
+        let first=crate::controls::Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:"First queued message".into(),cwd:cwd.clone(),editing:false };
+        let second=crate::controls::Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:"Second queued message".into(),cwd:cwd.clone(),editing:false };
         engine.controls.enqueue(first.clone()).await?;
         engine.controls.enqueue(second.clone()).await?;
-        engine.prepare_message(first.text,cwd,first.id,None)?;
+        engine.prepare_message(first.text,cwd,first.id,None,first.generation)?;
         engine.controls.remove(first.id).await?;
         assert_eq!(engine.live.0.borrow()["queue"][0]["id"],second.id.to_string());
         engine.retry().await?;
@@ -519,7 +522,7 @@ mod tests {
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
         let mut engine=Engine::open(&backend).await?;
         *engine.auth.token.write().unwrap()=Some("fixture".into());
-        engine.controls.enqueue(crate::controls::Queued { attachments:None, id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
+        engine.controls.enqueue(crate::controls::Queued { generation:Default::default(),attachments:None, id,text:"Queued steering".into(),cwd:"/tmp".into(),editing:false }).await?;
         engine.chat("Original task".into(),"/tmp".into()).await?;
         assert!(!engine.next().await?);
         assert_eq!(engine.session.messages.len(),3);

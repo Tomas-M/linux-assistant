@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS billing_tasks(user_id INTEGER NOT NULL REFERENCES use
 CREATE INDEX IF NOT EXISTS billing_tasks_active ON billing_tasks(user_id,conversation_id) WHERE finished_at IS NULL;
 CREATE TABLE IF NOT EXISTS requests(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, task_id TEXT NOT NULL, conversation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT, error TEXT, steering TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(user_id,id));
 CREATE INDEX IF NOT EXISTS requests_task ON requests(user_id,task_id);
+CREATE TABLE IF NOT EXISTS request_generation(user_id INTEGER NOT NULL,request_id TEXT NOT NULL,requested TEXT NOT NULL,effective TEXT NOT NULL,
+    PRIMARY KEY(user_id,request_id),FOREIGN KEY(user_id,request_id) REFERENCES requests(user_id,id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS requests_conversation ON requests(user_id,conversation_id) WHERE response IS NULL AND error IS NULL;
 CREATE TABLE IF NOT EXISTS conversations(user_id INTEGER NOT NULL REFERENCES users(id), id TEXT NOT NULL, account_home TEXT, thread_id TEXT, messages TEXT NOT NULL DEFAULT '[]', checkpoint TEXT NOT NULL DEFAULT '', checkpoint_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,id));
 CREATE INDEX IF NOT EXISTS conversations_account ON conversations(account_home);
