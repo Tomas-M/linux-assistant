@@ -47,6 +47,41 @@ fn ranks_by_bottleneck_and_rejects_unknown_quota() -> Result<()> {
     Ok(())
 }
 
+/// Real JSONL calls must override a resumed thread and preserve choices already admitted before settings change.
+#[tokio::test]
+#[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
+async fn integration_model_selection_and_admitted_options()->Result<()> {
+    let directory=tempfile::tempdir()?;
+    let home=directory.path().join("account"); account(&home,json!({"primary":10}))?;
+    let mut config=Config { model:Some("model-a".into()),reasoning_effort:Some("medium".into()),allow_model_selection:true,test_homes:vec![home.clone()],
+        available_models:serde_json::from_value(json!([
+            {"id":"model-a","reasoning_levels":["low","medium","high"]},
+            {"id":"model-b","reasoning_levels":["low","high"]}
+        ]))?,..Config::default() };
+    let db=Db::open(std::path::Path::new(":memory:"))?;
+    let user=db.user("models@example.test",None,100)?;
+    let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
+    let mut chat=request();
+    chat.generation=protocol::GenerationOptions { model:Some("model-b".into()),reasoning_effort:Some("high".into()) };
+    db.reserve(user,&chat,&crate::db::hash(&serde_json::to_string(&chat)?),&config)?;
+    config.allow_model_selection=false; config.reasoning_effort=Some("low".into());
+    turn(&pool,&config,&db,user,&mut chat).await?;
+    chat.generation=Default::default();
+    turn(&pool,&config,&db,user,&mut chat).await?;
+    config.allow_model_selection=true; config.reasoning_effort=Some("medium".into());
+    chat.generation=protocol::GenerationOptions { model:Some("model-b".into()),reasoning_effort:None };
+    turn(&pool,&config,&db,user,&mut chat).await?;
+    let events=std::fs::read_to_string(home.join("events.jsonl"))?.lines().map(serde_json::from_str::<Value>).collect::<std::result::Result<Vec<_>,_>>()?;
+    let turns=events.iter().filter(|event|event["method"]=="turn/start").collect::<Vec<_>>();
+    assert_eq!(turns.len(),3);
+    for (turn,(model,effort)) in turns.iter().zip([("model-b","high"),("model-a","low"),("model-b","low")]) {
+        assert_eq!(turn["params"]["model"],model); assert_eq!(turn["params"]["effort"],effort);
+    }
+    assert_eq!(events.iter().filter(|event|event["method"]=="thread/resume").count(),2);
+    assert_eq!(db.0.lock().unwrap().query_row("SELECT COUNT(*) FROM usage WHERE model='model-b'",[],|row|row.get::<_,i64>(0))?,2);
+    Ok(())
+}
+
 /// UI-added credentials survive restart, API accounts skip subscription quotas, and pauses control failover.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
