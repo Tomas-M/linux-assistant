@@ -429,7 +429,6 @@ mod tests {
     /// Account requests use current private in-memory authentication even while a task owns the engine lock.
     #[tokio::test]
     async fn account_requests_remain_available_during_a_task()->Result<()> {
-        let directory=tempfile::tempdir()?;
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
         let app=Router::new().route("/v1/checkout",post(|headers:axum::http::HeaderMap,Json(input):Json<protocol::CheckoutRequest>|async move {
@@ -468,12 +467,11 @@ mod tests {
     /// Slow startup metadata must not collide with balance refreshes or report a busy assistant.
     #[tokio::test]
     async fn startup_metadata_does_not_lock_the_assistant()->Result<()> {
-        let directory=tempfile::tempdir()?;
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);
         let entered=Arc::new(Notify::new()); let release=Arc::new(Notify::new());
         let (started,ready)=(entered.clone(),release.clone());
-        let app=Router::new().route("/v1/auth/providers",get(move|| {
+        let app=Router::new().route("/v1/client-config",get(||async { Json(json!({"name":"Test Assistant","images":{}})) })).route("/v1/auth/providers",get(move|| {
             let (started,ready)=(started.clone(),ready.clone());
             async move { started.notify_one(); ready.notified().await; Json(json!({"providers":[],"email_enabled":true})) }
         })).route("/v1/me",get(||async { Json(json!({"email":"fixture@example.test","credits":22,"development":true,"input_credits_per_million":200})) }));
@@ -482,12 +480,13 @@ mod tests {
         *engine.auth.token.write().unwrap()=Some("fixture".into()); engine.settings(true)?;
         let local=Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let metadata=local.clone();
-        let discovery=tokio::spawn(async move { auth_providers(State(metadata)).await.map_err(|error|error.0) });
+        let discovery=tokio::spawn(crate::config::load(backend,metadata.brand,metadata.live));
         tokio::time::timeout(Duration::from_secs(1),entered.notified()).await?;
         let result=tokio::time::timeout(Duration::from_secs(1),account(State(local.clone()))).await?.map_err(|error|error.0)?;
         assert_eq!(result.0["account"]["credits"],22);
         release.notify_one();
-        assert_eq!(discovery.await??.0["email_enabled"],true);
+        discovery.await?;
+        assert_eq!(auth_providers(State(local.clone())).await.map_err(|error|error.0)?.0["email_enabled"],true);
         let _busy=local.engine.lock().await;
         let cached=tokio::time::timeout(Duration::from_secs(1),account(State(local.clone()))).await?.map_err(|error|error.0)?;
         assert_eq!(cached.0["account"]["credits"],22);
@@ -500,7 +499,6 @@ mod tests {
     /// Plain URLs work without tokens; branding is immediate and unrelated websites remain blocked.
     #[tokio::test]
     async fn protects_local_api() -> Result<()> {
-        let directory = tempfile::tempdir()?;
         let engine=Engine::open("http://127.0.0.1:8787").await?;
         let local = Local { account:engine.account.clone(), downloads:Arc::new(crate::downloads::Downloads::default()), brand:Arc::new(crate::config::Brand::default()),ui:Arc::new(crate::ui::Store::default()),auth:engine.auth.clone(),media:engine.media.clone(),controls:engine.controls.clone(),live:engine.live.clone(),full_access:engine.full_access.clone(),processes:engine.processes.clone(),engine:Arc::new(Mutex::new(engine)),connection:Connection { url:"http://127.0.0.1:1234".into() },stop:Arc::new(Notify::new()) };
         let app = router(local);

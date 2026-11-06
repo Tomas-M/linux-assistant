@@ -25,6 +25,7 @@ class ConversationReset(unittest.TestCase):
                 db.execute("INSERT INTO ledger(user_id,delta,reference,created_at) VALUES(1,10,'grant',1),(1,-1,'request:1:pending',1),(1,-1,'request:1:done',1)")
                 db.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint) VALUES(1,'pending','pending','chat','pending')")
                 db.execute("INSERT INTO requests(user_id,id,task_id,conversation_id,fingerprint,response) VALUES(1,'done','done','chat','done','{}')")
+                db.execute("INSERT INTO request_generation VALUES(1,'pending','{}','{}')")
                 db.execute("INSERT INTO conversations(user_id,id,messages) VALUES(1,'chat','[]')")
                 db.execute("INSERT INTO usage(user_id,request_id,conversation_id,account_home,purpose,started_at) VALUES(1,'pending','chat','account','conversation',1)")
             reset.reset(path)
@@ -33,7 +34,7 @@ class ConversationReset(unittest.TestCase):
                 for table in ['users','sessions','purchases','usage']:
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],1)
                 self.assertIsNotNone(db.execute('SELECT finished_at FROM usage').fetchone()[0])
-                self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name IN ('conversations','requests','billing_tasks')").fetchall())
+                self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name IN ('conversations','requests','billing_tasks','request_generation')").fetchall())
                 db.executescript(schema)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM conversations').fetchone()[0],0)
             self.assertFalse(list(Path(directory).glob('*.before-conversation-reset-*')))

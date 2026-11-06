@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+#[cfg(test)]
+mod tests;
 use protocol::GenerationOptions;
 use crate::config::{Config,FieldError};
 

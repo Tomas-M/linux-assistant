@@ -140,7 +140,6 @@ mod tests {
     /// Editing survives reload, blocks dispatch at its original slot, and resumes in the same order.
     #[tokio::test]
     async fn editing_preserves_queue_order()->Result<()> {
-        let directory=tempfile::tempdir()?;
         let controls=Controls::open(Live::new(),crate::media::Media::default())?;
         let inputs:Vec<_>=["first","second","third"].into_iter().map(|text|Queued { generation:Default::default(),attachments:None, id:Uuid::new_v4(),text:text.into(),cwd:"/tmp".into(),editing:false }).collect();
         for input in &inputs { controls.enqueue(input.clone()).await?; }
@@ -161,7 +160,6 @@ mod tests {
     #[tokio::test]
     async fn steering_excludes_dequeue_and_preserves_rejected_input()->Result<()> {
         use axum::{routing::post,Json,Router};
-        let directory=tempfile::tempdir()?;
         let controls=Controls::open(Live::new(),crate::media::Media::default())?;
         let input=Queued { generation:Default::default(),attachments:Some(vec![protocol::Attachment::Text { name:"notes.txt".into(),content:"Attached steering".into() }]), id:Uuid::new_v4(),text:"Steer 世界".into(),cwd:"/tmp".into(),editing:false };
         controls.enqueue(input.clone()).await?;

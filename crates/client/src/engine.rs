@@ -368,18 +368,18 @@ mod tests {
             async move { ([("content-type","text/event-stream")],format!("data: {}\n\n",serde_json::to_string(&event).unwrap())) }
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(&backend).await?; *engine.auth.token.write().unwrap()=Some("fixture".into());
         let attachments=Some(vec![protocol::Attachment::Text { name:"日志.txt".into(),content:"PRIVATE_ATTACHMENT_TEXT".into() }]);
-        engine.controls.enqueue(crate::controls::Queued { generation:Default::default(),id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
+        let generation=protocol::GenerationOptions { model:Some("model-a".into()),reasoning_effort:Some("high".into()) };
+        engine.controls.enqueue(crate::controls::Queued { generation:generation.clone(),id:Uuid::new_v4(),text:String::new(),cwd:"/tmp".into(),editing:false,attachments:attachments.clone() }).await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
-        assert!(engine.next().await.is_err());
+        assert!(engine.next().await?);
         assert!(Engine::open(&backend).await?.session.request.is_none());
-        engine.retry().await?;
         assert!(!engine.live.0.borrow().to_string().contains("PRIVATE_ATTACHMENT_TEXT"));
         assert_eq!(engine.session.messages[0].attachments,attachments);
         assert_eq!(engine.live.0.borrow()["steps"][0]["compacted"][0],"compact");
-        let requests=requests.lock().unwrap(); assert_eq!(requests[0].request_id,requests[1].request_id); assert_eq!(requests[1].messages[0].attachments,attachments);
+        let requests=requests.lock().unwrap(); assert_eq!(requests.len(),2); assert_eq!(requests[0].request_id,requests[1].request_id); assert_eq!(requests[1].messages[0].attachments,attachments);
+        assert!(requests.iter().all(|request|request.generation==generation));
         server.abort(); Ok(())
     }
 
@@ -399,7 +399,6 @@ mod tests {
             }
         }));
         let server=tokio::spawn(async move { axum::serve(listener,app).await.unwrap(); });
-        let directory=tempfile::tempdir()?;
         let mut engine=Engine::open(&backend).await?;
         *engine.auth.token.write().unwrap()=Some("fixture".into());
         *engine.account.write().unwrap()=Some(Account { email:"fixture@example.test".into(),credits:1,development:true,input_credits_per_million:200.0 });
@@ -439,10 +438,14 @@ mod tests {
         let mut engine=Engine::open(&backend).await?;
         *engine.auth.token.write().unwrap()=Some("fixture".into());
         engine.settings(true)?;
-        assert!(engine.chat("Hello".into(),directory.path().to_string_lossy().into_owned()).await.is_err());
-        assert_eq!(engine.session.messages.len(),1);
-        assert_eq!(engine.live.0.borrow()["activity"]["progress"]["text"],"Partial 世界");
-        engine.retry().await?;
+        let mut view=engine.live.0.subscribe();
+        let task=tokio::spawn(async move { let result=engine.chat("Hello".into(),directory.path().to_string_lossy().into_owned()).await; (engine,result) });
+        {
+            let reconnect=tokio::time::timeout(std::time::Duration::from_secs(3),view.wait_for(|view|view["connections"]["stream"].is_object())).await??;
+            assert_eq!(reconnect["state"]["messages"].as_array().unwrap().len(),1);
+            assert_eq!(reconnect["activity"]["progress"]["text"],"Partial 世界");
+        }
+        let (engine,result)=task.await?; result?;
         let requests=requests.lock().unwrap();
         assert_eq!(requests[0],requests[1]);
         assert_eq!(engine.session.messages.len(),2);
@@ -510,7 +513,6 @@ mod tests {
     #[tokio::test]
     async fn confirmed_steering_is_not_dispatched_again()->Result<()> {
         use axum::{routing::post,Json,Router};
-        let directory=tempfile::tempdir()?;
         let id=Uuid::new_v4();
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let backend=format!("http://{}",listener.local_addr()?);

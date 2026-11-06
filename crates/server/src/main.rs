@@ -58,7 +58,7 @@ impl App {
     #[cfg(test)]
     /// Isolate route tests from production accounts, databases and SMTP transports.
     fn testing(config:Config)->anyhow::Result<Self> {
-        Ok(Self { stopping:Arc::new(Default::default()),turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime { config,mail:None }))),
+        Ok(Self { stopping:Arc::new(Default::default()),turns:Arc::new(Default::default()),pool:Arc::new(provider::Pool::new(&config)?),settings:Arc::new(std::sync::RwLock::new(Arc::new(settings::Runtime::new(config)?))),
             db:Arc::new(Db::open(std::path::Path::new(":memory:"))?),http:reqwest::Client::new() })
     }
 

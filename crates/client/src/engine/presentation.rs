@@ -42,7 +42,6 @@ mod tests {
     /// Stopping retains the preview only in local presentation state, without contaminating future model input.
     #[tokio::test]
     async fn stopped_preview_survives_refresh_and_next_task()->Result<()> {
-        let directory=tempfile::tempdir()?;
         let mut engine=Engine::open("http://127.0.0.1:8787").await?;
         engine.session.messages.push(Message { attachments:None, role:Role::User,text:"Check the logs".into() });
         engine.begin_activity(0);
