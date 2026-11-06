@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn failed_quota_probe_is_shared()->Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     config.test_homes.push(directory.path().join("quota"));
     account(&config.test_homes[0],json!({"primary":10,"rpc_error_method":"account/rateLimits/read","error_message":"Offline fixture"}))?;
     let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
@@ -35,7 +35,7 @@ async fn failed_quota_probe_is_shared()->Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn same_account_conversations_are_isolated()->Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     config.test_homes.push(directory.path().join("shared"));
     account(&config.test_homes[0],json!({"primary":10,"hold":true}))?;
     let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);

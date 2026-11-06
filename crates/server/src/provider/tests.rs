@@ -26,6 +26,9 @@ async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut Ch
     Ok(answer)
 }
 
+/// Keep worker scratch files and account discovery inside each integration test's temporary directory.
+fn fixture_config(directory:&tempfile::TempDir)->Config { Config { database:directory.path().join("assistant.db"),..Default::default() } }
+
 /// Write mock account state without any real credentials or network requests.
 fn account(home: &std::path::Path, settings: Value) -> Result<()> {
     std::fs::create_dir_all(home)?;
@@ -57,7 +60,7 @@ async fn integration_model_selection_and_admitted_options()->Result<()> {
         available_models:serde_json::from_value(json!([
             {"id":"model-a","reasoning_levels":["low","medium","high"]},
             {"id":"model-b","reasoning_levels":["low","high"]}
-        ]))?,..Config::default() };
+        ]))?,..fixture_config(&directory) };
     let db=Db::open(std::path::Path::new(":memory:"))?;
     let user=db.user("models@example.test",None,100)?;
     let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
@@ -88,7 +91,7 @@ async fn integration_model_selection_and_admitted_options()->Result<()> {
 async fn integration_admin_account_controls()->Result<()> {
     crate::diagnostics::init_test();
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default(); config.database=directory.path().join("test.db");
+    let mut config=fixture_config(&directory); config.database=directory.path().join("test.db");
     let db=Arc::new(Db::open(&config.database)?);
     let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into(); let pool=Arc::new(pool);
     let pending=pool.clone().add(db.clone(),None).await?;
@@ -127,7 +130,7 @@ async fn integration_admin_account_controls()->Result<()> {
 async fn integration_diagnostics_preserve_causes()->Result<()> {
     crate::diagnostics::init_test();
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     config.test_homes.push(directory.path().join("diagnostic-account"));
     let home=&config.test_homes[0];
     account(home,json!({"primary":23,"rpc_error_method":"account/rateLimits/read","error_message":"HTTP 401: authentication expired; Bearer PRIVATE_TOKEN"}))?;
@@ -160,7 +163,7 @@ async fn integration_diagnostics_preserve_causes()->Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_streams_before_completion() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     config.test_homes.push(directory.path().join("stream"));
     account(&config.test_homes[0],json!({"primary":0,"stream":true}))?;
     let db=Db::open(std::path::Path::new(":memory:"))?;
@@ -270,7 +273,7 @@ async fn integration_persistent_account_affinity() -> Result<()> {
 async fn integration_mid_turn_limit_and_errors() -> Result<()> {
     for error in ["usageLimitExceeded","unexpectedServerError"] {
         let directory=tempfile::tempdir()?;
-        let mut config=Config::default();
+        let mut config=fixture_config(&directory);
         for (name,used) in [("first",0),("second",50)] {
             let home=directory.path().join(name);
             account(&home,json!({"primary":used}))?;
@@ -303,7 +306,7 @@ async fn integration_mid_turn_limit_and_errors() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_accounts_run_in_parallel() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     for name in ["a","b"] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":0,"barrier":directory.path().to_string_lossy()}))?;
@@ -355,7 +358,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
         "config":provider,"environments":[],"ephemeral":false,"sandbox":"read-only","approvalPolicy":"never"}))).await??;
     let id=thread["thread"]["id"].as_str().unwrap();
     let mut chat=request();
-    let settings=Config { reasoning_effort:Some("high".into()),assistant_context:Some("SLAX_CONTEXT 世界".into()),..Config::default() };
+    let settings=Config { reasoning_effort:Some("high".into()),assistant_context:Some("SLAX_CONTEXT 世界".into()),..fixture_config(&directory) };
     // New threads are not resumable until their first turn has created a rollout.
     rpc.call("turn/start",json!({"threadId":id,"environments":[],"input":[{"type":"text","text":"Hello"}],"outputSchema":protocol::reply_schema()})).await?;
     let reply=tokio::time::timeout(Duration::from_secs(40),async {
@@ -429,7 +432,7 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_usage_and_admin_tests() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config { reasoning_effort:Some("medium".into()),..Config::default() };
+    let mut config=Config { reasoning_effort:Some("medium".into()),..fixture_config(&directory) };
     for name in ["first","second"] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":10}))?;
@@ -477,7 +480,7 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     let directory=tempfile::tempdir()?;
-    let mut config=Config::default();
+    let mut config=fixture_config(&directory);
     for (name,used) in [("a",0),("b",50)] {
         let home=directory.path().join(name);
         account(&home,json!({"primary":used}))?;
@@ -514,7 +517,7 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
 async fn integration_provider_controls() -> Result<()> {
     for stop in [false,true] {
         let directory=tempfile::tempdir()?;
-        let mut config=Config::default();
+        let mut config=fixture_config(&directory);
         config.test_homes.push(directory.path().join("held"));
         account(&config.test_homes[0],json!({"primary":0,"hold":true,"fragment":true}))?;
         let db=Db::open(std::path::Path::new(":memory:"))?;
@@ -558,7 +561,7 @@ async fn integration_provider_controls() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_admin_account_deletion()->Result<()> {
     let directory=tempfile::tempdir()?;
-    let config=Config { database:directory.path().join("test.db"),..Config::default() };
+    let config=Config { database:directory.path().join("test.db"),..fixture_config(&directory) };
     let db=Arc::new(Db::open(&config.database)?);
     let mut pool=Pool::new(&config)?; pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into(); let pool=Arc::new(pool);
     for key in ["sk-fixture-delete-first-12345","sk-fixture-delete-second-12345"] { pool.clone().add(db.clone(),Some(key.into())).await?; }
@@ -613,7 +616,7 @@ async fn integration_admin_account_deletion()->Result<()> {
 async fn account_deletion_rejects_unmanaged_home()->Result<()> {
     let directory=tempfile::tempdir()?;
     let outside=directory.path().join("outside"); account(&outside,json!({}))?;
-    let config=Config { database:directory.path().join("test.db"),test_homes:vec![outside.clone()],..Config::default() };
+    let config=Config { database:directory.path().join("test.db"),test_homes:vec![outside.clone()],..fixture_config(&directory) };
     std::fs::create_dir_all(directory.path().join("managed-accounts"))?;
     let pool=Pool::new(&config)?; let db=Db::open(&config.database)?;
     let id=crate::db::hash(&pool.accounts()[0].home);
@@ -630,7 +633,7 @@ async fn integration_stopped_tasks_bill_both_account_types()->Result<()> {
         let directory=tempfile::tempdir()?;
         let home=directory.path().join("held");
         account(&home,json!({"auth_type":auth,"primary":0,"hold":true,"interrupt_usage":{"inputTokens":1000000,"cachedInputTokens":200000,"outputTokens":10000,"reasoningOutputTokens":5000,"totalTokens":1010000}}))?;
-        let config=Config { test_homes:vec![home.clone()],..Config::default() };
+        let config=Config { test_homes:vec![home.clone()],..fixture_config(&directory) };
         let db=Arc::new(Db::open(std::path::Path::new(":memory:"))?);
         let user=db.user("stopped-billing@example.test",None,100)?; let chat=request();
         db.reserve(user,&chat,"stopped",&config)?;

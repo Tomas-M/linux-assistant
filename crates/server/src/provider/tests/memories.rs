@@ -7,7 +7,7 @@ async fn integration_memories_use_the_request_user_and_survive_thread_resume()->
     let directory=tempfile::tempdir()?;
     let home=directory.path().join("account");
     account(&home,json!({"primary":0,"memory_roundtrip":true}))?;
-    let config=Config { database:directory.path().join("memory.db"),test_homes:vec![home.clone()],..Config::default() };
+    let config=Config { database:directory.path().join("memory.db"),test_homes:vec![home.clone()],..fixture_config(&directory) };
     let db=Db::open(&config.database)?;
     let first=db.user("first-memory@example.test",None,100)?;
     let second=db.user("second-memory@example.test",None,100)?;
