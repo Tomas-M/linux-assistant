@@ -376,16 +376,18 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let settings=Config { reasoning_effort:Some("high".into()),assistant_context:Some("SLAX_CONTEXT 世界".into()),..fixture_config(&directory) };
     // New threads are not resumable until their first turn has created a rollout.
     rpc.call("turn/start",json!({"threadId":id,"environments":[],"input":[{"type":"text","text":"Hello"}],"outputSchema":protocol::reply_schema()})).await?;
-    let reply=tokio::time::timeout(Duration::from_secs(40),async {
-        let mut text=String::new();
+    let (reply,baseline)=tokio::time::timeout(Duration::from_secs(40),async {
+        let mut text=String::new(); let mut baseline=Value::Null;
         loop {
             let event=rpc.next().await?;
             if event["method"]=="item/completed" && event["params"]["item"]["type"]=="agentMessage" {
                 text=event["params"]["item"]["text"].as_str().unwrap().to_owned();
             }
+            if event["method"]=="thread/tokenUsage/updated" { baseline=event["params"]["tokenUsage"]["total"].clone(); }
             if event["method"]=="turn/completed" {
                 ensure!(event["params"]["turn"]["status"]=="completed","Local model fixture turn failed: {event}");
-                return Ok::<AssistantReply,anyhow::Error>(serde_json::from_str(&text)?);
+                ensure!(baseline.is_object(),"The initial native turn did not report token counters");
+                return Ok::<_,anyhow::Error>((serde_json::from_str::<AssistantReply>(&text)?,baseline));
             }
         }
     }).await??;
@@ -400,6 +402,8 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
     chat.messages=vec![Message { attachments:Some(vec![protocol::Attachment::Image { name:"screen.png".into(),content:image.into() },protocol::Attachment::Text { name:"日志.txt".into(),content:"ATTACHED_TEXT 世界".into() }]),role:Role::User,text:"Continue".into() }];
     let db=Db::open(std::path::Path::new(":memory:"))?;
+    // The first turn used raw RPC, so preserve its measured counters as the normal driver would.
+    db.0.lock().unwrap().execute("INSERT INTO provider_counters(thread_id,counters) VALUES(?1,?2)",rusqlite::params![id,baseline.to_string()])?;
     std::fs::write(directory.path().join("auth.json"),b"{}")?;
     let mut attempt=crate::usage::Attempt::start(&db,None,&chat,&directory.path().to_string_lossy(),"admin_test")?;
     let user=db.user("native-steer@example.test",None,5)?;
@@ -491,7 +495,7 @@ async fn integration_usage_and_admin_tests() -> Result<()> {
     Ok(())
 }
 
-/// Repeated checkpoints bound failover input while the full application transcript remains available.
+/// Repeated checkpoints bound stored history and failover input while preserving logical message revisions.
 #[tokio::test]
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
@@ -507,12 +511,17 @@ async fn integration_long_chat_checkpoint_and_failover() -> Result<()> {
     let mut pool=Pool::new(&config)?;
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let mut chat=request();
+    let mut input_bytes=0;
     for _ in 0..16 {
         chat.messages=vec![Message { attachments:None, role:Role::User,text:format!("IMPORTANT_GOAL {}", "世界".repeat(2000)) }];
+        input_bytes+=serde_json::to_vec(&chat.messages)?.len();
         turn(&pool,&config,&db,user,&mut chat).await?;
     }
     let saved=db.conversation(user,chat.conversation_id)?;
-    assert!(serde_json::to_vec(&saved.messages)?.len()>96_000);
+    assert!(input_bytes>96_000);
+    assert_eq!(saved.messages.len(),32);
+    assert!(serde_json::to_vec(&saved.messages)?.len()<96_000);
+    assert!(saved.messages[..saved.checkpoint_at].iter().all(|message|message.text.is_empty()));
     assert!(saved.checkpoint.contains("IMPORTANT_GOAL") && saved.checkpoint_at>0);
     assert!(serde_json::to_vec(&saved.messages[saved.checkpoint_at..])?.len()<64_000);
     account(&config.test_homes[0],json!({"primary":100}))?;
