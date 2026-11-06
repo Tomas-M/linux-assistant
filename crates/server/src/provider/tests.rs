@@ -15,7 +15,7 @@ fn request() -> ChatRequest {
 
 /// Persist a provider success exactly as the production HTTP handler does.
 async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut ChatRequest) -> Result<Answer> {
-    db.reserve(user,request,&crate::db::hash(&serde_json::to_string(request)?),&config)?;
+    admit(db,user,request,config)?;
     let answer = pool.answer(config,db,user,request).await?;
     let completed=db.complete(user,request,&answer.reply,answer.account_home.as_deref(),answer.thread_id.as_deref(),answer.checkpoint.as_deref())?;
     request.base=completed.revision;
@@ -26,6 +26,12 @@ async fn turn(pool: &Pool, config: &Config, db: &Db, user: i64, request: &mut Ch
     Ok(answer)
 }
 
+/// Provider calls follow the same durable admission contract as the HTTP handler.
+fn admit(db:&Db,user:i64,request:&ChatRequest,config:&Config)->Result<()> {
+    ensure!(matches!(db.reserve(user,request,&crate::db::hash(&serde_json::to_string(request)?),config)?,crate::db::Reservation::New|crate::db::Reservation::Pending),"Fixture request was not admitted");
+    Ok(())
+}
+
 /// Keep worker scratch files and account discovery inside each integration test's temporary directory.
 fn fixture_config(directory:&tempfile::TempDir)->Config { Config { database:directory.path().join("assistant.db"),..Default::default() } }
 
@@ -33,6 +39,10 @@ fn fixture_config(directory:&tempfile::TempDir)->Config { Config { database:dire
 fn account(home: &std::path::Path, settings: Value) -> Result<()> {
     std::fs::create_dir_all(home)?;
     std::fs::write(home.join("fixture.json"),serde_json::to_vec(&settings)?)?;
+    if !home.join("auth.json").exists() {
+        let auth=if settings["auth_type"]=="apiKey" { json!({"OPENAI_API_KEY":"sk-fixture-local-only"}) } else { json!({}) };
+        std::fs::write(home.join("auth.json"),serde_json::to_vec(&auth)?)?;
+    }
     Ok(())
 }
 
@@ -111,10 +121,12 @@ async fn integration_admin_account_controls()->Result<()> {
     let user=db.user("admin-account-controls@example.test",None,100)?; let mut chat=request();
     assert_eq!(turn(&pool,&config,&db,user,&mut chat).await?.account_home.as_deref(),Some(api_home.as_str()));
     account(std::path::Path::new(&api_home),json!({"auth_type":"apiKey","turn_error":"usageLimitExceeded"}))?;
-    assert!(pool.answer(&config,&db,user,&request()).await.is_err());
+    let limited=request(); admit(&db,user,&limited,&config)?;
+    assert!(pool.answer(&config,&db,user,&limited).await.is_err());
     assert!(!std::fs::read_to_string(std::path::Path::new(&api_home).join("events.jsonl"))?.contains("account/rateLimits/read"));
     pool.pause(&db,&api_id,true)?;
-    let error=pool.answer(&config,&db,user,&request()).await.err().unwrap(); assert!(error.to_string().contains("paused by operator"));
+    let paused=request(); admit(&db,user,&paused,&config)?;
+    let error=pool.answer(&config,&db,user,&paused).await.err().unwrap(); assert!(error.to_string().contains("paused by operator"));
     pool.pause(&db,&chatgpt,false)?;
     assert_ne!(turn(&pool,&config,&db,user,&mut chat).await?.account_home.as_deref(),Some(api_home.as_str()));
     drop(pool);
@@ -147,7 +159,8 @@ async fn integration_diagnostics_preserve_causes()->Result<()> {
     pool.probe(&db,&pool.accounts()[0]).await?;
     assert!(pool.account_status(&db)?[0]["error"].is_null());
     let user=db.user("diagnostic@example.test",None,100)?;
-    let error=pool.answer(&config,&db,user,&request()).await.err().unwrap();
+    let chat=request(); admit(&db,user,&chat,&config)?;
+    let error=pool.answer(&config,&db,user,&chat).await.err().unwrap();
     assert!(error.to_string().contains("unexpectedServerError"));
     let stored:String=db.0.lock().unwrap().query_row("SELECT error FROM usage ORDER BY id DESC LIMIT 1",[],|row|row.get(0))?;
     assert!(stored.contains("Upstream failed 世界") && !stored.contains("PRIVATE_TOKEN"));
@@ -170,7 +183,7 @@ async fn integration_streams_before_completion() -> Result<()> {
     let user=db.user("stream@example.test",None,10)?;
     let mut pool=Pool::new(&config)?;
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
-    let chat=request();
+    let chat=request(); admit(&db,user,&chat,&config)?;
     let (sender,mut receiver)=tokio::sync::watch::channel(protocol::ChatEvent::Progress { progress:Default::default() });
     let answer=pool.answer_stream(&config,&db,user,&chat,Some(&sender),None);
     tokio::pin!(answer);
@@ -203,7 +216,7 @@ async fn integration_streams_before_completion() -> Result<()> {
 #[ignore = "Build provider-fixture and set ASSISTANT_TEST_PROVIDER to its executable"]
 async fn integration_persistent_account_affinity() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let mut config = Config::default();
+    let mut config = fixture_config(&directory);
     config.assistant_context=Some("INITIAL_CONTEXT 世界".into());
     for (name,primary,secondary) in [("a",70,10),("b",10,80),("c",40,40)] {
         let home=directory.path().join(name);
@@ -286,6 +299,7 @@ async fn integration_mid_turn_limit_and_errors() -> Result<()> {
         let mut chat=request();
         let initial=turn(&pool,&config,&db,user,&mut chat).await?;
         account(&config.test_homes[0],json!({"primary":0,"turn_error":error}))?;
+        admit(&db,user,&chat,&config)?;
         let result=pool.answer(&config,&db,user,&chat).await;
         if error=="usageLimitExceeded" {
             let next=result?;
@@ -318,6 +332,7 @@ async fn integration_accounts_run_in_parallel() -> Result<()> {
     pool.executable=std::env::var("ASSISTANT_TEST_PROVIDER")?.into();
     let a=request();
     let b=request();
+    admit(&db,user,&a,&config)?; admit(&db,user,&b,&config)?;
     let (a,b)=tokio::join!(pool.answer(&config,&db,user,&a),pool.answer(&config,&db,user,&b));
     assert_ne!(a?.account_home,b?.account_home);
     Ok(())
@@ -385,7 +400,8 @@ async fn integration_embedded_runtime_contract() -> Result<()> {
     let image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
     chat.messages=vec![Message { attachments:Some(vec![protocol::Attachment::Image { name:"screen.png".into(),content:image.into() },protocol::Attachment::Text { name:"日志.txt".into(),content:"ATTACHED_TEXT 世界".into() }]),role:Role::User,text:"Continue".into() }];
     let db=Db::open(std::path::Path::new(":memory:"))?;
-    let mut attempt=crate::usage::Attempt::start(&db,None,&chat,"embedded-fixture","admin_test")?;
+    std::fs::write(directory.path().join("auth.json"),b"{}")?;
+    let mut attempt=crate::usage::Attempt::start(&db,None,&chat,&directory.path().to_string_lossy(),"admin_test")?;
     let user=db.user("native-steer@example.test",None,5)?;
     db.reserve(user,&chat,"native",&settings)?;
     let (sender,mut receiver)=tokio::sync::mpsc::channel(4);
