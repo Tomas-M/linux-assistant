@@ -1485,7 +1485,13 @@ elements['process-panel'].addEventListener('click',async event=>
     if (button.dataset.stop)
     {
         button.disabled=true;
-        try { await api('processes/'+button.dataset.stop+'/stop',{},AbortSignal.timeout(5000)); await pollProcesses(true); }
+        try
+        {
+            const id=button.dataset.stop;
+            await api('processes/'+id+'/stop',{},AbortSignal.timeout(5000));
+            if (selectedProcess===id) processDetailsRequest?.abort();
+            await pollProcesses(true);
+        }
         catch (error) { elements['process-status'].textContent=error.message; button.disabled=false; }
     }
 });
