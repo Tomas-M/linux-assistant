@@ -1470,6 +1470,13 @@ elements['process-panel'].addEventListener('click',async event=>
 {
     const button=event.target.closest('button');
     if (!button) return;
+    if (button.hasAttribute('data-wrap'))
+    {
+        event.preventDefault();
+        const output=elements[button.getAttribute('aria-controls')];
+        button.textContent=output.classList.toggle('wrap-output')?'Unwrap':'Wrap';
+        return;
+    }
     if (button.dataset.select)
     {
         selectProcess(selectedProcess===button.dataset.select?null:button.dataset.select);

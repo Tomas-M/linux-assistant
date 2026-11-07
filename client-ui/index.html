@@ -176,10 +176,10 @@
             <details class="recent-commands"><summary id="history-heading">Completed commands</summary><div id="process-history"></div></details>
             <section id="process-detail" hidden aria-label="Selected process details">
                 <dl id="process-metadata"></dl>
-                <details open><summary>Command</summary><pre id="process-command"></pre></details>
-                <details><summary>Executable and arguments</summary><pre id="process-arguments"></pre></details>
-                <details open><summary id="stdout-label">Standard output</summary><pre id="process-stdout"></pre><button id="download-stdout">Save stdout</button></details>
-                <details><summary id="stderr-label">Standard error</summary><pre id="process-stderr"></pre><button id="download-stderr">Save stderr</button></details>
+                <details open><summary>Command<button type="button" class="process-wrap" data-wrap aria-controls="process-command">Wrap</button></summary><pre id="process-command"></pre></details>
+                <details><summary>Executable and arguments<button type="button" class="process-wrap" data-wrap aria-controls="process-arguments">Wrap</button></summary><pre id="process-arguments"></pre></details>
+                <details open><summary><span id="stdout-label">Standard output</span><button type="button" class="process-wrap" data-wrap aria-controls="process-stdout">Wrap</button></summary><pre id="process-stdout"></pre><button id="download-stdout">Save stdout</button></details>
+                <details><summary><span id="stderr-label">Standard error</span><button type="button" class="process-wrap" data-wrap aria-controls="process-stderr">Wrap</button></summary><pre id="process-stderr"></pre><button id="download-stderr">Save stderr</button></details>
             </section>
         </div>
     </aside>

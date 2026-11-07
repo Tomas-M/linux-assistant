@@ -239,8 +239,8 @@ input[type=checkbox] { accent-color:var(--accent); }
 .task-table tr:has([aria-pressed=true]) { background:var(--accent-soft); }
 .recent-commands { margin-top:1.25rem; font-size:0.875rem; }
 .recent-commands summary { cursor:pointer; color:var(--muted); }
-#process-history button { display:block; width:100%; margin-top:0.5rem; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:0.8125rem; }
-#process-history button[aria-pressed=true] { border-color:var(--accent); background:var(--accent-soft); }
+#process-history > button { display:block; width:100%; margin-top:0.5rem; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:0.8125rem; }
+#process-history > button[aria-pressed=true] { border-color:var(--accent); background:var(--accent-soft); }
 #process-status { font-size:0.8125rem; color:var(--muted); }
 .queued-messages { max-height:7.5rem; overflow:auto; padding:0.25rem 0.75rem 1rem; margin:0 0.875rem -0.75rem; background:var(--bg); border:0.0625rem solid var(--border); border-radius:1.125rem 1.125rem 0 0; font-size:0.8125rem; }
 .connection-note { padding:0.5rem 0.75rem; margin:0 0.25rem 0.5rem; border:0.0625rem solid var(--border); border-radius:0.625rem; background:var(--bg); font-size:0.8125rem; color:var(--muted); }
@@ -258,7 +258,9 @@ input[type=checkbox] { accent-color:var(--accent); }
 #process-detail dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
 #process-detail details { margin-top:1rem; font-size:0.875rem; }
 #process-detail summary { cursor:pointer; }
-#process-detail pre { max-height:15rem; overflow:auto; }
+#process-detail pre { max-height:15rem; overflow-x:hidden; overflow-y:auto; white-space:pre; overflow-wrap:normal; text-overflow:ellipsis; }
+#process-detail pre.wrap-output { white-space:pre-wrap; overflow-wrap:anywhere; text-overflow:clip; }
+#process-detail .process-wrap { float:right; font:inherit; padding:0; border:0; background:transparent; color:var(--muted); text-decoration:underline; }
 #process-detail button { font-size:0.8125rem; padding:0.3125rem 0.625rem; }
 .sr-only { position:absolute; width:0.0625rem; height:0.0625rem; padding:0; margin:-0.0625rem; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .native-request { margin:1.5rem 0; padding:1.5rem; border:0.0625rem solid var(--border); border-radius:1.125rem; background:var(--card); }
