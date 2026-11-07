@@ -1177,13 +1177,68 @@ function toggleProcesses(open)
     else processDetailsRequest?.abort();
 }
 
+const processOutputLines=new WeakMap();
+
+// Measure visible lines against the current scrollport so each marker disappears when its line fits.
+function renderProcessOverflow(output)
+{
+    const overlay=output.nextElementSibling;
+    const width=output.clientWidth, height=output.clientHeight;
+    if (!width || !height || output.scrollWidth<=width || output.classList.contains('wrap-output'))
+    {
+        overlay.replaceChildren();
+        return;
+    }
+
+    const node=output.firstChild, text=node.data;
+    let lines=processOutputLines.get(node);
+    if (!lines)
+    {
+        // Cache newline offsets for this text node to avoid scanning the log on every scroll.
+        lines=[0];
+        for (let offset=text.indexOf('\n'); offset!==-1; offset=text.indexOf('\n',offset+1)) lines.push(offset+1);
+        processOutputLines.set(node,lines);
+    }
+
+    const style=getComputedStyle(output), lineHeight=parseFloat(style.lineHeight);
+    const offset=output.scrollTop-parseFloat(style.paddingTop);
+    const first=Math.max(0,Math.floor(offset/lineHeight));
+    const end=Math.min(lines.length,Math.ceil((offset+height)/lineHeight));
+    const right=output.getBoundingClientRect().left+width;
+    const range=new Range(), markers=[];
+    for (let line=first; line<end; line++)
+    {
+        range.setStart(node,lines[line]);
+        range.setEnd(node,line+1<lines.length?lines[line+1]-1:text.length);
+        if (range.getBoundingClientRect().right<=right+0.5) continue;
+        const marker=document.createElement('span');
+        marker.textContent='…';
+        marker.style.top=(line*lineHeight-offset)+'px';
+        markers.push(marker);
+    }
+    overlay.style.width=width+'px';
+    overlay.style.height=height+'px';
+    overlay.replaceChildren(...markers);
+}
+
+const processOutputResize=new ResizeObserver(entries=>
+{
+    for (const {target} of entries) renderProcessOverflow(target);
+});
+for (const output of elements['process-detail'].querySelectorAll('pre'))
+{
+    output.addEventListener('scroll',()=>renderProcessOverflow(output),{passive:true});
+    processOutputResize.observe(output);
+}
+
 // Preserve output scroll position while fresh bytes arrive, following only when already at the end.
 function updateOutput(element,text)
 {
     if (element.textContent===(text || '(empty)')) return;
     const follow=element.scrollHeight-element.scrollTop-element.clientHeight<24;
-    element.firstElementChild.textContent=text || '(empty)';
+    element.textContent=text || '(empty)';
     if (follow) element.scrollTop=element.scrollHeight;
+    renderProcessOverflow(element);
 }
 
 // Render metadata and stream text without interpreting command output as HTML.
@@ -1477,6 +1532,7 @@ elements['process-panel'].addEventListener('click',async event=>
         event.preventDefault();
         const output=elements[button.getAttribute('aria-controls')];
         button.textContent=output.classList.toggle('wrap-output')?'unwrap':'wrap';
+        renderProcessOverflow(output);
         return;
     }
     if (button.dataset.select)
