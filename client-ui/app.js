@@ -1202,6 +1202,18 @@ function renderProcess(record)
     }
 }
 
+// Command lines can contain HTML syntax, so write their labels as text.
+function processButton(record,label)
+{
+    const button=document.createElement('button');
+    button.dataset.select=record.id;
+    button.title=record.command;
+    button.innerHTML='<time></time><span></span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
+    button.children[0].textContent=new Date(record.started_at).toLocaleTimeString('en-GB',{hour12:false});
+    button.children[1].textContent=label;
+    return button;
+}
+
 // Poll a separate daemon endpoint so Stop remains available even while the chat lock is held.
 async function pollProcesses()
 {
@@ -1237,9 +1249,8 @@ async function pollProcesses()
             {
                 row=document.createElement('tr');
                 const command=document.createElement('td'), pid=document.createElement('td'), elapsed=document.createElement('td'), action=document.createElement('td');
-                const select=document.createElement('button'), stop=document.createElement('button');
+                const select=processButton(record,record.command), stop=document.createElement('button');
                 select.className='process-select';
-                select.dataset.select=record.id;
                 stop.className='process-stop'; setIcon(stop,'stop'); stop.append(document.createTextNode('Stop'));
                 stop.dataset.stop=record.id;
                 stop.setAttribute('aria-label','Kill this command and its child processes');
@@ -1247,9 +1258,7 @@ async function pollProcesses()
                 processRows.set(record.id,row);
                 elements['process-list'].append(row);
             }
-            row.cells[0].firstChild.innerHTML='<time>'+new Date(record.started_at).toLocaleTimeString('en-GB',{hour12:false})+'</time><span>'+escapeHtml(record.command)+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>';
             row.cells[0].firstChild.setAttribute('aria-expanded',String(record.id===selectedProcess));
-            row.cells[0].firstChild.title=record.command;
             row.cells[0].firstChild.setAttribute('aria-pressed',String(record.id===selectedProcess));
             const pids=record.background_pids?.length?record.background_pids:[record.pid].filter(Boolean);
             row.cells[1].textContent=pids[0] || 'Starting';
@@ -1266,11 +1275,8 @@ async function pollProcesses()
             elements['process-history'].replaceChildren();
             for (const record of history)
             {
-                const button=document.createElement('button');
-                button.dataset.select=record.id;
-                button.innerHTML='<time>'+new Date(record.started_at).toLocaleTimeString('en-GB',{hour12:false})+'</time><span>'+escapeHtml((record.error?'Stopped / failed':('Exit '+record.exit_code))+' · '+record.command)+'</span><svg aria-hidden="true"><use href="#icon-chevron"/></svg>'; 
-                button.title=record.command;
-                elements['process-history'].append(button);
+                const status=record.error?'Stopped / failed':'Exit '+record.exit_code;
+                elements['process-history'].append(processButton(record,status+' · '+record.command));
             }
         }
         for (const button of elements['process-history'].querySelectorAll('button[data-select]'))
