@@ -1161,9 +1161,11 @@ const processRows=new Map();
 function selectProcess(id)
 {
     processDetailsRequest?.abort();
+    const details=elements['process-detail'];
+    if (selectedProcess!==id) for (const output of details.querySelectorAll('pre')) output.scrollLeft=0;
     selectedProcess=id;
     processRecord=null;
-    elements['process-detail'].hidden=true;
+    details.hidden=true;
 }
 
 // The menu toggles a side panel without moving the conversation or blocking process controls.
@@ -1180,7 +1182,7 @@ function updateOutput(element,text)
 {
     if (element.textContent===(text || '(empty)')) return;
     const follow=element.scrollHeight-element.scrollTop-element.clientHeight<24;
-    element.textContent=text || '(empty)';
+    element.firstElementChild.textContent=text || '(empty)';
     if (follow) element.scrollTop=element.scrollHeight;
 }
 
@@ -1474,7 +1476,7 @@ elements['process-panel'].addEventListener('click',async event=>
     {
         event.preventDefault();
         const output=elements[button.getAttribute('aria-controls')];
-        button.textContent=output.classList.toggle('wrap-output')?'Unwrap':'Wrap';
+        button.textContent=output.classList.toggle('wrap-output')?'unwrap':'wrap';
         return;
     }
     if (button.dataset.select)
