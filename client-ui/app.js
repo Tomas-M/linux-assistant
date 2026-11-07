@@ -1183,14 +1183,15 @@ const processOutputLines=new WeakMap();
 function renderProcessOverflow(output)
 {
     const overlay=output.nextElementSibling;
+    const node=output.firstChild;
     const width=output.clientWidth, height=output.clientHeight;
-    if (!width || !height || output.scrollWidth<=width || output.classList.contains('wrap-output'))
+    if (!node || !width || !height || output.scrollWidth<=width || output.classList.contains('wrap-output'))
     {
         overlay.replaceChildren();
         return;
     }
 
-    const node=output.firstChild, text=node.data;
+    const text=node.data;
     let lines=processOutputLines.get(node);
     if (!lines)
     {
@@ -1200,10 +1201,15 @@ function renderProcessOverflow(output)
         processOutputLines.set(node,lines);
     }
 
-    const style=getComputedStyle(output), lineHeight=parseFloat(style.lineHeight);
-    const offset=output.scrollTop-parseFloat(style.paddingTop);
+    const style=getComputedStyle(output), paddingTop=parseFloat(style.paddingTop);
+    const lineCount=text.endsWith('\n')?lines.length-1:lines.length;
+    const scrollHeight=output.scrollHeight;
+    let lineHeight=parseFloat(style.lineHeight);
+    // Use the laid-out height for long logs so subpixel rounding cannot accumulate across lines.
+    if (scrollHeight>height) lineHeight=(scrollHeight-paddingTop-parseFloat(style.paddingBottom))/lineCount;
+    const offset=output.scrollTop-paddingTop;
     const first=Math.max(0,Math.floor(offset/lineHeight));
-    const end=Math.min(lines.length,Math.ceil((offset+height)/lineHeight));
+    const end=Math.min(lineCount,Math.ceil((offset+height)/lineHeight));
     const right=output.getBoundingClientRect().left+width;
     const range=new Range(), markers=[];
     for (let line=first; line<end; line++)
