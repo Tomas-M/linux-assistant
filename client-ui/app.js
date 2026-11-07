@@ -74,9 +74,9 @@ function applyTheme(theme)
 }
 
 // Keep every operation on the authenticated loopback origin.
-async function api(path,body)
+async function api(path,body,signal)
 {
-    const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+    const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal});
     if (response.status===413) throw new Error('This request exceeds the HTTP transport size limit (64 MiB). Nothing was sent to the AI.');
     const value=await response.json();
     if (!response.ok) throw new Error(value.error || 'Request failed');
@@ -149,12 +149,15 @@ function render()
     // Command IDs are scoped to this chat, so a new empty chat immediately clears the task display.
     if (!view.commands.length)
     {
-        selectedProcess=null; processRecord=null; historyKey='';
+        selectProcess(null);
+        historyKey='';
         elements['process-list'].replaceChildren(); processRows.clear();
+        elements['process-list'].closest('.task-table-wrap').hidden=true;
         elements['process-history'].replaceChildren();
-        elements['process-detail'].hidden=true;
         elements['process-count'].hidden=true;
         elements['tasks-running'].hidden=true;
+        elements['process-toggle'].setAttribute('aria-label','Tasks');
+        elements['process-toggle'].title='Task manager';
         elements['process-status'].textContent='No commands in this chat yet.';
         elements['history-heading'].textContent='Completed commands · 0';
     }
@@ -431,8 +434,7 @@ elements.workspace.addEventListener('click',async event=>
     }
     if (process)
     {
-        selectedProcess=process.dataset.process;
-        processRecord=null;
+        selectProcess(process.dataset.process);
         toggleProcesses(true);
     }
 });
@@ -1152,15 +1154,25 @@ elements['credit-packs'].addEventListener('click',async event=>
     catch (error) { checkoutWindow?.close(); showError(error.message); elements['settings-status'].textContent=error.message; }
     finally { buying=false; render(); }
 });
-let selectedProcess, processPolling=false, processRecord, lastProcessPoll=0, historyKey='';
+let selectedProcess, processRecord, processDetailsRequest, processPolling=false, processRefreshPending=false, lastProcessPoll=0, historyKey='';
 const processRows=new Map();
+
+// Both command links and table rows clear the previous output as soon as the selection changes.
+function selectProcess(id)
+{
+    processDetailsRequest?.abort();
+    selectedProcess=id;
+    processRecord=null;
+    elements['process-detail'].hidden=true;
+}
 
 // The menu toggles a side panel without moving the conversation or blocking process controls.
 function toggleProcesses(open)
 {
     elements['process-panel'].hidden=!open;
     elements['process-toggle'].setAttribute('aria-expanded',String(open));
-    if (open) { toggleMemories(false); elements['process-close'].focus(); pollProcesses(); }
+    if (open) { toggleMemories(false); elements['process-close'].focus(); pollProcesses(true); }
+    else processDetailsRequest?.abort();
 }
 
 // Preserve output scroll position while fresh bytes arrive, following only when already at the end.
@@ -1215,18 +1227,23 @@ function processButton(record,label)
 }
 
 // Poll a separate daemon endpoint so Stop remains available even while the chat lock is held.
-async function pollProcesses()
+async function pollProcesses(refresh=false)
 {
-    if (processPolling) return;
+    if (processPolling)
+    {
+        if (refresh) processRefreshPending=true;
+        return;
+    }
     processPolling=true;
     lastProcessPoll=Date.now();
     try
     {
-        const records=(await api('processes')).filter(record=>view.commands.some(command=>command.id===record.id));
-        if (selectedProcess && !records.some(record=>record.id===selectedProcess))
+        const records=(await api('processes',undefined,AbortSignal.timeout(5000))).filter(record=>view.commands.some(command=>command.id===record.id));
+        const selected=records.find(record=>record.id===selectedProcess);
+        const detailsUnavailable=selectedProcess && !selected;
+        if (detailsUnavailable)
         {
             processRecord=null;
-            selectedProcess=null;
             elements['process-detail'].hidden=true;
         }
         const running=records.filter(record=>!record.finished_at);
@@ -1238,6 +1255,7 @@ async function pollProcesses()
         if (elements['process-panel'].hidden) return;
         elements['process-status'].textContent=records.length?'No commands are running.':'No commands in this chat yet.';
         if (running.length) elements['process-status'].textContent='';
+        if (detailsUnavailable) elements['process-status'].textContent='Command details are unavailable.';
         elements['process-list'].closest('.task-table-wrap').hidden=!running.length;
         const runningIds=new Set(running.map(record=>record.id));
         for (const [id,row] of processRows)
@@ -1266,31 +1284,33 @@ async function pollProcesses()
             row.cells[1].title=pids.join(', ');
             row.cells[2].textContent=Math.floor((Date.now()-record.started_at)/1000)+'s';
         }
+        const historyPanel=elements['process-history'], details=elements['process-detail'];
+        const revealHistory=selected?.finished_at && (details.hidden || !historyPanel.contains(details));
         const history=records.filter(record=>record.finished_at).sort((a,b)=>b.started_at-a.started_at), key=JSON.stringify(history);
         elements['history-heading'].textContent='Completed commands · '+history.length+' · newest first';
         if (key!==historyKey)
         {
             historyKey=key;
-            if (elements['process-history'].contains(elements['process-detail'])) elements['process-detail'].remove();
-            elements['process-history'].replaceChildren();
+            if (historyPanel.contains(details)) details.remove();
+            historyPanel.replaceChildren();
             for (const record of history)
             {
                 const status=record.error?'Stopped / failed':'Exit '+record.exit_code;
-                elements['process-history'].append(processButton(record,status+' · '+record.command));
+                historyPanel.append(processButton(record,status+' · '+record.command));
             }
         }
-        for (const button of elements['process-history'].querySelectorAll('button[data-select]'))
+        for (const button of historyPanel.querySelectorAll('button[data-select]'))
         {
             const expanded=button.dataset.select===selectedProcess;
             button.setAttribute('aria-expanded',String(expanded));
             button.setAttribute('aria-pressed',String(expanded));
         }
-        const selected=records.find(record=>record.id===selectedProcess);
         // Move the single detail section under its selected row instead of duplicating output views.
         if (selected?.finished_at)
         {
-            const button=elements['process-history'].querySelector('[data-select="'+selected.id+'"]');
-            if (button.nextElementSibling!==elements['process-detail']) button.after(elements['process-detail']);
+            const button=historyPanel.querySelector('[data-select="'+selected.id+'"]');
+            if (button.nextElementSibling!==details) button.after(details);
+            if (revealHistory) historyPanel.closest('details').open=true;
         }
         else if (selected)
         {
@@ -1301,19 +1321,34 @@ async function pollProcesses()
                 detail=document.createElement('tr'); detail.className='process-detail-row';
                 const cell=document.createElement('td'); cell.colSpan=4; detail.append(cell); row.after(detail);
             }
-            detail.firstChild.append(elements['process-detail']);
+            if (details.parentElement!==detail.firstChild) detail.firstChild.append(details);
         }
-        for (const row of elements['process-list'].querySelectorAll('.process-detail-row')) if (!row.contains(elements['process-detail'])) row.remove();
+        for (const row of elements['process-list'].querySelectorAll('.process-detail-row')) if (!row.contains(details)) row.remove();
         const pidsChanged=selected && JSON.stringify(selected.background_pids)!==JSON.stringify(processRecord?.background_pids);
         const changed=selected && (!processRecord || pidsChanged || ['id','pid','finished_at','exit_code','error','stdout_bytes','stderr_bytes'].some(key=>selected[key]!==processRecord[key]));
         if (changed)
         {
-            const id=selectedProcess, record=await api('processes/'+id);
-            if (id===selectedProcess) renderProcess(record);
+            processDetailsRequest=new AbortController();
+            const signal=AbortSignal.any([processDetailsRequest.signal,AbortSignal.timeout(5000)]);
+            const record=await api('processes/'+selected.id,undefined,signal);
+            if (!signal.aborted && selected.id===selectedProcess) renderProcess(record);
         }
     }
-    catch (error) { elements['process-status'].textContent=error.message; }
-    finally { processPolling=false; }
+    catch (error)
+    {
+        if (error.name!=='AbortError') elements['process-status'].textContent=error.message;
+    }
+    finally
+    {
+        processDetailsRequest=null;
+        processPolling=false;
+        // An explicit action during a poll gets one fresh snapshot as soon as it finishes.
+        if (processRefreshPending)
+        {
+            processRefreshPending=false;
+            pollProcesses();
+        }
+    }
 }
 
 // Both sidebars share resize behavior without moving the chat or blocking its input.
@@ -1437,15 +1472,13 @@ elements['process-panel'].addEventListener('click',async event=>
     if (!button) return;
     if (button.dataset.select)
     {
-        selectedProcess=selectedProcess===button.dataset.select?null:button.dataset.select;
-        processRecord=null;
-        elements['process-detail'].hidden=true;
-        await pollProcesses();
+        selectProcess(selectedProcess===button.dataset.select?null:button.dataset.select);
+        await pollProcesses(true);
     }
     if (button.dataset.stop)
     {
         button.disabled=true;
-        try { await api('processes/'+button.dataset.stop+'/stop',{}); await pollProcesses(); }
+        try { await api('processes/'+button.dataset.stop+'/stop',{},AbortSignal.timeout(5000)); await pollProcesses(true); }
         catch (error) { elements['process-status'].textContent=error.message; button.disabled=false; }
     }
 });
