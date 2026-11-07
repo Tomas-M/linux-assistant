@@ -1218,7 +1218,7 @@ function renderProcessOverflow(output)
         range.setEnd(node,line+1<lines.length?lines[line+1]-1:text.length);
         if (range.getBoundingClientRect().right<=right+0.5) continue;
         const marker=document.createElement('span');
-        marker.textContent='…';
+        marker.textContent='»';
         marker.style.top=(line*lineHeight-offset)+'px';
         markers.push(marker);
     }
