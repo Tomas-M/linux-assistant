@@ -51,6 +51,6 @@ The Windows executable includes the MSVC runtime. The optional configuration fil
 
 ## Source updates
 
-This repository contains the client and its shared application protocol. It builds independently and does not include a backend implementation. Client updates are published here as complete source snapshots; changes should be contributed through the application's maintainer.
+This repository contains the client and its shared application protocol. It builds independently and does not include a backend implementation. Client source updates are published here automatically as complete snapshots; changes should be contributed through the application's maintainer.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled icon attribution. Rust dependencies retain their respective licenses.
