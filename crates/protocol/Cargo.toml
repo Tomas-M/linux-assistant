@@ -1,0 +1,12 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+base64 = "0.22"
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "webp", "png"] }
