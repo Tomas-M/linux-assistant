@@ -225,7 +225,6 @@ impl Engine {
         self.session.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
         self.session.committed=result.revision;
         self.session.request = None;
-
         if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=result.credits; }
         if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
         self.finish_activity(None)?;
@@ -314,7 +313,6 @@ impl Engine {
                             self.session.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
                             let cwd=self.session.request.as_ref().unwrap().cwd.clone();
                             self.session.request=None;
-                    
                             if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
                             if !self.controls.stopped.load(Ordering::SeqCst) { self.prepare(cwd,Uuid::new_v4())?; }
                             self.publish()?;
