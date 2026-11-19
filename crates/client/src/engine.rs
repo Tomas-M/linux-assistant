@@ -16,7 +16,6 @@ pub struct Settings { pub backend: String, pub commands_enabled: bool }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Session {
     pub conversation_id: Uuid,
-    pub task_id: Option<Uuid>,
     pub settings: Settings,
     pub generation:protocol::GenerationOptions,
     pub messages: Vec<Message>,
@@ -35,7 +34,7 @@ impl Engine {
         validate_backend(backend)?;
         let live=crate::stream::Live::new();
         let media=crate::media::Media::default();
-        let session=Session { generation:Default::default(),conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },task_id:None,committed:0,messages:vec![],request:None };
+        let session=Session { generation:Default::default(),conversation_id:Uuid::new_v4(),settings:Settings { backend:backend.into(),commands_enabled:true },committed:0,messages:vec![],request:None };
         let engine=Self { controls:crate::controls::Controls::open(live.clone(),media.clone())?,processes:Processes::open()?,live,full_access:Arc::new(AtomicBool::new(true)),session,
             auth:crate::session::Credentials { backend:backend.into(),token:Arc::new(std::sync::RwLock::new(None)) },media,platform,http:crate::backend::client(0)?,login:None,account:Arc::new(std::sync::RwLock::new(None)) };
         engine.live.state(engine.state());
@@ -156,7 +155,6 @@ impl Engine {
         self.media.clear();
         self.processes.clear_completed();
         self.session.conversation_id = Uuid::new_v4();
-        self.session.task_id = None;
         self.session.messages.clear();
         self.session.generation=Default::default();
         self.session.committed=0;
@@ -170,9 +168,8 @@ impl Engine {
         ensure!(self.session.request.is_none(),"Retry the unfinished request or start a new chat first");
         protocol::validate_input(&text,attachments.as_deref())?;
         self.session.messages.push(Message { attachments, role:Role::User,text });
-        self.session.task_id=Some(id);
         self.session.generation=generation;
-        if let Err(error)=self.prepare(cwd,id) { self.session.messages.pop(); self.session.task_id=None; return Err(error); }
+        if let Err(error)=self.prepare(cwd,id) { self.session.messages.pop(); return Err(error); }
         self.begin_activity(self.session.messages.len()-1);
         self.publish()?;
         Ok(())
@@ -193,7 +190,7 @@ impl Engine {
     /// Send only new input after the last committed conversation revision.
     fn prepare(&mut self, cwd: String, id:Uuid) -> Result<()> {
         ensure!(self.auth.token.read().unwrap().is_some(),"Sign in first");
-        let request = ChatRequest { generation:self.session.generation.clone(),bridge:protocol::Bridge::current(),task_id:*self.session.task_id.get_or_insert(id),base:self.session.committed,request_id:id,conversation_id:self.session.conversation_id,platform:self.platform,messages:self.session.messages[self.session.committed..].to_vec(),commands_enabled:self.session.settings.commands_enabled,cwd };
+        let request = ChatRequest { generation:self.session.generation.clone(),bridge:protocol::Bridge::current(),task_id:id,base:self.session.committed,request_id:id,conversation_id:self.session.conversation_id,platform:self.platform,messages:self.session.messages[self.session.committed..].to_vec(),commands_enabled:self.session.settings.commands_enabled,cwd };
         ensure!(serde_json::to_vec(&request)?.len()<=protocol::MAX_UPLOAD_BYTES && protocol::display_messages(&request.messages).to_string().len()<=MAX_REQUEST_BYTES,"New input exceeds the per-request limit");
         self.session.request = Some(request);
         self.publish()
@@ -211,7 +208,6 @@ impl Engine {
         if !status.is_success() {
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE || status == reqwest::StatusCode::PAYMENT_REQUIRED {
                 let id=Uuid::new_v4();
-                self.session.task_id=Some(id);
                 self.session.request.as_mut().unwrap().request_id=id;
                 self.session.request.as_mut().unwrap().task_id=id;
                 self.publish()?;
@@ -229,7 +225,7 @@ impl Engine {
         self.session.messages.push(Message { attachments:None, role:Role::Assistant,text:result.reply.text });
         self.session.committed=result.revision;
         self.session.request = None;
-        self.session.task_id=None;
+
         if let Some(account)=self.account.write().unwrap().as_mut() { account.credits=result.credits; }
         if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
         self.finish_activity(None)?;
@@ -318,7 +314,7 @@ impl Engine {
                             self.session.messages.extend(steering.into_iter().map(|input|Message { attachments:input.attachments, role:Role::User,text:input.text }));
                             let cwd=self.session.request.as_ref().unwrap().cwd.clone();
                             self.session.request=None;
-                            self.session.task_id=None;
+                    
                             if !steering_ids.is_empty() { self.live.committed_steering(self.state(),&steering_ids,steering_start); }
                             if !self.controls.stopped.load(Ordering::SeqCst) { self.prepare(cwd,Uuid::new_v4())?; }
                             self.publish()?;
@@ -413,7 +409,6 @@ mod tests {
         assert_ne!(next.task_id,ids.lock().unwrap()[0].0);
         drop(engine);
         let recovered=Engine::open(&backend).await?;
-        assert!(recovered.session.task_id.is_none());
         assert!(recovered.session.request.is_none());
         server.abort();
         Ok(())
